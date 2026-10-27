@@ -1,0 +1,193 @@
+// Amp gen core template. src/amp_config.js ampGenCode() fills //@NAM_DECL / //@NAM_BODY with the
+// generated network for one architecture, @@RF@@ with its receptive field and @@NLAYERS@@ with
+// its layer count. The engine writes the weights into buffer~ ---ampw (bank offset `wbase`), the
+// tone stack / cab biquads into ---ampcf (slot 50 = 1 once valid) and reads ---ampscope.
+//
+// Signal: (in1 + in2) / 2 -> Input -> gate -> model -> Normalize -> DC block -> 10 biquads ->
+// Output -> Mix with the dry stereo input. Model switch: fade out 128 samples, take the new bank,
+// stay muted for the receptive field (so the history is the new model's) and fade in.
+
+Param indb(0);
+Param gatedb(-100);
+Param outdb(0);
+Param mixamt(1);
+Param normdb(0);
+Param wbase(-1);
+Param mok(0);
+Param tapraw(0);
+Buffer w("ampw");
+Buffer cf("ampcf");
+Buffer scope("ampscope");
+History tpH(0);
+History wcur(-1);
+History fadeG(0);
+History muteN(0);
+History gEnv(0);
+History gGain(1);
+History gOpen(0);
+History dcx(0);
+History dcy(0);
+History quiet(0);
+History inG(1);
+History outG(1);
+History nG(1);
+History blk(0);
+History frames(0);
+History alive(0);
+History pkIn(0);
+History pkOut(0);
+History pkNam(0);
+History sIn(0);
+History sOut(0);
+History satS(0);
+History satA(0);
+History xyc(0);
+History xyh(0);
+History oh(0);
+Data bz(20);
+Data lsm(48);
+//@NAM_DECL
+
+dry1 = in1;
+dry2 = in2;
+x = (in1 + in2) * 0.5;
+inG = inG + (dbtoa(indb) - inG) * 0.002;
+xg = x * inG;
+
+// Noise gate on the input (after Input): peak follower, 6 dB hysteresis, 1 ms open, 60 ms close.
+ax = abs(xg);
+relc = exp(-1 / (0.03 * samplerate));
+gEnv = ax > gEnv ? ax : gEnv * relc;
+thr = dbtoa(gatedb);
+gOpen = gEnv > thr ? 1 : (gEnv < thr * 0.5 ? 0 : gOpen);
+gtgt = gatedb <= -99.9 ? 1 : gOpen;
+gk = gtgt > gGain ? 1 - exp(-1 / (0.001 * samplerate)) : 1 - exp(-1 / (0.06 * samplerate));
+gGain = gGain + (gtgt - gGain) * gk;
+
+// Model switch.
+nin = xg * gGain;
+tgt = wbase;
+ninit = 0;
+if (tgt != wcur) {
+    fadeG = max(0, fadeG - 1 / 128);
+    if (fadeG <= 0) {
+        wcur = tgt;
+        muteN = @@RF@@ + 512;
+        ninit = 1;
+    }
+} else {
+    if (muteN > 0) {
+        muteN = muteN - 1;
+    } else {
+        fadeG = min(1, fadeG + 1 / 256);
+    }
+}
+wb = wcur < 0 ? 0 : wcur;
+
+// Idle sleep: input silent for longer than the receptive field.
+quiet = abs(nin) < 0.000001 ? min(quiet + 1, 10000000) : 0;
+asleep = (quiet > @@RF@@ + 8192) && (muteN <= 0) && (tgt == wcur);
+
+nout = 0;
+nsat = 0;
+s = 0; c = 0; i = 0; o = 0; h = 0; j = 0; g = 0; pos = 0; acc = 0; sat = 0; wo = 0; rr = 0;
+zv = 0; av = 0; row = 0; pb = 0; gi = 0; gf = 0; gg = 0; go = 0; cc = 0; hh = 0;
+tp = tpH;
+run = (mok > 0.5) && (wcur >= 0) && (asleep < 0.5);
+if (run) {
+//@NAM_BODY
+    tpH = tp + 1 >= 1048576 ? 0 : tp + 1;
+}
+nout = fixnan(nout);
+nout = clip(nout, -8, 8);
+
+nG = nG + (dbtoa(normdb) - nG) * 0.002;
+y = nout * nG;
+yn = y;
+
+// DC block (about 4 Hz), then tone stack + cab.
+dcy = fixdenorm(y - dcx + 0.9995 * dcy);
+dcx = y;
+y = dcy;
+cfok = peek(cf, 50, 0);
+if (cfok > 0.5) {
+    for (q = 0; q < 10; q += 1) {
+        b0 = peek(cf, q * 5, 0);
+        b1 = peek(cf, q * 5 + 1, 0);
+        b2 = peek(cf, q * 5 + 2, 0);
+        a1 = peek(cf, q * 5 + 3, 0);
+        a2 = peek(cf, q * 5 + 4, 0);
+        z1 = peek(bz, q * 2);
+        z2 = peek(bz, q * 2 + 1);
+        yq = b0 * y + z1;
+        poke(bz, fixdenorm(b1 * y - a1 * yq + z2), q * 2);
+        poke(bz, fixdenorm(b2 * y - a2 * yq), q * 2 + 1);
+        y = yq;
+    }
+}
+y = fixnan(y);
+
+outG = outG + (dbtoa(outdb) - outG) * 0.002;
+wet = clip(y * outG * fadeG, -4, 4);
+mx = clip(mixamt, 0, 1);
+o2 = dry2 * (1 - mx) + wet * mx;
+out1 = dry1 * (1 - mx) + wet * mx;
+out2 = tapraw > 0.5 ? nout : o2;
+
+// GenExpr has no bitwise &: it silently kills the compile (measured), so counters wrap by compare.
+// Telemetry. (tapraw is a test hook: out 2 = the raw model output.)
+pkIn = max(pkIn, abs(xg));
+pkOut = max(pkOut, abs(wet));
+pkNam = max(pkNam, abs(yn));
+sIn = sIn + xg * xg;
+sOut = sOut + wet * wet;
+satA = satA + nsat;
+xyc = xyc + 1;
+if (xyc >= 4) {
+    xyc = 0;
+    xyh = xyh + 1 >= 512 ? 0 : xyh + 1;
+    poke(scope, nin, 64 + xyh * 2, 0);
+    poke(scope, yn, 64 + xyh * 2 + 1, 0);
+    poke(scope, xyh, 12, 0);
+}
+oh = oh + 1 >= 2048 ? 0 : oh + 1;
+poke(scope, wet, 1088 + oh, 0);
+blk = blk + 1;
+if (blk >= 64) {
+    blk = 0;
+    frames = frames + 1;
+    if (frames >= 1000000) {
+        frames = 0;
+    }
+    alive = alive + 1;
+    if (alive >= 1000000) {
+        alive = 0;
+    }
+    satS = satS + (satA / 64 - satS) * 0.25;
+    poke(scope, frames, 0, 0);
+    poke(scope, samplerate, 1, 0);
+    poke(scope, pkIn, 2, 0);
+    poke(scope, pkOut, 3, 0);
+    poke(scope, gGain, 4, 0);
+    poke(scope, satS, 5, 0);
+    poke(scope, sqrt(sIn / 64), 6, 0);
+    poke(scope, sqrt(sOut / 64), 7, 0);
+    poke(scope, run ? 1 : 0, 8, 0);
+    poke(scope, @@NLAYERS@@, 9, 0);
+    poke(scope, pkNam, 10, 0);
+    poke(scope, asleep ? 1 : 0, 11, 0);
+    poke(scope, oh, 13, 0);
+    poke(scope, (tgt != wcur) || (muteN > 0) ? 1 : 0, 14, 0);
+    poke(scope, alive, 15, 0);
+    for (q = 0; q < @@NLAYERS@@; q += 1) {
+        lv = peek(lsm, q) + (peek(lact, q) - peek(lsm, q)) * 0.3;
+        poke(lsm, run ? lv : peek(lsm, q) * 0.8, q);
+        poke(scope, peek(lsm, q), 16 + q, 0);
+    }
+    pkIn = 0;
+    pkOut = 0;
+    pkNam = 0;
+    sIn = 0;
+    sOut = 0;
+    satA = 0;
+}
