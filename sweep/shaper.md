@@ -40,3 +40,6 @@ No tests rejected or deleted.
 - S4-a..d: not changed (notes only; S4-d likely MCP Bridge, shared code).
 - Gate: typecheck, build, test_shaper, test_shaper_sweep2 (all PASS), preview Read, test_device_static and face_fuzz clean for Better Shaper, vm_smoke PASS (51/51 params, screenshot Read). No DSP change, no VM Max audio; smoke was the Live run.
 - Nothing DEFERRED(shared).
+
+## Review
+Independent review of main...HEAD: rebuild of Better Shaper.amxd is byte-identical to the committed one; typecheck, build, test_shaper, test_shaper_sweep2 (7/7) pass; preview Read clean. No frozen/shared files touched; AGENTS.md change is one exact line in section 3. Tests assert real built-patcher state / real key handler behaviour (not tautologies). Remaining `#0-mseg` mentions in AGENTS.md are in rule 5 / illustrative examples (generic guidance, outside own section; rule 5 itself is a shared section, left alone). Verdict READY. Deferred shared: none (S4-d Max Console codebox warning likely MCP Bridge).
