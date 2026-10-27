@@ -210,7 +210,7 @@ async function selectDevice(trackIdx, devId) {
                 const txt = await lom(`return String(new Global(${JSON.stringify(cfg.ready.global)}).text || "");`).catch(() => "");
                 const hits = String(txt).split("\n").filter((l) => new RegExp(cfg.ready.regex).test(l));
                 // every instance of the device (two instances; a rack may hold several) must report ready: count distinct "[#<id>" tags when present
-                const ids = new Set(hits.map((l) => (/\[#(\d*)/.exec(l) || [0, l])[1]));
+                const ids = new Set(hits.map((l) => (/\[#([^ \]]+)/.exec(l) || [0, l])[1]));
                 if (hits.length && ids.size >= (cfg.readyInstances || 2)) traceHit = hits.slice(-2);
             }
             const m = await maxMeter(TS, 400, 100); peak = peak.map((v, i) => Math.max(v, m[i] || 0));

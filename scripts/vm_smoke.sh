@@ -20,7 +20,7 @@ IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
-slug_of() { print -r -- "${${1:t:r}:l}" | sed 's/[^a-z0-9]/_/g;s/__*/_/g;s/_$//'; }
+slug_of() { local e="${1:e}"; [[ "$e" == adg ]] && e=_adg || e=; print -r -- "${${1:t:r}:l}$e" | sed 's/[^a-z0-9]/_/g;s/__*/_/g;s/_$//'; }
 
 sync_repo() {
   "${SSH[@]}" "mkdir -p ~/$VMDIR" && rsync -az --delete --exclude .git --exclude node_modules --exclude previews \
