@@ -265,7 +265,7 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 
 ### `v8ui` + Audio-Rate `buffer~` Integration
 - `obj-mseg` (`maxclass: "v8ui"`) embeds the ES6+ script inline via `"textfile": { "text": ..., "filename": "none", "flags": 0, "embed": 1, "autowatch": 1 }`.
-- `obj-buf` (`buffer~ #0-mseg @samps 4096`) holds the 4096-sample lookup table. On startup, `loadmess setbuffer #0-mseg` passes the unique `#0-mseg` buffer name to `v8ui`, which writes all 4096 samples via `new Buffer(bufName).poke(1, 0, samples)` whenever the curve changes.
+- `obj-buf` (`buffer~ ---mseg @samps 4096`; Live does not expand `#0` in a top-level device, so `---` is used) holds the 4096-sample lookup table. On startup, `loadmess setbuffer ---mseg` passes the per-instance expanded name to `v8ui`, which writes all 4096 samples via `new Buffer(bufName).poke(1, 0, samples)` whenever the curve changes.
 - `v8ui` Outlet 0 emits `["loop", loopStart, loopSpan]` to window the MSP `phasor~` phase into `[loopStart, loopStart + loopSpan]`, and `["syncphase", phase]` to align `phasor~` with Ableton Live's 1-PPQ arrangement timeline position (`plugsync~` outlet 6) in Sync mode.
 - `v8ui` Outlet 1 emits the LFO frequency in Hz to `phasor~` (automatically scaled by `1 / loopSpan` when a loop sub-region is active so tempo-synced subdivisions keep constant musical speed). Sync index 0 is 1/64 (`ratesync(0)`); a missing index still falls back to 1/4.
 

@@ -30,3 +30,13 @@ Stage C, independent. Ran `node tests/test_shaper_sweep2.js`: all red tests fail
 - SH-5 KEEP (S3, cosmetic): the Live smoke screenshot (tests/out/smoke/better_shaper/default.png) shows Jitter/Smooth/Offset as "0.00" and Phase as "0.00 %". The width assertion is a heuristic proxy, but it matches the observed cause (32-34 px vs 38 px).
 - S4-a..d: no tests, left as notes. S4-d is likely the MCP Bridge, not Shaper.
 No tests rejected or deleted.
+
+## Fix
+- SH-1 fixed: `buffer~ ---mseg`, `loadmess setbuffer ---mseg`, `index~ ---mseg` (v8ui already takes the name via `setbuffer`); AGENTS section 3 line updated.
+- SH-2 fixed: SyncRate short name -> `Sync Rate` (long name/order unchanged); the dial label now reads "Sync Rate".
+- SH-3 fixed: Esc (keycode -3 / char 27) now clears selection before the delete branch.
+- SH-4 fixed: keycodes 51/117 removed from delete; 8/127/-4 (and -3 without char 27) still delete.
+- SH-5 fixed: Jitter/Smooth/Offset 38 px wide (Smooth/Offset moved to x=395, labels narrowed); Live smoke shows "0.00 %" on all.
+- S4-a..d: not changed (notes only; S4-d likely MCP Bridge, shared code).
+- Gate: typecheck, build, test_shaper, test_shaper_sweep2 (all PASS), preview Read, test_device_static and face_fuzz clean for Better Shaper, vm_smoke PASS (51/51 params, screenshot Read). No DSP change, no VM Max audio; smoke was the Live run.
+- Nothing DEFERRED(shared).

@@ -372,7 +372,7 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [30.0, 140.0, 175.0, 20.0],
-                "text": "buffer~ #0-mseg @samps 4096"
+                "text": "buffer~ ---mseg @samps 4096"
             }
         },
         {
@@ -385,7 +385,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [30.0, 175.0, 175.0, 20.0],
-                "text": "loadmess setbuffer #0-mseg"
+                "text": "loadmess setbuffer ---mseg"
             }
         },
         {
@@ -872,7 +872,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [400.0, 320.0, 38.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [321.0, 48.0, 34.0, 15.0],
+                "presentation_rect": [321.0, 48.0, 38.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Jitter",
@@ -899,7 +899,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [450.0, 320.0, 48.0, 18.0],
                 "presentation": 1,
-                "presentation_rect": [358.0, 47.0, 45.0, 16.0],
+                "presentation_rect": [360.0, 47.0, 34.0, 16.0],
                 "text": "Smooth",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
                 "textjustification": 0
@@ -920,7 +920,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [500.0, 320.0, 38.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [399.0, 48.0, 32.0, 15.0],
+                "presentation_rect": [395.0, 48.0, 38.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Smooth",
@@ -1032,7 +1032,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [600.0, 240.0, 42.0, 18.0],
                 "presentation": 1,
-                "presentation_rect": [358.0, 63.0, 40.0, 16.0],
+                "presentation_rect": [360.0, 63.0, 34.0, 16.0],
                 "text": "Offset",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
                 "textjustification": 0
@@ -1053,7 +1053,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [600.0, 260.0, 38.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [399.0, 64.0, 32.0, 15.0],
+                "presentation_rect": [395.0, 64.0, 38.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Offset",
@@ -1239,7 +1239,7 @@ def build():
                         "parameter_linknames": 1,
                         "parameter_longname": "SyncRate",
                         "parameter_mmax": 15,
-                        "parameter_shortname": "Rate",
+                        "parameter_shortname": "Sync Rate",
                         "parameter_type": 2,
                         "parameter_unitstyle": 9
                     }
@@ -1628,7 +1628,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": ["signal"],
                 "patching_rect": [295.0, 372.0, 92.0, 20.0],
-                "text": "index~ #0-mseg"
+                "text": "index~ ---mseg"
             }
         },
 
