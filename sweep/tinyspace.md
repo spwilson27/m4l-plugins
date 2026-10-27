@@ -31,3 +31,11 @@ Red run: `node tests/test_tinyspace_sweep2.js` -> 3 checks fail for the stated r
 Gate: typecheck, build, test_tinyspace, bugsweep, test_tinyspace_sweep2 (both ok), preview read, test_device_static (Tiny Space 0 violations), test_face_fuzz 0 failures, vm_smoke PASS (12/12 params, meters 0.86).
 Not run: VM Max audio suite (no vm_tinyspace.sh wrapper; the runner would have launched Max on the host, so it was aborted at once and nothing was left running). The DSP change is a 2.6 ms gain slew on the seed/character duck; covered by smoke only.
 No AGENTS.md edit (S4-01 70-vs-72 float note left for a docs pass).
+
+## Review
+- git diff main...HEAD: one build line (dial textcolor), one core line (duck slew), test file, report, smoke outputs. No frozen/shared files or AGENTS.md touched.
+- Fresh rebuild equals committed Tiny Space.amxd (git diff --stat devices/ empty). typecheck, test_tinyspace, sweep2 test pass.
+- Test cleanup: removed dead vm/event scaffolding and a stale "must duck BEFORE poke" comment left from the rejected TS-S2-01a. Both remaining tests are source/patcher checks (implementation-specific, but they fail on the pre-fix code).
+- Slew starts at 0 with duck default 1: ~3 ms fade-in at load, benign.
+- Gap: the 2.6 ms duck slew is not covered by a Max audio case (no vm_tinyspace wrapper); smoke only.
+- Deferred shared items: none (S4-01 70 vs 72 float doc note left for a docs pass).

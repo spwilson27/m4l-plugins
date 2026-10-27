@@ -1,10 +1,8 @@
 #!/usr/bin/env node
-/** Sweep 2 red tests for Tiny Space (expected to FAIL until the fixes land). */
+/** Sweep 2 tests for Tiny Space (expected to FAIL until the fixes land). */
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const vm = require("vm");
-const zlib = require("zlib");
 const ROOT = path.resolve(__dirname, "..");
 let fails = 0;
 function check(id, cond, msg) {
@@ -29,26 +27,9 @@ const boxes = patcher.boxes.map((b) => b.box);
         bad.length + " of " + dials.length + " live.dial boxes have no light textcolor (" + bad.map((b) => b.varname).join(",") + ")");
 }
 
-// TS-S2-01: a seed / character change must duck BEFORE the new config reaches the gen, and the
-// gen must smooth the duck gain. Current code pokes the config first, then bangs the duck, and
-// duckG = clip(duck) is an unsmoothed step (hard cut of the ringing tail = click).
+// TS-S2-01b: the gen duck gain must be smoothed; duckG = clip(duck) is an unsmoothed step that
+// hard-cuts the ringing tail on a seed / character change (click).
 {
-    const events = [];
-    const ctx = {
-        console, Math, Date, Array, Number, String, Object, Float32Array,
-        post() {}, outlet(i, m) { events.push("outlet:" + m); },
-        mgraphics: { init() {}, redraw() {}, size: [152, 74] },
-        Buffer: function () { this.poke = function () { events.push("poke"); }; this.peek = function () { return 0; }; },
-        Task: function () { this.schedule = function () {}; this.repeat = function () {}; },
-        Global: function () {}, File: function () {}, module: undefined,
-    };
-    vm.createContext(ctx);
-    const src = fs.readFileSync(path.join(ROOT, "src", "tinyspace_config.js"), "utf8") +
-        "\nvar GEN_DSP_TEXT='';var GEN_DSP_HASH='x';\n" + fs.readFileSync(path.join(ROOT, "src", "tinyspace_ui.js"), "utf8");
-    vm.runInContext(src, ctx);
-    vm.runInContext("setbuffer('a','b');set_seed(100);events_marker=1;", ctx);
-    events.length = 0;
-    vm.runInContext("set_seed(700)", ctx);
     const core = fs.readFileSync(path.join(ROOT, "src", "tinyspace_core.genexpr"), "utf8");
     check("TS-S2-01b", /duckG\s*=\s*slew\(/.test(core),
         "gen duck gain is not slewed: duckG = clip(duck, 0, 1) steps to 0 and cuts the tail");
