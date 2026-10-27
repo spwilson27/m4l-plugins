@@ -12,7 +12,7 @@
 // ---- metas, faces, sizes ----------------------------------------------------------------------------------------
 var DV_METAS = ["Snap", "Pitch", "Body", "Motion", "Space", "Echo", "Grit", "Ring"];
 var DV_META_KEYS = ["snap", "pitch", "body", "motion", "space", "echo", "grit", "ring"];
-var DV_FACES = ["Roulette", "Constellation", "Lanes", "Tube", "Matrix", "Stub"];
+var DV_FACES = ["Roulette", "Constellation", "Lanes", "Tube", "Matrix"];
 var DV_CHAINS = ["T", "B", "L"]; // transient, body, long (the ringing tail)
 var DV_PITCH_META = 1; // bipolar: neutral at 50
 var DV_RING_META = 7;
