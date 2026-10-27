@@ -26,7 +26,7 @@ set -u
 VM=macos-1
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIR="${SPECTRAL_VM_DIR:-ableton-spectral}"   # own VM checkout (rsync --delete): never share ~/ableton with other sessions
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton-spectral "${SPECTRAL_VM_DIR:-}"; DIR="$VMREL"   # own VM checkout (rsync --delete): never share ~/ableton with other sessions
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")

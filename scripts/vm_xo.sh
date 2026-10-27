@@ -25,13 +25,14 @@ export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 XO_DEV="XO Sample Map"
 SHOT_DIR="${XO_SHOT_DIR:-/private/tmp/claude-501/-Users-mrwilson-software-ableton/b8ec0495-a030-41af-b9b0-e092509b2aec/scratchpad}"
 
 sync_repo() {
   rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
-    --exclude '*_test.als' -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
+    --exclude '*_test.als' -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
@@ -46,14 +47,14 @@ case "${1:-}" in
   max)
     (cd "$ROOT" && XO_RUN_MAX_RUNTIME=1 node tests/test_xo_map.js >/dev/null) || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/run_xo_runtime_test.py' ;;
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_xo_runtime_test.py' ;;
   live)
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_xo_map.py >/dev/null &&
-      /usr/bin/python3 scripts/make_xo_set.py --out "$HOME/ableton/xo_test.als" --xo "devices/'"$XO_DEV"'.amxd" --track-name "'"$XO_DEV"'" || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_xo_map.py >/dev/null &&
+      /usr/bin/python3 scripts/make_xo_set.py --out "$HOME/'"$VMREL"'/xo_test.als" --xo "devices/'"$XO_DEV"'.amxd" --track-name "'"$XO_DEV"'" || exit 1
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       find "$HOME/Library/Preferences/Ableton" -maxdepth 2 \( -name CrashRecoveryInfo.cfg -o -name CrashDetection.cfg \) -delete;  # (an unmatched glob aborts rm in the VM zsh)
-      open -a "Ableton Live 12 Suite" "$HOME/ableton/xo_test.als" &&
+      open -a "Ableton Live 12 Suite" "$HOME/'"$VMREL"'/xo_test.als" &&
       for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
       echo "bridge did not come up" >&2; exit 1' ;;
   test)

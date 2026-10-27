@@ -11,7 +11,8 @@ KEYS="$ROOT/scripts/vm_megamod_keys.sh"
 if [ $# -gt 0 ]; then names=("$@"); else names=(dsp auto faces reload selfmod dmod newmods delete midi remote_depth); fi
 bad=0
 first=1
-SET='~/Software/ableton-mmnames/megamod_keys_test.als'
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-mmnames "${MM_VM_DIR:-}"
+SET="~/$VMREL/megamod_keys_test.als"
 for n in $names; do
   case $n in
     dsp) cmd=(run scripts/test_megamod_dsp_live.js);;

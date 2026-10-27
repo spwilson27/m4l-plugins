@@ -24,11 +24,12 @@ export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
   rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
-    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
+    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
@@ -41,18 +42,18 @@ case "${1:-}" in
   sync)
     sync_repo ;;
   audio)
-    sync_repo && "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/run_envtrig_audio_tests.py' ;;
+    sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_envtrig_audio_tests.py' ;;
   ui)
-    sync_repo && "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/run_envtrig_ui_tests.py' ;;
+    sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_envtrig_ui_tests.py' ;;
   live)
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_envtrig.py >/dev/null &&
-      DEV="$HOME/ableton/devices/Envelope Trigger.amxd" &&
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_envtrig.py >/dev/null &&
+      DEV="$HOME/'"$VMREL"'/devices/Envelope Trigger.amxd" &&
       /usr/bin/python3 scripts/make_delayplus_sets.py --start "$DEV" --end "$DEV" --name "Envelope Trigger" \
-        --track "Envelope Trigger::$DEV" --als "$HOME/ableton/envtrig_test.als" >/dev/null &&
+        --track "Envelope Trigger::$DEV" --als "$HOME/'"$VMREL"'/envtrig_test.als" >/dev/null &&
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
-      open -a "Ableton Live 12 Suite" "$HOME/ableton/envtrig_test.als" &&
+      open -a "Ableton Live 12 Suite" "$HOME/'"$VMREL"'/envtrig_test.als" &&
       for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
       echo "bridge did not come up" >&2; exit 1' ;;
   test)

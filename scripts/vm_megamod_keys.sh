@@ -21,7 +21,7 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
-VMREL="${MM_VM_DIR:-Software/ableton-mmnames}"   # the VM checkout (relative to the VM home); MM_VM_DIR lets a second run use its own
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-mmnames "${MM_VM_DIR:-}"; VMREL="$VMREL"   # the VM checkout (relative to the VM home); MM_VM_DIR lets a second run use its own
 VMDIR="\$HOME/$VMREL"
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -21,11 +21,12 @@ export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
   rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
-    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
+    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
@@ -38,13 +39,13 @@ case "${1:-}" in
   sync)
     sync_repo ;;
   audio)
-    sync_repo && "${SSH[@]}" "cd ~/ableton && /usr/bin/python3 scripts/run_reverbplus_audio_tests.py ${*:2}" ;;
+    sync_repo && "${SSH[@]}" "cd ~/${VMREL} && /usr/bin/python3 scripts/run_reverbplus_audio_tests.py ${*:2}" ;;
   live)
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_reverbplus.py >/dev/null &&
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_reverbplus.py >/dev/null &&
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
-      open -a "Ableton Live 12 Suite" "$HOME/ableton/reverbplus_test.als" &&
+      open -a "Ableton Live 12 Suite" "$HOME/'"$VMREL"'/reverbplus_test.als" &&
       for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
       echo "bridge did not come up" >&2; exit 1' ;;
   test)

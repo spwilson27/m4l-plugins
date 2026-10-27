@@ -5,13 +5,14 @@ set -u
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VM=macos-1
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton-clipper "${CLIPPLUS_VM_DIR:-}"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"
 [ -n "$IP" ] || { echo "VM $VM is not running" >&2; exit 1; }
-SSHPASS=admin sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}" 'mkdir -p ~/ableton-clipper/devices; rm -f /tmp/clipplus_dsp.txt'
+SSHPASS=admin sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}" "mkdir -p ~/$VMREL/devices; rm -f /tmp/clipplus_dsp.txt"
 export SSHPASS=admin
 rsync -az -e "sshpass -e ssh -o StrictHostKeyChecking=accept-new" \
-  "$ROOT/devices/Clip+.amxd" "admin@${IP}:ableton-clipper/devices/Clip+.amxd"
-DEV="$(SSHPASS=admin sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}" 'echo $HOME/ableton-clipper/devices/Clip+.amxd')"
+  "$ROOT/devices/Clip+.amxd" "admin@${IP}:${VMREL}/devices/Clip+.amxd"
+DEV="$(SSHPASS=admin sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}" "echo \$HOME/$VMREL/devices/Clip+.amxd")"
 SHOT="${1:-/tmp/clipplus_live.png}"
 
 run() {

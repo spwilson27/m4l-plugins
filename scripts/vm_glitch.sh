@@ -15,7 +15,7 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
-VM_DIR="${GLITCH_VM_DIR:-Software/ableton-glitch}"
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-glitch "${GLITCH_VM_DIR:-}"; VM_DIR="$VMREL"
 WAV=/tmp/glitch_test_220.wav
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

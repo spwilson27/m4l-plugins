@@ -20,11 +20,12 @@ export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
   rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
-    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
+    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
@@ -37,13 +38,13 @@ case "${1:-}" in
   sync)
     sync_repo ;;
   audio)
-    sync_repo && "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/run_delayplus_audio_tests.py' ;;
+    sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_delayplus_audio_tests.py' ;;
   live)
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_delayplus.py >/dev/null' || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_delayplus.py >/dev/null' || exit 1
     # reopen the Set in the running Live (loads the rebuilt devices, ~3 s); DP_COLD=1 = kill + relaunch (~8-10 s)
-    if [ -n "${DP_COLD:-}" ]; then "$ROOT/scripts/vm_live_open.sh" cold '~/ableton/delayplus_test.als'
-    else "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/delayplus_test.als' --fresh; fi ;;
+    if [ -n "${DP_COLD:-}" ]; then "$ROOT/scripts/vm_live_open.sh" cold "~/${VMREL}/delayplus_test.als"
+    else "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/delayplus_test.als" --fresh; fi ;;
   test)
     "${SSH[@]}" -N -L "${LOCAL_PORT}:127.0.0.1:9877" &
     TUNNEL=$!
