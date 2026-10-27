@@ -18,3 +18,11 @@ Open: Reactive 2 smoke and remaining audio groups (queued behind other lanes' Li
 - S-2 (test_sampler_theme.js FACE_PARAMS regex): KEEP as S4 test-bug note, no red test to verify; fix the test, not product.
 - S-3 (AGENTS drift on Reactive 2 width): KEEP as S4 doc nit, no test.
 - S-4 (preview crowding): REJECT as a finding. Preview renderer is approximate, unverified in Live, no test.
+
+## Fix
+- S-1 FIXED (commit "fix(sampler): per-instance ---bs buffer names..."): build_sampler.py now uses `---bs*` for every buffer~/receive/gen-bind message; v8ui scripts no longer hard-code `#0-` names. `setbuffers` takes 9 args (samp voices scope pitch debug mpe wt1 wt2 samp2); Reactive 2 uses them for OSC2 / wavetable buffers (`setmodbufs` already carried mod/mseg/slot). The face publishes its expanded debug name in `Global("better_sampler_hooks").map[LOM id]`; scripts/test_sampler_live.js and run_sampler_wt_face_test.py look it up. tests/test_sampler_sweep2.js now passes (was 34 failures). AGENTS section 14 note added. Audio harness runners keep literal `#0-` names (standalone harness patcher, no Live), unchanged, DSP unchanged so no audio re-run.
+- S-2 FIXED: test_sampler_theme.js regexes evaluate the minified literals; the Bitwig golden hashes were stale before this lane (identical before/after my change; verified by building the previous commit) and were refreshed.
+- S-3 not fixed (S4 doc drift in Reactive 2 widths): deferred, nit.
+- S-4 rejected in verify.
+- Gate: typecheck, build, test_sampler / slicing / pitch / designs / reactive2 / theme / modmatrix / bugsweep / sweep2, test_face_fuzz (0 failures), test_device_static (both devices ok), previews rendered and read: all green.
+- Smoke (Live, VM): Better Sampler PASS 91/91 params, Reactive 2 PASS (139/219 within the 240 s budget), two-load DSP ready in both, no crash. Screenshots read: faces render; a Max Console window overlaps the capture (harness artefact). Not run: scripts/test_sampler_live.js after the hook change (needs the Live lock; the lookup code is untested in Live) -> recommend one batch run before merge.
