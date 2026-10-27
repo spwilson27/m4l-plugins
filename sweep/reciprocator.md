@@ -18,3 +18,9 @@ Counts: S1 0, S2 0, S3 1, S4 6.
 ## Checked, no finding
 Gate/Ceiling line drag inverse maps and clamps (-72..-6, -18..0); Rev Gate and output modes (audio: rev_gate, ceiling, limiter, audiorate); parameter table ranges/defaults match AGENTS; mirrors via `set` do not loop; extremes finite and bounded; Mix 0 = dry exactly.
 Not checked: multi-instance scope isolation in Live (smoke only loads two instances for parameter isolation), Lookahead 0 sample-exact latency.
+
+## Verify
+- KEEP RC-01 (tests/test_reciprocator_sweep2.js): reran, fails for the six live.dial boxes lacking textcolor; smoke default.png confirms dial names/values are ghosted on the dark panels. Real S3, not an iteration-1 item, deterministic static check.
+- KEEP audio cases `extremes` and `mix0_dry` (run_reciprocator_audio_tests.py): not red; regression coverage with sound expectations (ceiling 0 dB bound; Mix 0 = dry 0.25 per AGENTS/Stage A+B run).
+- RC-02..RC-07 (S4, log only, no tests): no test to verify; accepted as notes. RC-02 doc drift is correct (device uses ---recipscope).
+- No tests rejected.
