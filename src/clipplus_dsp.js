@@ -14,7 +14,7 @@ var CP_DSP_SETTLE_MS = 300;
 var CP_DSP_FIRST_TIMEOUT_MS = 8000;
 var CP_DSP_TIMEOUT_MS = 12000;
 var cpDspToken = Math.random();
-var cpBufName = "#0-clipscope";
+var cpBufName = "---clipscope";
 
 function cpDspTimeout() {
     return cpDsp.retries === 0 ? CP_DSP_FIRST_TIMEOUT_MS : CP_DSP_TIMEOUT_MS;

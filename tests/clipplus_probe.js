@@ -53,8 +53,10 @@ function analyze(durMs) {
     }
     var midRms = nch ? Math.sqrt(midSq / nch) : 0;
     var sideRms = nch ? Math.sqrt(sideSq / nch) : 0;
+    var third = rec.channelcount() >= 3 ? readCh(rec, 3, n) : [];
     var report = new File(resultPath, "write", "TEXT");
     report.eof = 0;
+    report.writestring("idx1 " + firstIdx(left) + "\nidx3 " + firstIdx(third) + "\n");
     var scope = scopeBuffer();
     var grDb = peek1(scope, 5);
     var drvPk = peek1(scope, 11);
@@ -125,6 +127,12 @@ function goertzel(samples, freq, sr) {
     var re = s1 - s2 * cw;
     var im = s2 * Math.sin(w);
     return Math.sqrt(re * re + im * im) * 2 / n;
+}
+
+// First sample (1-based, 0 = none) of a channel whose magnitude passes 0.02.
+function firstIdx(samples) {
+    for (var i = 0; i < samples.length; i++) { var v = samples[i]; if ((v < 0 ? -v : v) > 0.02) return i + 1; }
+    return 0;
 }
 
 function firCoef() {
