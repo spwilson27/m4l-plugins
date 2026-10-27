@@ -20,3 +20,14 @@ Counts: S1 0, S2 5, S3 0, S4 6.
 | CP-09 | S4 | Toggle `str_for_value` reads `val1`/`val2` in Live for the live.text parameters (Delta, DC, 4x, ...). | smoke report | log only |
 | CP-10 | S4 | `ext_filt` (Low Cut 12 kHz, Q 10, +24 dB input and drive) is bounded only because of CP-05 behaviour: peak 28. No NaN. | audio | covered by CP-05 |
 | CP-11 | gap | Added audio cases: latency (impulse), extremes (no NaN), ceiling with filter; Live check scripts/test_clipplus_sweep2_live.js + sweep/run_live.sh. | | |
+
+## Verify
+Independent stage C. Ran tests/test_clipplus_sweep2.js (3 FAIL as stated) and VM audio lat_d100, lat_d100_floor, ceil_filt_shelf, ceil_filt_cut (reproduced: impulse lost on STFT path, floor variant passes; peaks 2.16 / 0.59 vs 0.50 ceiling).
+- CP-01 KEEP: csApplyLayout (src/clipplus_ui.js) has no csMoveBox for True Peak while every other Options button moves; real layout bug, fails for stated reason.
+- CP-02 KEEP: obj-btn-chmode is a live.text without parameter_enable 0; Live lists/sweeps it and cycles Channel Mode (explains F10). Test criterion is sound.
+- CP-03 KEEP: literal #0 in top-level device is shared across instances (AGENTS 15); Live two-instance evidence recorded; AGENTS 29 claim is wrong. Not an iteration-1 item.
+- CP-04 KEEP: core's pkHop < 1e-5 gate judges only the newest 256-sample hop of a 1024 frame, so a signal ending in digital silence loses its last frames; floor variant passes, proving the cause; expected delay 1047 matches patcher latency.
+- CP-05 KEEP: Hard Limit/True Peak sit before the post-emphasis stage, so the output exceeds Ceiling with the Filter on (2.16 vs 0.50). AGENTS 29 states Hard Limit is a sample clip at Ceiling; the 12 dB overshoot is user-visible. Fix may alternatively be a documented design change, but the test stands.
+- CP-06..CP-10 (log only, no tests): CP-06, CP-07, CP-09 accepted as S4 nits; CP-08 (F9) not reproduced, accepted as no-bug; CP-10 covered by CP-05.
+- scripts/test_clipplus_sweep2_live.js: KEEP, Live-only, not re-run here (checks F8 with two instances).
+Rejected: none.
