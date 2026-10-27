@@ -106,6 +106,7 @@ var DV_PARAMS = [
     ["l_ring", "Ring Lock", "L Ring", 0, 1, 0, 2, 9, 1, "dvl7", 1],
     ["midi_in", "MIDI From", "MIDI In", 0, 1, 0, 2, 9, 1, null, 1],
     ["arch", "Architecture", "Arch", 0, 1000, 0, 0, 9, 1, null, 1],
+    ["amode", "Arch Mode", "Mode", 0, 3, 0, 2, 9, 1, null, 1],
 ];
 /** key -> index into DV_PARAMS */
 var DV_PARAM_INDEX = {};
@@ -291,7 +292,38 @@ var DV_HIDDEN = [
     { id: "ring_hz", chain: "B", fx: "ring", meta: 6, curve: "log", lo: 70, hi: 1500, kind: "C", jit: 0.1 },
     { id: "sat_amt", chain: "B", fx: "sat", meta: 6, curve: "lin", lo: 0, hi: 0.9, kind: "A", jit: 0.08 },
     { id: "tr_s", chain: "L", fx: "ring", meta: 7, curve: "log", lo: 0.05, hi: 1.83, kind: "C", jit: 0 },
+    // Rows 36..63 (appended with the Arch Modes). In Arch 0 and every Classic Arch each holds the constant the DSP used before it existed
+    // (lo = hi), so nothing changes there; the Wonky / Natural / Glitch generators give them ranges.
+    { id: "tape_wet", chain: "B", fx: "tape", meta: 1, curve: "lin", lo: 0, hi: 0, kind: "A", jit: 0 }, // varispeed / tape stop / stutter replaces the hit
+    { id: "tape_st", chain: "B", fx: "tape", meta: 1, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // read rate at the hit in semitones (> 0 plays at 0)
+    { id: "tape_glide", chain: "B", fx: "tape", meta: 1, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // semitones added over tape_ms (tape stop: -36..-60)
+    { id: "tape_ms", chain: "B", fx: "tape", meta: 1, curve: "lin", lo: 300, hi: 300, kind: "C", jit: 0 },
+    { id: "loop_ms", chain: "B", fx: "tape", meta: 1, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // stutter: the first loop_ms repeats (< 4 = off)
+    { id: "loop_step", chain: "B", fx: "tape", meta: 1, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // semitones added per repeat
+    { id: "gate_wet", chain: "L", fx: "gate", meta: 3, curve: "lin", lo: 0, hi: 0, kind: "A", jit: 0 }, // chops the whole output (dry included)
+    { id: "gate_hz", chain: "L", fx: "gate", meta: 3, curve: "lin", lo: 8, hi: 8, kind: "C", jit: 0 },
+    { id: "gate_duty", chain: "L", fx: "gate", meta: 3, curve: "lin", lo: 0.5, hi: 0.5, kind: "C", jit: 0 },
+    { id: "zap_wet", chain: "B", fx: "zap", meta: 3, curve: "lin", lo: 0, hi: 0, kind: "A", jit: 0 }, // resonant low-pass swept f0 -> f1 over zap_ms
+    { id: "zap_f0", chain: "B", fx: "zap", meta: 3, curve: "lin", lo: 4000, hi: 4000, kind: "C", jit: 0 },
+    { id: "zap_f1", chain: "B", fx: "zap", meta: 3, curve: "lin", lo: 300, hi: 300, kind: "C", jit: 0 },
+    { id: "zap_ms", chain: "B", fx: "zap", meta: 3, curve: "lin", lo: 120, hi: 120, kind: "C", jit: 0 },
+    { id: "zap_res", chain: "B", fx: "zap", meta: 3, curve: "lin", lo: 0.7, hi: 0.7, kind: "C", jit: 0 },
+    { id: "bend_st", chain: "B", fx: "pitch", meta: 1, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // grain shift starts bend_st away, glides back
+    { id: "bend_ms", chain: "B", fx: "pitch", meta: 1, curve: "lin", lo: 120, hi: 120, kind: "C", jit: 0 },
+    { id: "ring_sweep", chain: "B", fx: "ring", meta: 6, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // ring-mod frequency, octaves per second
+    { id: "vowel_sweep", chain: "B", fx: "form", meta: 2, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // vowels per second (folds 0..4..0)
+    { id: "res_kind", chain: "B", fx: "res", meta: 2, curve: "step", lo: 0, hi: 0, kind: "D", jit: 0 }, // 0 stretched harmonic, 1 membrane, 2 bar, 3 bell, 4 tube
+    { id: "res_drop", chain: "B", fx: "res", meta: 2, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // modes start (1 + drop) higher, fall in 60 ms
+    { id: "spec_wet", chain: "L", fx: "spec", meta: 4, curve: "lin", lo: 0, hi: 0, kind: "A", jit: 0 }, // 512-point STFT send (640 samples late)
+    { id: "spec_op", chain: "L", fx: "spec", meta: 4, curve: "step", lo: 0, hi: 0, kind: "D", jit: 0 }, // 0 freeze, 1 bin shift, 2 thin, 3 robot / whisper
+    { id: "spec_amt", chain: "L", fx: "spec", meta: 4, curve: "lin", lo: 0.5, hi: 0.5, kind: "C", jit: 0 },
+    { id: "drive_shape", chain: "T", fx: "drive", meta: 6, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 }, // added to the shape (tanh, fold, hard, asym)
+    { id: "crush_sr", chain: "T", fx: "crush", meta: 6, curve: "lin", lo: 1, hi: 1, kind: "C", jit: 0 }, // multiplies the sample-and-hold period
+    { id: "grain_spray", chain: "B", fx: "pitch", meta: 1, curve: "lin", lo: 0.05, hi: 0.05, kind: "C", jit: 0 },
+    { id: "dly_pp", chain: "L", fx: "dly", meta: 5, curve: "lin", lo: 0.5, hi: 0.5, kind: "C", jit: 0 },
+    { id: "form_shift", chain: "B", fx: "form", meta: 2, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 },
 ];
+var DV_HIDDEN_CLASSIC = 36; // rows the Classic generator (and Arch 0) maps; the rest keep their constant there
 var DV_HIDDEN_COUNT = DV_HIDDEN.length;
 /** hidden id -> row index */
 var DV_HIDDEN_INDEX = {};
@@ -356,6 +388,16 @@ var DV_ARCH_ENV = {
     dly_ms: { b: [25, 600], log: 1, span: 0.3 }, dly_fb: { b: [0.05, 0.8], span: 0.3 }, ring_hz: { b: [25, 3000], log: 1, span: 0.3 },
     win_t_ms: { b: [8, 30], span: 0.3 }, win_r_ms: { b: [90, 240], span: 0.3 },
     form_vowel: { b: [0, 4], nmin: 2 }, crush_bits: { b: [0, 8], nmin: 3 }, conv_ir: { b: [0, 9], nmin: 3 },
+    // the rows appended with the Arch Modes (Classic keeps them constant; a mode's own envelope replaces these)
+    tape_wet: { abs: [0.6, 1] }, gate_wet: { abs: [0.5, 0.95] }, zap_wet: { abs: [0.5, 1] }, spec_wet: { abs: [0.5, 1] },
+    tape_st: { b: [-12, 0], span: 0.3 }, tape_glide: { b: [-48, 0], span: 0.3 }, tape_ms: { b: [60, 1500], log: 1, span: 0.3 },
+    loop_ms: { b: [0, 0], span: 1 }, loop_step: { b: [-4, 4], span: 0.3 }, gate_hz: { b: [3, 32], log: 1, span: 0.3 },
+    gate_duty: { b: [0.2, 0.75], span: 0.3 }, zap_f0: { b: [800, 10000], log: 1, span: 0.3 }, zap_f1: { b: [70, 2500], log: 1, span: 0.3 },
+    zap_ms: { b: [30, 800], log: 1, span: 0.3 }, zap_res: { b: [0.3, 0.93], span: 0.3 }, bend_st: { b: [-12, 12], span: 0.3 },
+    bend_ms: { b: [30, 500], log: 1, span: 0.3 }, ring_sweep: { b: [-3, 3], span: 0.3 }, vowel_sweep: { b: [-6, 6], span: 0.3 },
+    res_kind: { b: [0, 4], nmin: 1 }, res_drop: { b: [0, 0.8], span: 0.3 }, spec_op: { b: [0, 3], nmin: 1 }, spec_amt: { b: [0, 1], span: 0.3 },
+    drive_shape: { b: [0, 2.5], span: 0.3 }, crush_sr: { b: [1, 24], log: 1, span: 0.3 }, grain_spray: { b: [0, 0.6], span: 0.3 },
+    dly_pp: { b: [0, 1], span: 0.3 }, form_shift: { b: [-12, 12], span: 0.3 },
 };
 var DV_ARCH_FAMILIES = ["snap", "click", "filt", "pitch", "res", "comb", "form", "phas", "chor", "conv", "rev", "dly", "slap", "drive", "crush", "ring", "sat"];
 
@@ -371,11 +413,15 @@ function dvFactoryMap() {
 
 var dvArchCache = {};
 /**
- * The hidden map of an architecture (0..1000, rounded): one row per DV_HIDDEN row. Deterministic (mulberry32 of the Arch value).
+ * The hidden map of an architecture (0..1000, rounded) under an Arch Mode (0 Classic, the default): one row per DV_HIDDEN row.
+ * Deterministic (mulberry32 of the Arch value).
  * @param {number} arch
+ * @param {number} [mode]
  */
-function dvArchMap(arch) {
+function dvArchMap(arch, mode) {
     var a = Math.round(dvClamp(Number(arch) || 0, 0, DV_ARCH_MAX));
+    var md = Math.round(dvClamp(Number(mode) || 0, 0, DV_MODES.length - 1));
+    if (md > 0) return dvModeMap(a, md);
     if (dvArchCache[a]) return dvArchCache[a];
     var map = dvFactoryMap();
     if (a === 0) return (dvArchCache[a] = map);
@@ -392,7 +438,7 @@ function dvArchMap(arch) {
     var perm = [0, 1, 2, 3, 4, 5, 6];
     for (i = 6; i > 0; i--) { j = pick(i + 1); var tp = perm[i]; perm[i] = perm[j]; perm[j] = tp; }
     for (i = 0; i < 7; i++) famMeta[fam[i]] = perm[i];
-    for (i = 0; i < DV_HIDDEN.length; i++) {
+    for (i = 0; i < DV_HIDDEN_CLASSIC; i++) {
         var r = DV_HIDDEN[i], row = map[i], env = DV_ARCH_ENV[r.id];
         row.jit = r.jit ? 1 + r.jit * (2 * rnd() - 1) : 1;
         if (r.id === "tr_s") continue; // Ring -> Tr stays: the 2.0 s cap and the Ring law rest on it
@@ -442,6 +488,198 @@ function dvArchMap(arch) {
         }
     }
     return (dvArchCache[a] = map);
+}
+
+// ---- Arch Modes (parameter `amode`): Classic is the generator above; the others build their own architectures --------------------
+// Wonky:   squelchy, rubbery, Tipper-like: pitch bends, tape stops, resonant zaps, vowel and ring-mod sweeps, fold distortion; Ring up to 8 s.
+// Natural: the metas keep their meaning: Snap = strike / mallet, Pitch = tuning (tape varispeed below 50, grain shift, the resonator's pitch),
+//          Body = a physical resonator (membrane, bar, bell, tube modes, strike pitch drop), Space = room / plate IRs, Echo = slap / short
+//          delay, Grit = gentle saturation; Ring up to 2 s.
+// Glitch:  spectral freeze / shift / thin / robot, stutter loops with a pitch step, gates, sample-rate crush, granular spray, ping-pong
+//          delay; Ring up to 8 s.
+// Every mode keeps the invariants of Classic: meta 0 (Pitch 50) is neutral, every meta Snap..Grit drives something, ranges stay inside the
+// envelopes the DSP is safe in; only Tr's top (the Ring law's 2.0 s) moves to 8.0 s in Wonky and Glitch.
+var DV_MODES = ["Classic", "Wonky", "Natural", "Glitch"];
+var DV_RING_TR_MAX_LONG = 7.83; // 0.15 + 7.83 + 0.02 = 8.0 s
+var DV_RING_MAX_S_LONG = 8.0;
+var DV_MODE_FAMILIES = DV_ARCH_FAMILIES.concat(["tape", "gate", "zap", "spec"]);
+var DV_MODE_DEF = {
+    1: { // Wonky
+        tr: DV_RING_TR_MAX_LONG, min: 9, max: 14,
+        p: { snap: 0.4, click: 0.35, filt: 0.3, pitch: 0.85, res: 0.45, comb: 0.55, form: 0.85, phas: 0.6, chor: 0.45, conv: 0.4, rev: 0.4,
+            dly: 0.5, slap: 0.3, drive: 0.65, crush: 0.4, ring: 0.75, sat: 0.5, tape: 0.7, gate: 0.3, zap: 0.85, spec: 0.3 },
+        need: [], sig: [["zap", "tape", "form", "ring", "pitch"], 3], couple: [["zap", "pitch", 0.5], ["form", "ring", 0.3]],
+        env: {
+            pitch_st: { semis: [5, 12] }, grain_ms: { b: [25, 90], span: 0.3 }, bend_st: { b: [-24, 24], span: 0.5 },
+            bend_ms: { b: [30, 700], log: 1, span: 0.3 }, grain_spray: { b: [0, 0.3], span: 0.3 }, tape_glide: { b: [-60, -12], span: 0.3 },
+            tape_ms: { b: [80, 1500], log: 1, span: 0.3 }, loop_ms: { b: [0, 80], span: 0.3 }, zap_f0: { b: [1500, 12000], log: 1, span: 0.3 },
+            zap_f1: { b: [60, 1500], log: 1, span: 0.3 }, zap_ms: { b: [40, 900], log: 1, span: 0.3 }, zap_res: { b: [0.6, 0.95], span: 0.3 },
+            ring_sweep: { b: [-4, 4], span: 0.4 }, ring_hz: { b: [25, 1200], log: 1, span: 0.3 }, vowel_sweep: { b: [-8, 8], span: 0.4 },
+            drive_shape: { b: [0.8, 3], span: 0.3 }, phas_hz: { b: [0.5, 12], log: 1, span: 0.3 }, res_drop: { b: [0, 1], span: 0.3 },
+            spec_op: { b: [1, 3], nmin: 1 }, gate_hz: { b: [4, 20], log: 1, span: 0.3 },
+        },
+    },
+    2: { // Natural
+        tr: DV_RING_TR_MAX, roles: [["snap", "click", "filt", "drive"], ["tape", "pitch"], ["res", "comb", "form"], ["chor", "phas", "slap"],
+            ["conv", "rev"], ["slap", "dly"], ["sat", "drive"]],
+        env: {
+            pitch_st: { semis: [2, 7] }, grain_ms: { b: [70, 140], span: 0.3 }, grain_spray: { b: [0, 0.08], span: 0.3 },
+            bend_st: { b: [0, 4], span: 0.3 }, bend_ms: { b: [30, 200], log: 1, span: 0.3 }, tape_st: { b: [-7, -0.5], span: 0.3 },
+            tape_glide: { b: [-1.5, 0], span: 0.3 }, tape_ms: { b: [100, 800], log: 1, span: 0.3 }, loop_ms: { b: [0, 0], span: 1 },
+            loop_step: { b: [0, 0], span: 1 }, res_f0: { b: [50, 500], log: 1, span: 0.3 }, res_stretch: { b: [0.9, 1.3], span: 0.3 },
+            res_drop: { b: [0, 0.6], span: 0.3 }, comb_hz: { b: [80, 900], log: 1, span: 0.3 }, form_shift: { b: [-5, 5], span: 0.3 },
+            vowel_sweep: { b: [0, 0], span: 1 }, conv_ir: { b: [0, 1], nmin: 1, set: [0, 1, 3, 6, 9] }, rev_size: { b: [0.2, 0.8], span: 0.3 },
+            dly_ms: { b: [40, 220], log: 1, span: 0.3 }, dly_fb: { b: [0.05, 0.35], span: 0.3 }, dly_pp: { b: [0, 0.5], span: 0.3 },
+            drive_amt: { amax: [0.2, 0.5] }, drive_shape: { b: [0, 0], span: 1 }, sat_amt: { amax: [0.3, 0.7] }, chor_ms: { b: [8, 20], span: 0.3 },
+            chor_hz: { b: [0.1, 1.5], log: 1, span: 0.3 }, phas_hz: { b: [0.08, 0.8], log: 1, span: 0.3 }, click_hz: { b: [900, 4000], log: 1, span: 0.3 },
+            tfilt_hz: { abs: [300, 1500], log: 1 },
+        },
+    },
+    3: { // Glitch
+        tr: DV_RING_TR_MAX_LONG, min: 9, max: 14,
+        p: { snap: 0.3, click: 0.55, filt: 0.4, pitch: 0.7, res: 0.1, comb: 0.35, form: 0.1, phas: 0.2, chor: 0.2, conv: 0.3, rev: 0.2,
+            dly: 0.75, slap: 0.3, drive: 0.4, crush: 0.8, ring: 0.5, sat: 0.25, tape: 0.9, gate: 0.8, zap: 0.25, spec: 1 },
+        need: ["spec"], sig: [["tape", "gate", "crush", "pitch", "dly"], 3], couple: [["tape", "gate", 0.3]],
+        env: {
+            spec_op: { b: [0, 3], nmin: 1 }, spec_amt: { b: [0, 1], span: 0.3 }, loop_ms: { b: [12, 220], log: 1, span: 0.3 },
+            loop_step: { b: [-5, 5], span: 0.3 }, tape_glide: { b: [-24, 0], span: 0.3 }, tape_ms: { b: [50, 800], log: 1, span: 0.3 },
+            gate_hz: { b: [4, 40], log: 1, span: 0.3 }, gate_duty: { b: [0.15, 0.7], span: 0.3 }, crush_sr: { b: [2, 32], log: 1, span: 0.3 },
+            grain_ms: { b: [15, 70], span: 0.3 }, grain_spray: { b: [0.3, 1], span: 0.3 }, dly_ms: { b: [15, 300], log: 1, span: 0.3 },
+            dly_fb: { b: [0.3, 0.8], span: 0.3 }, dly_pp: { b: [0.6, 1], span: 0.3 }, ring_hz: { b: [200, 3000], log: 1, span: 0.3 },
+            ring_sweep: { b: [-2, 2], span: 0.3 }, drive_shape: { b: [1.5, 3], span: 0.3 }, click_hz: { b: [3000, 11000], log: 1, span: 0.3 },
+            conv_ir: { b: [2, 8], nmin: 2 },
+        },
+    },
+};
+
+/** Tr (s) at Ring 100 under an Arch Mode: 1.83 (the 2.0 s cap) in Classic and Natural, 7.83 (8.0 s) in Wonky and Glitch. */
+function dvModeTrMax(mode) {
+    var d = DV_MODE_DEF[Math.round(Number(mode) || 0)];
+    return d ? d.tr : DV_RING_TR_MAX;
+}
+
+/** Families in play and their metas for Wonky / Glitch: {fam: meta} (-1 = out of play). */
+function dvModeFamiliesRandom(def, rnd, pick) {
+    var on = {}, i, f, n = 0;
+    for (i = 0; i < def.need.length; i++) { on[def.need[i]] = 1; n++; }
+    var sg = def.sig[0].slice();
+    for (i = sg.length - 1; i > 0; i--) { var j = pick(i + 1); var t = sg[i]; sg[i] = sg[j]; sg[j] = t; }
+    var nsig = def.sig[1] + pick(sg.length - def.sig[1] + 1);
+    for (i = 0; i < nsig; i++) if (!on[sg[i]]) { on[sg[i]] = 1; n++; }
+    var rest = DV_MODE_FAMILIES.filter(function (x) { return !on[x]; });
+    for (i = rest.length - 1; i > 0; i--) { j = pick(i + 1); t = rest[i]; rest[i] = rest[j]; rest[j] = t; }
+    var target = def.min + pick(def.max - def.min + 1);
+    for (i = 0; i < rest.length && n < target; i++) if (rnd() < (def.p[rest[i]] || 0)) { on[rest[i]] = 1; n++; }
+    for (i = 0; i < rest.length && n < def.min; i++) if (!on[rest[i]] && (def.p[rest[i]] || 0) > 0.25) { on[rest[i]] = 1; n++; }
+    var fam = DV_MODE_FAMILIES.filter(function (x) { return on[x]; });
+    for (i = fam.length - 1; i > 0; i--) { j = pick(i + 1); t = fam[i]; fam[i] = fam[j]; fam[j] = t; }
+    var perm = [0, 1, 2, 3, 4, 5, 6];
+    for (i = 6; i > 0; i--) { j = pick(i + 1); t = perm[i]; perm[i] = perm[j]; perm[j] = t; }
+    var famMeta = {};
+    for (i = 0; i < DV_MODE_FAMILIES.length; i++) famMeta[DV_MODE_FAMILIES[i]] = -1;
+    for (i = 0; i < fam.length; i++) famMeta[fam[i]] = i < 7 ? perm[i] : pick(8);
+    // couplings: the second family joins the first one's meta (when that leaves the second's old meta with something)
+    for (i = 0; i < def.couple.length; i++) {
+        var a = def.couple[i][0], b = def.couple[i][1];
+        if (famMeta[a] < 0 || famMeta[b] < 0 || rnd() >= def.couple[i][2]) continue;
+        var others = fam.filter(function (x) { return x !== b && famMeta[x] === famMeta[b]; });
+        if (famMeta[b] >= 7 || others.length > 0) famMeta[b] = famMeta[a];
+    }
+    return famMeta;
+}
+
+/** Families and metas for Natural: every meta Snap..Grit takes 1..2 families from its role (Body always has the resonator, Space a convolver). */
+function dvModeFamiliesNatural(def, rnd, pick) {
+    var famMeta = {}, used = {}, i, m;
+    for (i = 0; i < DV_MODE_FAMILIES.length; i++) famMeta[DV_MODE_FAMILIES[i]] = -1;
+    var take = function (f, meta) { famMeta[f] = meta; used[f] = 1; };
+    var first = { 0: "snap", 2: "res", 4: "conv" };
+    for (m = 0; m < 7; m++) {
+        var pool = def.roles[m].filter(function (x) { return !used[x]; });
+        for (i = pool.length - 1; i > 0; i--) { var j = pick(i + 1); var t = pool[i]; pool[i] = pool[j]; pool[j] = t; }
+        if (first[m] && !used[first[m]]) {
+            pool = pool.filter(function (x) { return x !== first[m]; });
+            pool.unshift(first[m]);
+        }
+        var n = Math.min(pool.length, 1 + (rnd() < 0.5 ? 1 : 0));
+        for (i = 0; i < n; i++) take(pool[i], m);
+    }
+    return famMeta;
+}
+
+var dvModeCache = {};
+/**
+ * The hidden map of an Arch under an Arch Mode (1 Wonky, 2 Natural, 3 Glitch); deterministic (mulberry32 of arch and mode). Arch 0 is a
+ * generated architecture too in these modes (only Classic has the hand-made Arch 0).
+ * @param {number} a
+ * @param {number} md
+ */
+function dvModeMap(a, md) {
+    var key = md * 10000 + a;
+    if (dvModeCache[key]) return dvModeCache[key];
+    var def = DV_MODE_DEF[md];
+    var map = dvFactoryMap();
+    var neutral0 = dvHiddenNeutral(dvArchMap(0));
+    var rnd = dvRng(a * 2654435761 + 977 + md * 7919);
+    var pick = function (n) { return Math.min(n - 1, Math.floor(rnd() * n)); };
+    var famMeta = def.roles ? dvModeFamiliesNatural(def, rnd, pick) : dvModeFamiliesRandom(def, rnd, pick);
+    var natural = md === 2;
+    // Natural: the resonator's tuning (and, half the time, the comb's) follows Pitch, so Pitch tunes the whole drum
+    var rowMeta = {};
+    if (natural && famMeta.res >= 0 && rnd() < 0.7) rowMeta.res_f0 = DV_PITCH_META;
+    if (natural && famMeta.comb >= 0 && rnd() < 0.5) rowMeta.comb_hz = DV_PITCH_META;
+    for (var i = 0; i < DV_HIDDEN.length; i++) {
+        var r = DV_HIDDEN[i], row = map[i];
+        var env = (def.env && def.env[r.id]) || DV_ARCH_ENV[r.id];
+        row.jit = r.jit ? 1 + r.jit * (2 * rnd() - 1) : 1;
+        if (r.id === "tr_s") { row.lo = DV_RING_TR_MIN; row.hi = def.tr; row.curve = DV_CURVE_CODE.log; row.meta = DV_RING_META; row.src = 0; row.jit = 1; continue; }
+        if (r.fx === "win") row.meta = pick(7);
+        else {
+            var fm = famMeta[r.fx];
+            if (fm === undefined || fm < 0) { row.meta = 0; row.src = 0; row.jit = 1; row.curve = DV_CURVE_CODE.lin; row.lo = row.hi = neutral0[i]; continue; }
+            row.meta = rowMeta[r.id] !== undefined ? rowMeta[r.id] : fm;
+        }
+        row.src = 0;
+        var onPitch = row.meta === DV_PITCH_META;
+        if (onPitch) row.jit = 1;
+        if (r.id === "pitch_st") {
+            var st = Math.round((env.semis[0] + (env.semis[1] - env.semis[0]) * rnd()) * 10) / 10;
+            var sgn = natural ? 1 : (rnd() < 0.5 ? -1 : 1);
+            row.curve = DV_CURVE_CODE.lin;
+            if (onPitch) { row.lo = -st * sgn; row.hi = st * sgn; } else { row.lo = 0; row.hi = st * sgn; }
+        } else if (r.id === "tape_st" && natural && onPitch) {
+            // below Pitch 50 the tape slows (a lower, longer drum); above 50 the rate would exceed 1, which the DSP plays at 1
+            var ts = 2 + 5 * rnd();
+            row.curve = DV_CURVE_CODE.lin; row.lo = -ts; row.hi = ts;
+        } else if (r.kind === "A") {
+            var hi;
+            if (env.abs) hi = env.log ? env.abs[0] * Math.pow(env.abs[1] / env.abs[0], rnd()) : env.abs[0] + (env.abs[1] - env.abs[0]) * rnd();
+            else hi = r.lo + (r.hi - r.lo) * (env.amax[0] + (env.amax[1] - env.amax[0]) * rnd());
+            if (env.cap !== undefined) hi = Math.min(hi, env.cap);
+            row.lo = r.lo;
+            row.hi = hi;
+            row.curve = onPitch ? DV_CURVE_CODE.abs50 : (env.abs && env.log ? DV_CURVE_CODE.log : DV_CURVE_CODE.lin);
+        } else if (r.kind === "D") {
+            row.curve = DV_CURVE_CODE.step;
+            row.src = 1;
+            if (env.set && rnd() < 0.5) { row.lo = row.hi = env.set[pick(env.set.length)]; continue; }
+            var nb = env.b[1] - env.b[0] + 1;
+            var n = env.nmin + pick(nb - env.nmin + 1);
+            var a0 = env.b[0] + pick(nb - n + 1);
+            if (rnd() < 0.5) { row.lo = a0; row.hi = a0 + n - 1; } else { row.lo = a0 + n - 1; row.hi = a0; }
+        } else {
+            var span = env.span + (1 - env.span) * rnd();
+            var p0 = (1 - span) * rnd(), p1 = p0 + span;
+            var at = function (q) { return env.log ? env.b[0] * Math.pow(env.b[1] / env.b[0], q) : env.b[0] + (env.b[1] - env.b[0]) * q; };
+            var x0 = at(p0), x1 = at(p1);
+            var up = natural && onPitch; // Natural: higher Pitch = higher tuning
+            if (!up && rnd() < 0.5) { var sw = x0; x0 = x1; x1 = sw; }
+            row.lo = x0;
+            row.hi = x1;
+            row.curve = env.log ? DV_CURVE_CODE.log : DV_CURVE_CODE.lin;
+        }
+    }
+    return (dvModeCache[key] = map);
 }
 
 /** One hidden value of a map row (the formula of dv_hidden in the gen). */
@@ -670,6 +908,7 @@ if (nodeModule && nodeModule.exports) {
         DV_PARAMS, DV_PARAM_INDEX, DV_ENGINE_GEN, DV_HIDDEN, DV_HIDDEN_COUNT, DV_HIDDEN_INDEX, DV_EFFECTS, DV_BLOB_VERSION,
         dvClamp, dvRng, dvLatency, DV_HASH_M, dvHash, dvDriftK, dvNewState, dvStep, dvDrawn, dvDefaultDrawParams, dvRingTr, dvRingEnv, dvSmooth,
         dvWindows, dvJitter, dvCurve, dvHiddenFromMetas, dvHiddenNeutral, dvHiddenGen, DV_ARCH_MAX, DV_MAP, DV_CURVE_CODE, DV_ARCH_ENV,
-        DV_ARCH_FAMILIES, dvFactoryMap, dvArchMap, dvMapValue, dvMapFloats, dvArchSummary, dvBlobEncode, dvBlobDecode, dvPreviewTel,
+        DV_ARCH_FAMILIES, DV_HIDDEN_CLASSIC, DV_MODES, DV_MODE_DEF, DV_MODE_FAMILIES, DV_RING_TR_MAX_LONG, DV_RING_MAX_S_LONG, dvModeTrMax,
+        dvModeMap, dvFactoryMap, dvArchMap, dvMapValue, dvMapFloats, dvArchSummary, dvBlobEncode, dvBlobDecode, dvPreviewTel,
     };
 }

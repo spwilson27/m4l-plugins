@@ -22,19 +22,40 @@ var dumpWins = [];   // [start sample, count] windows of the signed residue (out
 var resultPath = "/tmp/deviate_audio.txt";
 var armed = false;
 
-// `archmap <buffer> <arch>`: write the hidden map of an Architecture into the device's ---deviatemap stand-in, as the engine does
-// (idle bank, bank index, then the version last). The hidden-value check below uses the last Arch written.
-var probeArch = 0;
+// `archmap <buffer> <arch> [mode]`: write the hidden map of an Architecture (under an Arch Mode) into the device's ---deviatemap stand-in,
+// as the engine does (idle bank, bank index, then the version last). `maprow <buffer> <row id> <lo> <hi>` then pins one row to lo..hi
+// (linear in its meta; a discrete row to the integer lo) and writes the map again, so a case can switch on a single module.
+// The hidden-value check below uses the last map written.
+var probeArch = 0, probeMode = 0;
 var probeMapVer = 0;
-function archmap(name, arch) {
-    probeArch = Math.round(Number(arch) || 0);
+var probeMap = dvArchMap(0, 0);
+function probeWrite(name) {
     var b = new Buffer(String(name));
     var nb = probeMapVer % 2;
-    b.poke(1, DV_MAP.BASE + nb * DV_MAP.BANK_STRIDE, dvMapFloats(dvArchMap(probeArch)));
+    b.poke(1, DV_MAP.BASE + nb * DV_MAP.BANK_STRIDE, dvMapFloats(probeMap));
     b.poke(1, DV_MAP.ARCH, [probeArch, DV_HIDDEN_COUNT]);
     b.poke(1, DV_MAP.BANK, [nb]);
     probeMapVer++;
     b.poke(1, DV_MAP.VER, [probeMapVer]);
+}
+function archmap(name, arch, mode) {
+    probeArch = Math.round(Number(arch) || 0);
+    probeMode = Math.round(Number(mode) || 0);
+    probeMap = dvArchMap(probeArch, probeMode).map(function (r) { return { meta: r.meta, src: r.src, curve: r.curve, lo: r.lo, hi: r.hi, jit: r.jit }; });
+    probeWrite(name);
+}
+function maprow(name, id, lo, hi) {
+    var i = DV_HIDDEN_INDEX[String(id)];
+    if (i === undefined) { post("maprow: unknown row " + id + "\n"); return; }
+    var d = DV_HIDDEN[i].kind === "D";
+    probeMap[i] = { meta: probeMap[i].meta, src: d ? 1 : 0, curve: d ? DV_CURVE_CODE.step : DV_CURVE_CODE.lin, lo: Number(lo), hi: d ? Number(lo) : Number(hi), jit: 1 };
+    probeWrite(name);
+}
+// `tones <start sample> <count> <f1> <f2> ...`: Goertzel amplitudes of the residue (output L - delayed source) in that window, as tone_<f>
+var toneWin = null;
+function tones() {
+    var a = Array.prototype.slice.call(arguments).map(Number);
+    toneWin = { start: a[0], count: a[1], f: a.slice(2) };
 }
 
 function setbuffers(scope, tap) {
@@ -152,6 +173,19 @@ function analyze(durMs) {
         }
         kv("dump" + dw, dv.join(","));
     }
+    if (toneWin) {
+        for (var tf = 0; tf < toneWin.f.length; tf++) {
+            var gc = 0, gs = 0, gn = 0;
+            for (var it = toneWin.start; it < toneWin.start + toneWin.count && it < n; it++) {
+                var rv = L[it] - (it >= latArg ? S[it - latArg] : 0);
+                var wv = 2 * Math.PI * toneWin.f[tf] * (it - toneWin.start) / 48000;
+                gc += rv * Math.cos(wv);
+                gs += rv * Math.sin(wv);
+                gn++;
+            }
+            kv("tone_" + toneWin.f[tf], gn ? 2 * Math.sqrt(gc * gc + gs * gs) / gn : 0);
+        }
+    }
     kv("src_rms", cntR ? Math.sqrt(srcSq / cntR) : 0);
     kv("res_rms", cntR ? Math.sqrt(resSq / cntR) : 0);
     kv("maxstep", maxStep);
@@ -259,7 +293,7 @@ function analyze(durMs) {
         // hidden values against dvHiddenFromMetas of the telemetry metas / draws
         var metas = [], draws = [];
         for (var k = 0; k < 8; k++) { metas.push(sc[DV_SCOPE.METAS + k]); draws.push(sc[DV_SCOPE.DRAWS + k]); }
-        var amap = dvArchMap(probeArch);
+        var amap = probeMap;
         var hv = dvHiddenFromMetas(metas, draws, amap);
         var maxerr = 0, stepbad = 0;
         for (var j = 0; j < DV_HIDDEN_COUNT; j++) {

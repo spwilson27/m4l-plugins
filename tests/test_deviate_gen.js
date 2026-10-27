@@ -142,7 +142,7 @@ const mkData = (arr, size) => { const d = new gx.DataSim(size || arr.length); ar
         for (let i = 0; i < 8; i++) { E.push(rng() * 100); T.push(rng() * 100); }
         if (t < 4) for (let i = 0; i < 8; i++) { E[i] = [0, 100, 50, 33.3][t]; T[i] = [0, 100, 50, 66.6][t]; }
         const arch = t % 4 === 0 ? 0 : 1 + Math.floor(rng() * 1000);
-        const map = cfg.dvArchMap(arch);
+        const map = cfg.dvArchMap(arch, t % 3 === 0 ? 0 : 1 + (t % 3));
         const mE = mkData(E), mT = mkData(T), hv = new gx.DataSim(64), mp = mkData(cfg.dvMapFloats(map), 512);
         fns.dv_hidden(mE, mT, hv, mp);
         const ref = cfg.dvHiddenFromMetas(E, T, map);
@@ -151,7 +151,7 @@ const mkData = (arr, size) => { const d = new gx.DataSim(size || arr.length); ar
             worst = Math.max(worst, d);
         }
     }
-    ok(worst < 1e-12, `dv_hidden equals dvHiddenFromMetas for Arch 0 and random Archs (worst relative diff ${worst})`);
+    ok(worst < 1e-12, `dv_hidden equals dvHiddenFromMetas for Arch 0 and random Archs of every Arch Mode (worst relative diff ${worst})`);
 }
 // dv_soft
 {
@@ -281,7 +281,12 @@ function makeSim(overrides, fresh) {
     decls.Buffer.forEach((d) => { data[d.name] = new gx.DataSim(d.name === "scope" ? cfg.DV_SCOPE_SAMPS : d.name === "spec" ? cfg.DV_SPEC_N : d.name === "dmap" ? cfg.DV_MAP.SAMPS : 64, d.name === "spec" ? 5 : 1); });
     // the engine writes the Arch 0 map before the gen exists (overrides.__arch picks another one)
     {
-        const mf = cfg.dvMapFloats(cfg.dvArchMap((overrides && overrides.__arch) || 0));
+        const mp0 = cfg.dvArchMap((overrides && overrides.__arch) || 0, (overrides && overrides.__mode) || 0).map((r) => Object.assign({}, r));
+        for (const [id, lo, hi] of (overrides && overrides.__rows) || []) {
+            const i = cfg.DV_HIDDEN_INDEX[id], d = cfg.DV_HIDDEN[i].kind === "D";
+            mp0[i] = { meta: mp0[i].meta, src: d ? 1 : 0, curve: d ? 3 : 0, lo, hi: d ? lo : hi, jit: 1 };
+        }
+        const mf = cfg.dvMapFloats(mp0);
         mf.forEach((v, i) => data.dmap.poke(v, cfg.DV_MAP.BASE + i));
         data.dmap.poke(1, cfg.DV_MAP.VER);
     }
@@ -626,6 +631,65 @@ const ZERO_R = { dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, 
     }
     ok(sawLong > 0.05, `reroll_shorten: envelope still audible when Ring is shortened (${sawLong.toFixed(3)})`);
     ok(worstDrop < 0.006 && sim.H.envLast === 0, `reroll_shorten: envelope falls at most ${worstDrop.toFixed(5)} per sample and reaches 0`);
+}
+{
+    // Arch Modes in the core: neutral metas are the delayed dry exactly; a Ring 100 life ends at hold + Tr + fade (2.0 s Natural, 8.0 s Wonky / Glitch)
+    // with the output back to the exact delayed dry; random hits under every mode stay finite and bounded
+    const sr = 48000;
+    for (const [md, arch] of [[1, 37], [2, 417], [3, 913]]) {
+        const sim = makeSim(Object.assign({ dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 0, dvv5: 0, dvv6: 0, dvv7: 0, __arch: arch, __mode: md }, ZERO_R), true);
+        const hist = [];
+        let bad = 0;
+        for (let n = 0; n < 20000; n++) {
+            const x = burst(n, 2000, 100, 0.8) + burst(n, 9000, 100, 0.5) + 0.2 * Math.sin(n * 0.03);
+            hist.push(x);
+            const y = sim.step(x);
+            if (n >= 256 && y !== hist[n - 256]) bad++;
+        }
+        ok(bad === 0, `mode ${cfg.DV_MODES[md]} Arch ${arch}: neutral metas give the delayed dry exactly (${bad} differing samples)`);
+    }
+    for (const [md, arch] of [[2, 417], [1, 37], [3, 913]]) {
+        const tr = cfg.dvModeTrMax(md);
+        const end = Math.round((0.15 + tr + 0.02) * sr) + 256 + 96 + 3000 + 400;
+        const sim = makeSim(Object.assign({ dvv0: 100, dvv1: 100, dvv2: 100, dvv3: 100, dvv4: 100, dvv5: 100, dvv6: 100, dvv7: 100, __arch: arch, __mode: md }, ZERO_R), true);
+        let res = 0, mid = 0, nan = 0, pk = 0;
+        for (let n = 0; n < end + 2000; n++) {
+            const x = burst(n, 3000, 100, 0.8);
+            const y = sim.step(x);
+            if (!Number.isFinite(y)) nan++;
+            pk = Math.max(pk, Math.abs(y));
+            if (n > end) res = Math.max(res, Math.abs(y));
+            if (n === Math.round(3000 + 0.6 * tr * sr)) mid = sim.H.envLast;
+        }
+        ok(nan === 0 && res === 0 && mid > 0 && pk < 4, `mode ${cfg.DV_MODES[md]} Arch ${arch}, every meta 100: the life ends by ${(0.17 + tr).toFixed(2)} s (residue after ${res}, envelope at 0.6 Tr ${mid.toExponential(2)}, peak ${pk.toFixed(2)})`);
+    }
+    for (const md of [1, 2, 3]) {
+        const rng = cfg.dvRng(40 + md);
+        let nan = 0, pk = 0;
+        for (const arch of [5, 250, 777]) {
+            const sim = makeSim({ __arch: arch, __mode: md, dvv0: 70, dvv1: 30, dvv2: 80, dvv3: 90, dvv4: 60, dvv5: 80, dvv6: 90, dvv7: 40, dvseed: arch }, true);
+            for (let n = 0; n < sr * 1.6; n++) {
+                const y = sim.step(burst(n % 7200, 300, 100, 0.9) + 0.05 * (rng() - 0.5));
+                if (!Number.isFinite(y)) nan++;
+                pk = Math.max(pk, Math.abs(y));
+            }
+        }
+        ok(nan === 0 && pk < 4, `mode ${cfg.DV_MODES[md]}: hits every 150 ms under three Archs stay finite (peak ${pk.toFixed(2)})`);
+    }
+}
+if (process.env.DV_DEBUG_MOD) {
+    const rows = JSON.parse(process.env.DV_DEBUG_MOD);
+    const sim = makeSim(Object.assign({ dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 0, dvv5: 0, dvv6: 0, dvv7: 100, __rows: rows }, ZERO_R), true);
+    const res = [];
+    for (let n = 0; n < 48000; n++) {
+        const x = process.env.DV_SRC === "tone" ? 0.3 * Math.sin(2 * Math.PI * 440 * n / 48000) + (n >= 4800 && n < 4802 ? 0.8 : 0) : burst(n, 4800, 4800, 0.8);
+        const y = sim.step(x);
+        res.push(y);
+    }
+    const hist = [];
+    for (let n = 0; n < 48000; n++) hist.push(process.env.DV_SRC === "tone" ? 0.3 * Math.sin(2 * Math.PI * 440 * n / 48000) + (n >= 4800 && n < 4802 ? 0.8 : 0) : burst(n, 4800, 4800, 0.8));
+    const w = (a, b) => { let m = 0; for (let n = a * 48; n < b * 48; n++) m = Math.max(m, Math.abs(res[n] - (n >= 256 ? hist[n - 256] : 0))); return m.toFixed(4); };
+    console.log("DEBUG", [110,120,130,140,150,160,170,180,190,200,220,260].map((a)=>w(a,a+10)).join(" "), w(105, 130), w(130, 200), w(200, 300), w(400, 1500), "q76", sim.data.dvQ.peek(76), "q87", sim.data.dvQ.peek(87), "zf", sim.data.dvRsp.peek(5));
 }
 {
     // mix0_exact: Mix 0 is the delayed dry, bit for bit, also for +12 dBFS input, after Mix moved 1 -> 0, with a NaN residue and through sleep

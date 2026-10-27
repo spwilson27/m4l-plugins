@@ -30,7 +30,7 @@ def layout(h):
         boxes.append(h.label(f"obj-lay-lbl-{k}", name, 22.0, y + 1.0, 31.0, 12.0, size=8.0, color=LABEL))
     boxes.append(h.label("obj-lay-title", "DEVIATE MATRIX", 22.0, 2.0, 130.0, 12.0, size=8.5, color=AMBER, bold=True))
     boxes.append(h.label("obj-lay-title-g", "GLOBAL", GX, 6.0, 108.0, 12.0, size=8.5, color=AMBER, bold=True))
-    globs, _ = b.globals_block(h, GX, 28.0, color=AMBER)
+    globs, _ = b.globals_block(h, GX, 20.0, color=AMBER)
     controls += globs
     canvas = {"id": "obj-lay-matrix-viz", "files": ["deviate_face_matrix.js"], "rect": [CV_X, CV_Y, CV_W, CV_H], "role": "hit", "ignoreclick": False,
               "keys": [f"v_{k}" for k in KEYS] + [f"r_{k}" for k in KEYS]}

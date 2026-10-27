@@ -1,7 +1,7 @@
 """Shared cell helpers for Deviate faces (scripts/deviate_faces/README.md). `h` is the build module (scripts/build_deviate.py).
 
 strip_block   the 8 metas in a 4 x 2 grid: Value dial 33 x 42, Range numbox 33 x 15, Lock toggle 33 x 14  -> 140 x 153 px
-globals_block the globals in a 3-column block: Sens / Thresh / Chance, Mix / Drift / Seed (dials 33 x 42), Reroll + Split, MIDI From + Arch -> 108 x 128 px
+globals_block the globals in a 3-column block: Sens / Thresh / Chance, Mix / Drift / Seed (dials 33 x 42), Reroll + Split, Arch Mode + Arch, MIDI From -> 108 x 145 px
 
 Both return (controls, rects): the live.* boxes to append to the layout's `controls` and {key: [x, y, w, h]} of every placed widget
 (handy to align canvases and labels). Pass `color` for an own-palette face (accent colour of dials / bars / buttons) or leave it None for a
@@ -11,7 +11,7 @@ Live-themed face (no colour attributes at all, or bind with h.theme afterwards).
 STRIP_W = 140.0
 STRIP_H = 153.0
 GLOBALS_W = 108.0
-GLOBALS_H = 128.0
+GLOBALS_H = 145.0
 CELL_W = 33.0
 DIAL_H = 42.0
 
@@ -49,8 +49,10 @@ def globals_block(h, x, y, color=None, col_pitch=36.0, reroll_text="Reroll"):
     rects["reroll"] = [x, y + 96.0, CELL_W, 15.0]
     controls.append(h.menu("split", x + col_pitch, y + 96.0, 72.0, 15.0, color=color))
     rects["split"] = [x + col_pitch, y + 96.0, 72.0, 15.0]
-    controls.append(h.menu("midi_in", x, y + 113.0, 58.0, 15.0, color=color))
-    rects["midi_in"] = [x, y + 113.0, 58.0, 15.0]
+    controls.append(h.menu("amode", x, y + 113.0, 58.0, 15.0, color=color))
+    rects["amode"] = [x, y + 113.0, 58.0, 15.0]
     controls.append(h.numbox("arch", x + 61.0, y + 113.0, 47.0, 15.0, color=color))
     rects["arch"] = [x + 61.0, y + 113.0, 47.0, 15.0]
+    controls.append(h.menu("midi_in", x, y + 130.0, 108.0, 15.0, color=color))
+    rects["midi_in"] = [x, y + 130.0, 108.0, 15.0]
     return controls, rects

@@ -661,21 +661,36 @@ dv_click(io, lvl, hz, amp, t, sr) {
 	return g;
 }
 
-// Resonator bank: six bandpass modes at f0 * (m + 1)^(1 + (stretch - 1) / 2) (harmonic at stretch 1, bar-like above), decay time t60.
-// params at b: wet, f0 Hz, stretch, t60 s. The ringing is ADDED (x + wet * sum), so the core's residue is the ringing alone. st: 0..5 tan coefficients, 6..11 damping 1/Q,
+// Mode m's ratio to f0 for a resonator kind: 0 (m + 1)^ex (harmonic at stretch 1, bar-like above), 1 circular membrane, 2 free bar, 3 bell,
+// 4 closed tube (odd harmonics).
+dv_rk(kind, m, ex) {
+	h = pow(m + 1, ex);
+	mb = m < 0.5 ? 1 : (m < 1.5 ? 1.594 : (m < 2.5 ? 2.136 : (m < 3.5 ? 2.296 : (m < 4.5 ? 2.653 : 2.918))));
+	br = m < 0.5 ? 1 : (m < 1.5 ? 2.756 : (m < 2.5 ? 5.404 : (m < 3.5 ? 8.933 : (m < 4.5 ? 13.344 : 18.638))));
+	bl = m < 0.5 ? 1 : (m < 1.5 ? 2 : (m < 2.5 ? 2.4 : (m < 3.5 ? 3 : (m < 4.5 ? 4 : 5.33))));
+	tb = 2 * m + 1;
+	kd = floor(kind + 0.5);
+	return kd < 0.5 ? h : (kd < 1.5 ? mb : (kd < 2.5 ? br : (kd < 3.5 ? bl : tb)));
+}
+
+// Resonator bank: six bandpass modes at f0 * dv_rk(kind, m, 1 + (stretch - 1) / 2), decay time t60.
+// params at b: wet, f0 Hz, stretch, t60 s, kind (0..4). The ringing is ADDED (x + wet * sum), so the core's residue is the ringing alone. st: 0..5 tan coefficients, 6..11 damping 1/Q,
 // 12..17 amplitudes (0.08 x the gain that makes white noise come out of a mode at its input level: a narrow mode only rings if the hit has energy at its frequency), 18..21 the key the coefficients were made for, 24.. two states per mode and channel.
 dv_res(io, pv, b, w, st, sr) {
 	f0 = pv.peek(b + 1);
 	sx = pv.peek(b + 2);
 	t60 = pv.peek(b + 3);
-	if (f0 != st.peek(18) || sx != st.peek(19) || t60 != st.peek(20) || sr != st.peek(21)) {
+	rkd = pv.peek(b + 4);
+	if (f0 != st.peek(18) || sx != st.peek(19) || t60 != st.peek(20) || sr != st.peek(21) || rkd != st.peek(22)) {
 		st.poke(f0, 18);
 		st.poke(sx, 19);
 		st.poke(t60, 20);
 		st.poke(sr, 21);
+		st.poke(rkd, 22);
 		ex = 1 + (sx - 1) * 0.5;
 		for (m = 0; m < 6; m += 1) {
-			fm = clip(f0 * pow(m + 1, ex), 30, sr * 0.45);
+			rk = dv_rk(rkd, m, ex);
+			fm = clip(f0 * rk, 30, sr * 0.45);
 			qm = clip(3.141592653589793 * fm * t60 / 6.9, 0.7, 150);
 			st.poke(tan(3.141592653589793 * fm / sr), m);
 			st.poke(1 / qm, 6 + m);
@@ -722,6 +737,208 @@ dv_chor(io, pv, b, w, st, rb, sr) {
 	wp = wp >= 8192 ? 0 : wp;
 	st.poke(wp, 1);
 	return ph;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Modules of the Arch Modes (Wonky / Natural / Glitch). Each has one call site in the core.
+// ---------------------------------------------------------------------------------------------------------------
+// Zap: a resonant low-pass whose cutoff f (the core sweeps it f0 -> f1) is given per call. st: 0 tan coefficient, 1 f it was made for,
+// 2 sr, 3..6 the two channels' states.
+dv_zap(io, f, res, w, st, sr) {
+	if (f != st.peek(1) || sr != st.peek(2)) {
+		st.poke(tan(3.141592653589793 * clip(f, 20, sr * 0.45) / sr), 0);
+		st.poke(f, 1);
+		st.poke(sr, 2);
+	}
+	g = st.peek(0);
+	rq = clip(res, 0, 1);
+	k = 2 - 1.9 * rq;
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		y = gl_svf(st, 3 + c * 2, x, g, k, 0);
+		io.poke(x + (y * (1 + 0.5 * rq) - x) * w, c);
+	}
+	return g;
+}
+
+// Tape: varispeed, tape stop and stutter of the whole delayed dry. rb Data(65536, 2) is written every awake sample (so a hit can read its own
+// start); a hit (reset) starts the read head at the current write position, and it advances by r = 2^(min(st0 + glide * min(t / ms, 1), 0) / 12)
+// per sample, so it can never pass the writing (at r = 1 it reads exactly the sample just written: no effect). loop >= 4 ms: the first `loop`
+// ms of the hit repeat, repeat n at r * 2^(n * step / 12) (only repeats from the second on can be faster, and their source is written), with
+// 1.5 ms fades at both ends. A head that falls 64000 samples behind fades out. After a reset the old head crossfades into the new one over
+// 48 samples (1 ms; the new head starts 96 samples before the onset, so the onset itself is never faded).
+// io in: the delayed dry, out: the tape. pv at b: -, st0, glide st, glide ms, loop ms, loop step st.
+// st: 0 write pos, 1 start, 2 pos, 3 repeat, 4 old index, 5 old rate, 6 old fade left, 7 rate now, 8 samples since the reset.
+dv_tape(io, pv, b, st, rb, sr, act, reset) {
+	xl = io.peek(0);
+	xr = io.peek(1);
+	wp = st.peek(0);
+	rb.poke(xl, wp, 0);
+	rb.poke(xr, wp, 1);
+	tms = max(pv.peek(b + 3), 1) * 0.001 * sr;
+	lp = pv.peek(b + 4) * 0.001 * sr;
+	stp = pv.peek(b + 5);
+	sta = st.peek(1);
+	pos = st.peek(2);
+	rep = st.peek(3);
+	tt = st.peek(8);
+	ofl = st.peek(6);
+	if (reset > 0.5) {
+		st.poke(sta + pos, 4);
+		st.poke(st.peek(7), 5);
+		ofl = act > 0.5 ? 48 : 0;
+		sta = wp;
+		pos = 0;
+		rep = 0;
+		tt = 0;
+	}
+	sn = clip(pv.peek(b + 1) + pv.peek(b + 2) * min(tt / tms, 1), -60, 0);
+	r = sn < -0.0001 ? pow(2, sn / 12) : 1;
+	lpOn = lp >= 0.004 * sr ? 1 : 0;
+	rs = clip(rep * stp, -36, 24);
+	rn = (lpOn > 0.5 && abs(rs) > 0.0001) ? r * pow(2, rs / 12) : r;
+	yl = xl;
+	yr = xr;
+	if (act > 0.5) {
+		gw = lpOn > 0.5 ? clip(min(pos, lp - pos) / (0.0015 * sr), 0, 1) : clip((64000 - (tt - pos)) / 2000, 0, 1);
+		yl = gw * dv_rd(rb, 0, sta + pos);
+		yr = gw * dv_rd(rb, 1, sta + pos);
+		if (ofl > 0.5) {
+			oi = st.peek(4);
+			ow = ofl / 48;
+			yl = yl * (1 - ow) + ow * dv_rd(rb, 0, oi);
+			yr = yr * (1 - ow) + ow * dv_rd(rb, 1, oi);
+		}
+	}
+	if (ofl > 0.5) {
+		st.poke(st.peek(4) + st.peek(5), 4);
+		ofl = ofl - 1;
+	}
+	pos = pos + rn;
+	if (lpOn > 0.5 && pos >= lp) {
+		pos = pos - lp;
+		rep = rep + 1;
+	}
+	st.poke(sta, 1);
+	st.poke(pos, 2);
+	st.poke(rep, 3);
+	st.poke(ofl, 6);
+	st.poke(rn, 7);
+	st.poke(min(tt + 1, 100000000), 8);
+	wp = wp + 1;
+	st.poke(wp >= 65536 ? 0 : wp, 0);
+	io.poke(yl, 0);
+	io.poke(yr, 1);
+	return r;
+}
+
+// Spectral send, one frame's operation on the 257 bins of sx (a real input's spectrum) into sy. op 0 freeze: a spectral hold, each bin keeps
+// max(held x 0.997, now) (about -10 dB per second once the input stops) and is resynthesised every hop with its phase advance plus amt x random
+// (a one-frame capture read silent frames in Max, see AGENTS 31); 1 shift: bins move by
+// (2 amt - 1) * 48 (about +-4.5 kHz at 48 kHz); 2 thin: only bins above (0.03 + 0.4 amt) x the loudest survive, and a random share (0.6 amt)
+// of those drops out per frame; 3 robot (amt 0: zero phase, a buzz at the hop rate) to whisper (amt 1: random phase).
+// sst: 2 frame counter, 8 the frame's loudest bin.
+dv_specop(sx, sy, smg, sph, sst, op, amt) {
+	frm = sst.peek(2);
+	fdk = op < 0.5 ? 0.997 : 0;
+	// the frame's loudest bin, accumulated in sst 8 (a loop-carried max in a local is unreliable in gen)
+	sst.poke(0.000000001, 8);
+	for (k = 0; k <= 256; k += 1) {
+		xr = sx.peek(k, 0);
+		xi = sx.peek(k, 1);
+		mq = sqrt(xr * xr + xi * xi);
+		mo = sst.peek(8);
+		sst.poke(max(mo, mq), 8);
+	}
+	mx = sst.peek(8);
+	thr = (0.03 + 0.4 * amt) * mx;
+	sh = floor((2 * amt - 1) * 48 + 0.5);
+	for (k = 0; k <= 256; k += 1) {
+		xr = sx.peek(k, 0);
+		xi = sx.peek(k, 1);
+		m = sqrt(xr * xr + xi * xi);
+		hk = gl_hash(frm * 0.618 + k * 1.37, 4.1);
+		// freeze = a decaying spectral hold, computed for every op and written back unconditionally: each bin keeps
+		// max(held * fdk, now) and is resynthesised with its phase advance per hop plus amt x random
+		sm0 = smg.peek(k);
+		sp0 = sph.peek(k);
+		mgN = max(sm0 * fdk, m);
+		ph = sp0 + 1.5707963267948966 * k + amt * 3.141592653589793 * (2 * hk - 1);
+		ph = ph - 6.283185307179586 * floor(ph / 6.283185307179586);
+		smg.poke(mgN, k);
+		sph.poke(ph, k);
+		fr = mgN * cos(ph);
+		fi = mgN * sin(ph);
+		j = clip(k - sh, 0, 256);
+		sxr = sx.peek(j, 0);
+		sxi = sx.peek(j, 1);
+		inr = (k - sh >= 0 && k - sh <= 256) ? 1 : 0;
+		kp = (m >= thr && hk >= 0.6 * amt) ? 1 : 0;
+		rph = amt * 6.283185307179586 * hk;
+		yr = op < 0.5 ? fr : (op < 1.5 ? inr * sxr : (op < 2.5 ? xr * kp : m * cos(rph)));
+		yi = op < 0.5 ? fi : (op < 1.5 ? inr * sxi : (op < 2.5 ? xi * kp : m * sin(rph)));
+		sy.poke(yr, k, 0);
+		sy.poke(yi, k, 1);
+	}
+	sst.poke(frm + 1, 2);
+	return mx;
+}
+
+// sy (bins 0..256 of one spectrum Y) -> sx = YL + j YR over 512 bins, YL = Y and YR = Y turned by a fixed per-bin phase (stereo width), so
+// one inverse FFT gives the left output in the real part and the right in the imaginary part.
+dv_specz(sx, sy) {
+	for (k = 0; k <= 256; k += 1) {
+		ed = (k > 0 && k < 256) ? 1 : 0;
+		yr = sy.peek(k, 0);
+		yi = ed * sy.peek(k, 1);
+		hz = gl_hash(k, 6.6);
+		ph = ed * 1.8 * (hz - 0.5);
+		cs = cos(ph);
+		sn = sin(ph);
+		qr = yr * cs - yi * sn;
+		qi = yr * sn + yi * cs;
+		sx.poke(yr - qi, k, 0);
+		sx.poke(yi + qr, k, 1);
+		if (ed > 0.5) {
+			sx.poke(yr + qi, 512 - k, 0);
+			sx.poke(qr - yi, 512 - k, 1);
+		}
+	}
+	return 0;
+}
+
+// One job of the time-sliced 512-point STFT (hop 128): 0 frame the last 512 input samples (Hann), 1..10 forward passes, 11 the operation,
+// 12..21 inverse passes, 22 overlap-add (Hann, 2/3, 1/512) into sacc at the frame's output slot (640 samples after its input).
+// sst: 0 input write pos, 4 output read pos (0..1023), 6 the frame's output slot.
+dv_specjob(job, sx, sy, tab, sinr, sacc, swin, smg, sph, sst, op, amt) {
+	if (job < 0.5) {
+		wp = sst.peek(0);
+		for (i = 0; i < 512; i += 1) {
+			j = wp + i;
+			j = j >= 512 ? j - 512 : j;
+			sx.poke(sinr.peek(j) * swin.peek(i), i, 0);
+			sx.poke(0, i, 1);
+		}
+		ob = sst.peek(4) + 128;
+		sst.poke(ob >= 1024 ? ob - 1024 : ob, 6);
+	} else if (job < 10.5) {
+		dvc_pass(sx, tab, 512, job - 1, 0);
+	} else if (job < 11.5) {
+		dv_specop(sx, sy, smg, sph, sst, op, amt);
+		dv_specz(sx, sy);
+	} else if (job < 21.5) {
+		dvc_pass(sx, tab, 512, job - 12, 1);
+	} else if (job < 22.5) {
+		bs = sst.peek(6);
+		for (i = 0; i < 512; i += 1) {
+			j = bs + i;
+			j = j >= 1024 ? j - 1024 : j;
+			wv = swin.peek(i) * 0.0013020833333333333;
+			sacc.poke(sacc.peek(j, 0) + sx.peek(i, 0) * wv, j, 0);
+			sacc.poke(sacc.peek(j, 1) + sx.peek(i, 1) * wv, j, 1);
+		}
+	}
+	return job;
 }
 
 // Residue limiter: the identity up to |x| = 1.2, a tanh knee to 2.5.

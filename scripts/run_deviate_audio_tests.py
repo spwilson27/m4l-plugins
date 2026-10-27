@@ -42,6 +42,13 @@ Cases (what each proves; numbers are printed by the run):
                    arch_neutral (neutral metas = the input delayed exactly), arch_telemetry (telemetry_layout under that map),
                    ring_cap_arch<N> (every meta 100: residue 0 from 2.125 s), fuzz_arch (14 hits, a new Seed and Arch before each:
                    no NaN, peak < 4, the last page follows the last map)
+  mode_*           Arch Modes (Wonky / Natural / Glitch maps, probe `archmap <buf> <arch> <mode>`): mode_neutral (neutral metas = the input delayed
+                   exactly), ring_cap_natural (every meta 100: residue 0 from 2.125 s), ring_cap_wonky / ring_cap_glitch (every meta 100: a tail is
+                   still heard between 2.3 and 7.5 s, the residue is 0 from 8.125 s), mode_fuzz_<mode> (14 hits, a new Seed and Arch each)
+  mod_*            one new module switched on by pinning its rows (`maprow`; every meta 0, Pitch 50, Ring 100): tape down 12 st (a 440 Hz tone comes
+                   out at 220 Hz), stutter (the first 30 ms of a burst repeat after it), gate (a steady tone is chopped), zap (a 100 Hz low-pass
+                   removes the tone from the body), spectral freeze (a decaying hold: the burst is still heard after it ends), spectral shift / thin / robot, the four
+                   resonator kinds, the sweeps (bend, ring Hz, vowel) and drive shape / crush rate: audible where they should be, finite, bounded
   conv_onset       a burst that starts a new life with IR 6: (output with the IR bank) - (output without it) = 0.7 * wet * (IR 6 * burst) from the
                    first sample (time-domain IR from build_cache/deviate_ir_48000_td.json), i.e. the convolver gets the whole hit
   wipe_rehit       four identical hits 250 ms apart at Ring 10 (the next apply lands a few ms after the end of a life, inside the old wipe window), delay /
@@ -287,7 +294,10 @@ def device(code, case):
         mh.msg("dev-src-params", case["source"], 40, 70, 600),
         mh.msg("dev-bind", "scope #0-dvscope, ctl #0-dvctl, ir #0-dvir, spec #0-dvspec, dmap #0-dvmap", 40, 100, 560),
         mh.msg("dev-tap-bind", "sc #0-dvscope, tp #0-dvtap", 640, 100, 260),
-        mh.msg("dev-probemsg", f"archmap #0-dvmap {case.get('arch', 0)}, setbuffers #0-dvscope #0-dvtap, tapnames " + " ".join(n for n, _ in TAP_SLOTS)
+        mh.msg("dev-probemsg", f"archmap #0-dvmap {case.get('arch', 0)} {case.get('amode', 0)}, "
+               + "".join(f"maprow #0-dvmap {rid} {lo} {hi}, " for rid, lo, hi in case.get("rows", []))
+               + (f"tones {' '.join(str(x) for x in case['tones'])}, " if case.get("tones") else "")
+               + "setbuffers #0-dvscope #0-dvtap, tapnames " + " ".join(n for n, _ in TAP_SLOTS)
                + (", dparams " + case["dparams"] if case.get("dparams") else "")
                + (", rwindows " + " ".join(case["rwin"]) if case.get("rwin") else "")
                + (", clicks " + " ".join(str(x) for x in case["clicks"]) if case.get("clicks") else "")
@@ -408,6 +418,56 @@ def ring_case(name, hot, ir=False, tf=150):
 
 
 ARCHS = [37, 417, 913]
+MODES = {1: ("wonky", 37), 2: ("natural", 417), 3: ("glitch", 913)}   # Arch Mode -> (name, an Arch whose map has long-tail effects)
+RWIN_LONG = ["100:400", "400:1000", "2300:7500", "7900:8060", "8060:8125", "8125:9300"]
+MOD_V = [0, 50, 0, 0, 0, 0, 0, 100]
+LATMS = 256 / 48
+
+
+def mod_case(name, source, rows, dur=1200, **opts):
+    """One module on: the rows pinned by the probe (`maprow`), every meta 0, Pitch 50, Ring 100, Ranges 0."""
+    return case(name, dur, source, vals_extra(MOD_V, [0] * 8), rows=rows, **opts)
+
+
+def mode_cases():
+    out = {}
+    out["mode_neutral"] = [case(f"mode_neutral_{n}", 900, "kind 0, amp 0.8, s1 100, s2 300", "dvwet 1, " + NEUTRAL, arch=a, amode=md)
+                           for md, (n, a) in MODES.items()]
+    for md, (n, a) in MODES.items():
+        hot = vals_extra([100] * 8, [0] * 8)
+        if md == 2:
+            out[f"ring_cap_{n}"] = [dict(ring_case(f"ring_cap_{n}", [0, 1, 2, 3, 4, 5, 6], ir=True), arch=a, amode=md)]
+        else:
+            out[f"ring_cap_{n}"] = [case(f"ring_cap_{n}", 9300, "kind 4, amp 0.8, s1 100, tf 150", hot, ir=True, rwin=RWIN_LONG, arch=a, amode=md)]
+        ev = []
+        for k in range(14):
+            ev += [(300 + 400 * k - 60, "dev-gen", 0, f"dvseed {7 + 13 * k}"), (300 + 400 * k - 50, "obj-js", 0, f"archmap #0-dvmap {1 + (k * 397) % 1000} {md}")]
+        out[f"mode_fuzz_{n}"] = [case(f"mode_fuzz_{n}", 300 + 400 * 14 + 2400, "kind 6, amp 0.9, s1 300, per 400",
+                                      vals_extra([100] * 8, [100] * 8, dvchance=100, dvdrift=30), events=ev, arch=1, amode=md)]
+    hit = round((100 + LATMS) * 48)  # the hit's first output sample
+    out["mod_tape_down"] = [mod_case("mod_tape_down", "kind 5, amp 0.8, s1 100", [("tape_wet", 1, 1), ("tape_st", -12, -12)],
+                                     tones=[hit + 2880, 9600, 220, 440]),
+                            mod_case("mod_tape_off", "kind 5, amp 0.8, s1 100", [], tones=[hit + 2880, 9600, 220, 440])]
+    out["mod_stutter"] = [mod_case("mod_stutter", "kind 2, amp 0.8, s1 100, blen 100", [("tape_wet", 1, 1), ("loop_ms", 30, 30), ("loop_step", 2, 2)],
+                                   rwin=["260:600"])]
+    out["mod_gate"] = [mod_case("mod_gate", "kind 5, amp 0.8, s1 100", [("gate_wet", 1, 1), ("gate_hz", 10, 10), ("gate_duty", 0.5, 0.5)], rwin=["160:400"])]
+    # the body window (gB) falls from about 0.4 at 15 ms after the hit to 0 at about 90 ms on a steady tone, so measure early;
+    # the control is the same zap fully open (20 kHz): it passes the tone
+    zap = lambda name, f: mod_case(name, "kind 5, amp 0.8, s1 100", [("zap_wet", 1, 1), ("zap_f0", f, f), ("zap_f1", f, f), ("zap_res", 0.3, 0.3)],  # noqa: E731
+                                   rwin=["110:125"])
+    out["mod_zap"] = [zap("mod_zap", 100), zap("mod_zap_open", 20000)]
+    out["mod_spec"] = [mod_case(f"mod_spec_{op}", "kind 2, amp 0.8, s1 100, blen 100", [("spec_wet", 1, 1), ("spec_op", op, op), ("spec_amt", 0.2, 0.2)],
+                                dur=3300, rwin=["120:300", "400:1500", "2125:3300"]) for op in range(4)]
+    out["mod_res_kinds"] = [mod_case(f"mod_res_{k}", "kind 4, amp 0.8, s1 100, tf 200", [("res_wet", 0.9, 0.9), ("res_f0", 200, 200), ("res_kind", k, k),
+                                                                                          ("res_drop", 0.5, 0.5)], rwin=["300:1000"]) for k in range(1, 5)]
+    out["mod_sweeps"] = [mod_case("mod_sweeps", "kind 4, amp 0.8, s1 100, tf 150",
+                                  [("pitch_wet", 1, 1), ("pitch_st", 5, 5), ("bend_st", 12, 12), ("bend_ms", 200, 200), ("ring_wet", 0.7, 0.7),
+                                   ("ring_hz", 300, 300), ("ring_sweep", 3, 3), ("form_wet", 0.8, 0.8), ("vowel_sweep", 6, 6), ("form_shift", -7, -7)],
+                                  rwin=["110:400"])]
+    out["mod_grit"] = [mod_case("mod_grit", "kind 4, amp 0.8, s1 100, tf 150",
+                                [("drive_amt", 0.6, 0.6), ("drive_shape", 1, 1), ("crush_wet", 0.8, 0.8), ("crush_bits", 4, 4), ("crush_sr", 8, 8)],
+                                rwin=["105:125"])]
+    return out
 
 
 def arch_fuzz_case(tag, seeds, archs):
@@ -524,6 +584,7 @@ def cases():
     for a in ARCHS:
         out[f"ring_cap_arch{a}"] = [dict(ring_case(f"ring_cap_arch{a}", [0, 1, 2, 3, 4, 5, 6], ir=True), arch=a)]
     out["fuzz_arch"] = [arch_fuzz_case("arch", [7 + 13 * k for k in range(14)], [1 + (k * 397) % 1000 for k in range(14)])]  # 28 events (harness cap ~30)
+    out.update(mode_cases())
     out["fuzz_a"] = [fuzz_case("a", list(range(1, 26)))]
     out["fuzz_b"] = [fuzz_case("b", [101 + 37 * k for k in range(25)])]
     return out
@@ -821,6 +882,53 @@ def check_ring_cap(name, m, errors):
         errors.append(f"{name}: no tail between 0.4 and 1.0 s ({m.get('rmax_400_1000')}): the test would be vacuous")
 
 
+def check_ring_cap_long(name, m, errors):
+    """Wonky / Glitch: Tr up to 7.83 s, so the life ends 8.0 s after the page (8.125 s in the recording)."""
+    print(f"  {name}: " + " ".join(f"{k}={v:.5f}" for k, v in sorted(m.items()) if k.startswith("rmax_")) + f" peak {m.get('maxL'):.3f}")
+    if m.get("nan", 1) != 0 or not (m.get("maxL", 9) < 4 and m.get("maxR", 9) < 4):
+        errors.append(f"{name}: {m.get('nan')} non-finite samples, peak {m.get('maxL')}")
+    if m.get("rmax_8125_9300", 1) > 1e-9:
+        errors.append(f"{name}: the residue must be zero from 8.125 s on, max {m.get('rmax_8125_9300')}")
+    if m.get("rmax_8060_8125", 1) > 1e-3:
+        errors.append(f"{name}: residue {m.get('rmax_8060_8125')} between 8.06 and 8.125 s must be below -60 dB")
+    if not (m.get("rmax_2300_7500", 0) > 1e-4):
+        errors.append(f"{name}: no tail between 2.3 and 7.5 s ({m.get('rmax_2300_7500')}): the 8 s Ring would be untested")
+
+
+def check_mod(name, res, errors):
+    subs = {k: v for k, v in res.items() if not k.startswith("_")}
+    for k, m in sorted(subs.items()):
+        print(f"  {k}: " + " ".join(f"{a}={b:.4f}" for a, b in sorted(m.items()) if a.startswith(("rmax_", "tone_"))) + f" peak {m.get('maxL', 0):.3f}")
+        if m.get("nan", 1) != 0 or not (m.get("maxL", 9) < 4):
+            errors.append(f"{k}: {m.get('nan')} non-finite samples, peak {m.get('maxL')}")
+    def need(k, key, lo, hi=None):
+        v = subs.get(k, {}).get(key)
+        if v is None or v < lo or (hi is not None and v > hi):
+            errors.append(f"{k}: {key} = {v}, want {'>= ' + str(lo) if hi is None else str(lo) + '..' + str(hi)}")
+    if name == "mod_tape_down":
+        need("mod_tape_down", "tone_220", 0.18)
+        need("mod_tape_off", "tone_220", 0, 0.01)
+    elif name == "mod_stutter":
+        need("mod_stutter", "rmax_260_600", 0.2)
+    elif name == "mod_gate":
+        need("mod_gate", "rmax_160_400", 0.2)
+    elif name == "mod_zap":
+        need("mod_zap", "rmax_110_125", 0.08)
+        need("mod_zap_open", "rmax_110_125", 0, 0.03)
+    elif name == "mod_spec":
+        for op in range(4):
+            need(f"mod_spec_{op}", "rmax_120_300", 0.01)
+            need(f"mod_spec_{op}", "rmax_2125_3300", 0, 1e-9)
+        need("mod_spec_0", "rmax_400_1500", 0.01)
+    elif name == "mod_res_kinds":
+        for k in range(1, 5):
+            need(f"mod_res_{k}", "rmax_300_1000", 0.002)
+    elif name == "mod_sweeps":
+        need("mod_sweeps", "rmax_110_400", 0.05)
+    elif name == "mod_grit":
+        need("mod_grit", "rmax_105_125", 0.05)
+
+
 def check_split_sum(m, errors):
     if m.get("nan", 1) != 0:
         errors.append(f"split_sum: {m.get('nan')} non-finite samples")
@@ -1094,6 +1202,8 @@ def run_group(code, name, only_dry=False):
         check_sleep(g("sleep_silent"), errors)
     elif name.startswith("meta_"):
         check_meta(name, g(name), errors)
+    elif name in ("ring_cap_wonky", "ring_cap_glitch"):
+        check_ring_cap_long(name, g(name), errors)
     elif name.startswith("ring_cap_"):
         check_ring_cap(name, g(name), errors)
     elif name == "split_sum":
@@ -1116,6 +1226,18 @@ def run_group(code, name, only_dry=False):
             m = g(name)
             if m.get("arch") != 1 + (13 * 397) % 1000 or m.get("hidden_maxerr", 1) > 1e-4 or m.get("hidden_stepbad", 1) != 0:
                 errors.append(f"fuzz_arch: the last page does not follow the last map (arch {m.get('arch')}, max err {m.get('hidden_maxerr')}, step {m.get('hidden_stepbad')})")
+    elif name.startswith("mode_fuzz_"):
+        check_fuzz(name, g(name), errors, 12)
+        m = g(name)
+        if m.get("hidden_maxerr", 1) > 1e-4 or m.get("hidden_stepbad", 1) != 0:
+            errors.append(f"{name}: the last page does not follow the last map (max err {m.get('hidden_maxerr')}, step {m.get('hidden_stepbad')})")
+    elif name == "mode_neutral":
+        for md, (n, a) in MODES.items():
+            m = g(f"mode_neutral_{n}")
+            if m.get("nan", 1) != 0 or m.get("diffL", 1) != 0 or m.get("diffR", 1) != 0 or not (m.get("t_applied", 0) >= 2):
+                errors.append(f"mode_neutral {n}: neutral metas must give the input delayed {LAT_ENV} exactly (diff {m.get('diffL')}/{m.get('diffR')})")
+    elif name.startswith("mod_"):
+        check_mod(name, res, errors)
     elif name == "arch_neutral":
         for a in ARCHS:
             m = g(f"arch_neutral_{a}")

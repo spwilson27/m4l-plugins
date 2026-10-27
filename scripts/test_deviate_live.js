@@ -29,7 +29,7 @@ const SHOT = arg("--shot", null);
 const LOOP = process.env.DEVIATE_LOOP ||
     "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Core Library/Samples/Loops/Drums/Full/Hip Hop Doubled 145 bpm.wav";
 // DV_SCOPE / DV_ECHO slots (src/deviate_config.js)
-const S = { HITS: 2, DRAW_SERIAL: 3, SPLIT_MODE: 5, LATENCY: 6, REROLL: 8, METAS: 16, DRAWS: 24, HIT_GATE: 39, HIT_SRC: 40, ALIVE: 48, ECHO: 128 };
+const S = { HITS: 2, DRAW_SERIAL: 3, SPLIT_MODE: 5, LATENCY: 6, REROLL: 8, TR_S: 9, METAS: 16, DRAWS: 24, HIT_GATE: 39, HIT_SRC: 40, ALIVE: 48, ECHO: 128 };
 const E = { V: 0, R: 8, LOCKS: 16 };
 
 function evalLom(code) {
@@ -291,10 +291,10 @@ step("hit", () => {
 // ---- 6b Architecture: the hidden map follows the Arch parameter, per instance --------------------------------------------------------
 step("arch", () => {
     const cfg = require(path.join(ROOT, "src", "deviate_config.js"));
-    const hiddenErr = (r, arch) => {
+    const hiddenErr = (r, arch, mode) => {
         const s = r.scope, metas = [], draws = [];
         for (let i = 0; i < 8; i++) { metas.push(s[S.METAS + i]); draws.push(s[S.DRAWS + i]); }
-        const want = cfg.dvHiddenFromMetas(metas, draws, cfg.dvArchMap(arch)), mp = cfg.dvArchMap(arch);
+        const mp = cfg.dvArchMap(arch, mode || 0), want = cfg.dvHiddenFromMetas(metas, draws, mp);
         let e = 0;
         for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) e = Math.max(e, Math.abs(r.hidden[i] - want[i]) / (Math.abs(mp[i].hi - mp[i].lo) || 1));
         return e;
@@ -321,6 +321,14 @@ step("arch", () => {
     hook(d, "test_hit"); sleep(700);
     const r3 = report(d);
     check(r3.map.arch === 0 && hiddenErr(r3, 0) < 1e-4, `${d.face}: back to Arch 0 (err ${hiddenErr(r3, 0)})`);
+    // Arch Mode Glitch: its own map, and Ring 100 reaches Tr 7.83 s (the 8 s cap of Wonky / Glitch)
+    setParam(d, "Mode", 3); setParam(d, "Ring", 100); setParam(d, "R Ring", 0); sleep(300);
+    hook(d, "test_hit"); sleep(700);
+    const r4 = report(d);
+    check(r4.map.mode === 3 && hiddenErr(r4, 0, 3) < 1e-4 && hiddenErr(r4, 0, 0) > 1e-3,
+        `${d.face}: Arch Mode Glitch through the LOM -> the Glitch map (mode ${r4.map.mode}, err ${hiddenErr(r4, 0, 3)})`);
+    check(Math.abs(r4.scope[S.TR_S] - 7.83) < 1e-3, `${d.face}: Ring 100 in Glitch -> Tr ${r4.scope[S.TR_S]} s (8.0 s life)`);
+    setParam(d, "Mode", 0); sleep(300);
     restore(d);
 });
 

@@ -15,7 +15,7 @@ const near = (a, b, e) => Math.abs(a - b) <= e;
 
 // ---- parameter table -------------------------------------------------------------------------------------------
 const dump = JSON.parse(execFileSync("python3", ["scripts/build_deviate.py", "--dump-params"], { cwd: ROOT, encoding: "utf8" }));
-check("param count 34", dump.length === 34 && C.DV_PARAMS.length === 34, `${dump.length}/${C.DV_PARAMS.length}`);
+check("param count 35", dump.length === 35 && C.DV_PARAMS.length === 35, `${dump.length}/${C.DV_PARAMS.length}`);
 dump.forEach((p, i) => {
     const m = C.DV_PARAMS[i];
     const same = m && m[0] === p.key && m[1] === p.long && m[2] === p.short && m[3] === p.min && m[4] === p.max && m[5] === p.init &&
@@ -151,9 +151,9 @@ check("latency 256 / 1279", C.dvLatency(0) === 256 && C.dvLatency(1) === 1279);
 // ---- hidden table ---------------------------------------------------------------------------------------------------------
 const H = C.DV_HIDDEN;
 check("hidden ids unique", new Set(H.map((r) => r.id)).size === H.length);
-check("hidden row count ~36 (30..48)", H.length >= 30 && H.length <= 48, String(H.length));
+check("hidden row count 64 (36 Classic + 28 appended), the map's and the scope's limit", H.length === 64 && C.DV_HIDDEN_CLASSIC === 36, String(H.length));
 check("every meta feeds a row", [0, 1, 2, 3, 4, 5, 6, 7].every((m) => H.some((r) => r.meta === m)));
-check("17 effects", Object.keys(C.DV_EFFECTS).length === 17, Object.keys(C.DV_EFFECTS).join());
+check("21 effects (17 + tape, gate, zap, spec)", Object.keys(C.DV_EFFECTS).length === 21, Object.keys(C.DV_EFFECTS).join());
 const neutral = C.dvHiddenNeutral();
 H.forEach((r, i) => {
     if (r.kind === "A") {
@@ -235,8 +235,79 @@ check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenG
     let counts = [];
     for (let a = 1; a <= 200; a++) counts.push(C.dvArchSummary(C.dvArchMap(a)).reduce((n, l) => n + l.length, 0));
     check("10..17 effect families in play", Math.min(...counts) >= 10 && Math.max(...counts) <= 17, `${Math.min(...counts)}..${Math.max(...counts)}`);
+    // Classic Arch 1..1000 are what they were before the Arch Modes existed (rows 0..35; sha256 of the maps of commit d73175d)
+    const crypto = require("crypto"), hsh = crypto.createHash("sha256");
+    for (let a = 0; a <= 1000; a++) hsh.update(JSON.stringify(C.dvArchMap(a, 0).slice(0, C.DV_HIDDEN_CLASSIC)));
+    check("Classic maps unchanged since the Arch Modes", hsh.digest("hex") === "130515c59320109cf0e2d24eb039ac31480b208df56433aa17c79927f20e60be");
+    let cst = 0;
+    for (let a = 0; a <= 1000; a++) { const mp = C.dvArchMap(a, 0); for (let i = C.DV_HIDDEN_CLASSIC; i < H.length; i++) if (mp[i].lo !== H[i].lo || mp[i].hi !== H[i].hi) cst++; }
+    check("Classic keeps the appended rows at their constants", cst === 0, String(cst));
     const f = C.dvMapFloats(C.dvArchMap(3));
     check("dvMapFloats: STRIDE floats per row, fits a bank", f.length === H.length * C.DV_MAP.STRIDE && f.length <= C.DV_MAP.BANK_STRIDE && C.DV_MAP.BASE + 2 * C.DV_MAP.BANK_STRIDE <= C.DV_MAP.SAMPS);
+}
+
+// ---- Arch Modes: Wonky (1), Natural (2), Glitch (3) ------------------------------------------------------------------------------
+{
+    const idx = C.DV_HIDDEN_INDEX, rng = C.dvRng(11);
+    const neu0 = C.dvHiddenNeutral();
+    for (const md of [1, 2, 3]) {
+        const name = C.DV_MODES[md], def = C.DV_MODE_DEF[md];
+        const bad = [], distinct = new Set(), counts = [];
+        const famHas = {};
+        for (let a = 0; a <= 1000; a++) {
+            const mp = C.dvArchMap(a, md);
+            distinct.add(JSON.stringify(mp));
+            const sum = C.dvArchSummary(mp);
+            counts.push(sum.reduce((n, l) => n + l.length, 0));
+            sum.forEach((l) => l.forEach((f) => { famHas[f] = (famHas[f] || 0) + 1; }));
+            const neu = C.dvHiddenNeutral(mp);
+            H.forEach((r, i) => { if (r.kind === "A" && Math.abs(neu[i] - neu0[i]) > 1e-12) bad.push(`a${a} neutral ${r.id}`); });
+            for (let m = 0; m < 7; m++) if (!sum[m].length) bad.push(`a${a} meta ${m} drives nothing`);
+            const ts = mp[idx.tr_s];
+            if (ts.meta !== 7 || ts.lo !== 0.05 || ts.hi !== def.tr || ts.curve !== 1) bad.push(`a${a} tr_s`);
+            const all = [].concat(...sum);
+            if (md === 2 && !(all.includes("snap") && all.includes("res") && all.includes("conv"))) bad.push(`a${a} natural core families`);
+            if (md === 2 && ["crush", "ring", "gate", "zap", "spec"].some((x) => all.includes(x))) bad.push(`a${a} natural has a glitch family`);
+            if (md === 3 && !all.includes("spec")) bad.push(`a${a} glitch without spectral`);
+            if (md !== 2 && def.sig[0].filter((x) => all.includes(x)).length < def.sig[1]) bad.push(`a${a} too few signature families`);
+            const probes = [[0, 0], [100, 100], [50, 50], [rng() * 100, rng() * 100], [rng() * 100, rng() * 100]];
+            probes.forEach(([e, t]) => {
+                const E = [0, 1, 2, 3, 4, 5, 6, 7].map(() => e), T = E.map(() => t);
+                const hv = C.dvHiddenFromMetas(E, T, mp);
+                H.forEach((r, i) => {
+                    const env = (def.env && def.env[r.id]) || C.DV_ARCH_ENV[r.id], v = hv[i];
+                    if (!Number.isFinite(v)) { bad.push(`a${a} ${r.id} not finite`); return; }
+                    if (mp[i].lo === mp[i].hi && Math.abs(v - neu0[i]) < 1e-12) return; // a family out of play keeps its Arch 0 neutral value
+                    let lo, hi;
+                    if (r.id === "tr_s") { lo = 0.05; hi = def.tr; }
+                    else if (r.id === "pitch_st") { lo = -12; hi = 12; }
+                    else if (r.id === "tape_st" && md === 2) { lo = -7; hi = 7; }
+                    else if (env && env.b) { lo = env.b[0]; hi = env.b[1]; }
+                    else if (env && env.abs) { lo = r.lo; hi = env.abs[1]; }
+                    else if (env && env.amax) { lo = r.lo; hi = env.cap !== undefined ? env.cap : r.lo + (r.hi - r.lo) * env.amax[1]; }
+                    else { lo = Math.min(r.lo, r.hi); hi = Math.max(r.lo, r.hi); }
+                    if (env && env.set) { lo = Math.min(lo, ...env.set); hi = Math.max(hi, ...env.set); }
+                    if (v < lo - 1e-9 || v > hi + 1e-9) bad.push(`a${a} ${r.id} ${v} outside ${lo}..${hi}`);
+                    if (r.kind === "D" && v !== Math.floor(v)) bad.push(`a${a} ${r.id} not integer`);
+                });
+            });
+            if (bad.length > 5) break;
+        }
+        check(`${name}: neutral at meta 0, every meta drives something, Tr top ${def.tr} s, mode families, values in the envelopes`, bad.length === 0, bad.slice(0, 5).join("; "));
+        check(`${name}: 1001 different maps`, distinct.size === 1001, String(distinct.size));
+        check(`${name}: families in play ${Math.min(...counts)}..${Math.max(...counts)}`, Math.min(...counts) >= 7 && Math.max(...counts) <= 17);
+        check(`${name}: dvArchMap deterministic and cached`, C.dvArchMap(417, md) === C.dvArchMap(417.3, md) && C.dvArchMap(417, md) !== C.dvArchMap(417, 0));
+        check(`${name}: Arch 0 is generated, not the factory map`, JSON.stringify(C.dvArchMap(0, md)) !== JSON.stringify(C.dvArchMap(0, 0)));
+        console.log(`  ${name} families (Archs using each of 1001): ` + Object.entries(famHas).sort((x, y) => y[1] - x[1]).map(([f, n]) => f + " " + n).join(", "));
+    }
+    // Natural: Pitch tunes upward (resonator / comb pitch and grain shift rise with Pitch), the tape slows below 50
+    let up = 0, n = 0;
+    for (let a = 0; a <= 300; a++) {
+        const mp = C.dvArchMap(a, 2);
+        for (const id of ["res_f0", "comb_hz", "pitch_st", "tape_st"]) { const r = mp[idx[id]]; if (r.meta === C.DV_PITCH_META && r.lo !== r.hi) { n++; if (r.hi > r.lo) up++; } }
+    }
+    check("Natural: everything Pitch tunes rises with Pitch", n > 100 && up === n, `${up}/${n}`);
+    check("dvModeTrMax: 1.83 Classic / Natural, 7.83 Wonky / Glitch", C.dvModeTrMax(0) === 1.83 && C.dvModeTrMax(2) === 1.83 && C.dvModeTrMax(1) === 7.83 && C.dvModeTrMax(3) === 7.83);
 }
 
 // ---- blob ---------------------------------------------------------------------------------------------------------------------

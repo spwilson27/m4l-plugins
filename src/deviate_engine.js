@@ -64,28 +64,30 @@ function anything() {
     if (!isFinite(v)) return;
     dvRaw[key] = v;
     if (key === "split") dvOnSplit(v);
-    if (key === "arch") dvMapWrite();
+    if (key === "arch" || key === "amode") dvMapWrite();
 }
 
 // ---- the hidden map (Architecture) -----------------------------------------------------------------------------------
 // The gen reads its hidden mapping from ---deviatemap (DV_MAP). Write the idle bank, then its index, then a new version (last):
 // the gen copies a bank only when the version moves, so it never sees half a table. Written at `names` (before the deferred gen
-// exists) and on every Arch change; the next page applied uses it.
-var dvMap = { arch: -1, ver: 0, writes: 0, err: "" };
+// exists) and on every Arch or Arch Mode change; the next page applied uses it.
+var dvMap = { arch: -1, mode: 0, ver: 0, writes: 0, err: "" };
 function dvMapWrite() {
     var arch = Math.round(dvClamp(Number(dvRaw.arch) || 0, 0, DV_ARCH_MAX));
+    var mode = Math.round(dvClamp(Number(dvRaw.amode) || 0, 0, DV_MODES.length - 1));
     if (!dvNames.map) return;
     try {
         var b = new Buffer(dvNames.map);
         var hdr = b.peek(1, 0, 2);
         var ver = Number(hdr[0]) || 0, bank = Number(hdr[1]) || 0;
         var nb = ver > 0.5 ? 1 - Math.round(bank) : 0;
-        b.poke(1, DV_MAP.BASE + nb * DV_MAP.BANK_STRIDE, dvMapFloats(dvArchMap(arch)));
+        b.poke(1, DV_MAP.BASE + nb * DV_MAP.BANK_STRIDE, dvMapFloats(dvArchMap(arch, mode)));
         b.poke(1, DV_MAP.ARCH, [arch, DV_HIDDEN_COUNT]);
         b.poke(1, DV_MAP.BANK, [nb]);
         dvMap.ver = (Math.round(ver) % 100000) + 1;
         b.poke(1, DV_MAP.VER, [dvMap.ver]);
         dvMap.arch = arch;
+        dvMap.mode = mode;
         dvMap.writes++;
     } catch (e) { dvMap.err = String(e); }
 }
@@ -622,7 +624,8 @@ function test_report() {
         geom: geom, raw: dvRaw, hook: dvNames.test, mtrig: dvMtrig, hitsSent: dvHitsSent, midi: dvMidi,
         ir: { ready: dvIr.ready, ver: dvIr.ver, sr: dvIr.sr }, alive: dvGenAlive(),
         scope: scope ? Array.prototype.slice.call(scope) : null, hidden: hidden ? Array.prototype.slice.call(hidden) : null,
-        map: { arch: dvMap.arch, ver: dvMap.ver, writes: dvMap.writes, err: dvMap.err, summary: dvArchSummary(dvArchMap(dvMap.arch < 0 ? 0 : dvMap.arch)) },
+        map: { arch: dvMap.arch, mode: dvMap.mode, ver: dvMap.ver, writes: dvMap.writes, err: dvMap.err,
+            summary: dvArchSummary(dvArchMap(dvMap.arch < 0 ? 0 : dvMap.arch, dvMap.mode)) },
         ctlGen: dvCtlGen, frontN: dvFrontN, rr: { calls: dvRrCalls, sent: dvRrSent.slice(-8), busy: dvRrBusy }, restored: dvRestored, sections: dvSections.length,
     });
 }

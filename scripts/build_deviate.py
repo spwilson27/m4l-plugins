@@ -52,7 +52,7 @@ VALUE_HELP = {
     "Space": "Room around the hit: a convolution from a built-in bank of impulse responses and a reverb. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
     "Echo": "Echoes: a feedback delay and a slapback on the tail. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
     "Grit": "Dirt: drive, bit crush, ring modulation and saturation. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
-    "Ring": "How long the effects ring after the hit, up to 2.0 seconds. Each hit draws its own value around this one.",
+    "Ring": "How long the effects ring after the hit: up to 2.0 seconds (8.0 in the Wonky and Glitch Arch Modes). Each hit draws its own value around this one.",
 }
 RANGE_HELP = "How far each hit may stray from the %s value, up and down. 0 %% always uses the value; 100 %% can reach the whole range."
 LOCK_HELP = "Keeps the %s draw of the last hit: new hits and rerolls no longer change it, and its Value and Range edits are ignored."
@@ -91,11 +91,14 @@ P["midi_in"] = _p("MIDI From", "MIDI In", 0, 1, 0, 2, 9, None, 1,
                   "Where MIDI notes that count as hits come from: a MIDI track or a port. Velocity and pitch are ignored.", ["No Input", "-"])
 P["arch"] = _p("Architecture", "Arch", 0.0, 1000.0, 0.0, 0, 9, None, 1,
                "Rebuilds which effects each meta drives, which effects are in play and their ranges. 0 is the original layout; each other number is a different one.")
+P["amode"] = _p("Arch Mode", "Mode", 0, 3, 0, 2, 9, None, 1,
+                "What kind of architectures Arch builds. Classic is the original family (Arch 0 = the factory layout); Wonky bends and sweeps with tails up to 8 s; Natural tunes and resonates like real drums; Glitch stutters, gates and freezes the spectrum, tails up to 8 s.",
+                ["Classic", "Wonky", "Natural", "Glitch"])
 UNITS = {"arch": "Arch %.0f"}  # parameter_units of unitstyle-9 parameters other than the Range rows
 INVISIBLE = {"split": 1, "midi_in": 2}  # parameter_invisible (1 = stored only, 2 = not stored)
 ENGINE_GEN = {"split", "reroll"}  # the engine sends these (split: it sets the latency attribute; reroll: it turns every 1 into a pulse the gen can see)
 PARAM_ORDER = list(P)
-ASSERT_N = 34
+ASSERT_N = 35
 assert len(P) == ASSERT_N, len(P)
 assert len({v[1] for v in P.values()}) == len(P) and all(len(v[1]) <= 8 for v in P.values())
 assert all(len(v[10]) >= 12 for v in P.values())

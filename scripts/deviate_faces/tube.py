@@ -20,7 +20,7 @@ def layout(h):
         "id": "obj-lay-tube-crt", "files": ["deviate_face_tube.js"], "rect": [CX, CY, CW, CH], "role": "hit", "ignoreclick": False,
         "keys": ["v_snap", "v_pitch", "v_body", "v_motion", "v_space", "v_echo", "v_grit", "v_ring", "chance"],
     }
-    plate = h.label("obj-lay-tube-plate", "DEVIATE  TUBE", GX, 146.0, 108.0, 12.0, size=9.0, color=AMBER, bold=True, align=1)
+    plate = h.label("obj-lay-tube-plate", "DEVIATE  TUBE", GX, 154.5, 108.0, 12.0, size=9.0, color=AMBER, bold=True, align=1)
     panels = [
         h.panel("obj-panel-crt", 3, 2, 249, 165, bg=(0.16, 0.10, 0.04), border=(0.55, 0.36, 0.12), rounded=10),
         h.panel("obj-panel-bezel", BX, 2, W - BX - 3.0, 165, bg=(0.14, 0.09, 0.035), border=(0.55, 0.36, 0.12), rounded=8),

@@ -5,7 +5,7 @@ from . import _blocks as b  # noqa: F401  (kept for the contract; this face lays
 
 NAME = "Lanes"
 
-W = 548.0
+W = 588.0
 LANE_Y0 = 19.0      # first lane top, device coordinates (canvas y 5 + 14)
 LANE_PITCH = 47.0   # lane height 44 + 3 gap, canvas and meta rows share it
 CELL_PITCH = 65.0
@@ -45,7 +45,7 @@ def layout(h):
 
     # ---- sections (small panels first, body panel last)
     section("meta", 260, 4, 200, 161, "Draw")
-    section("globals", 462, 4, 82, 161, "Globals")
+    section("globals", 462, 4, 122, 161, "Globals")
     theme_panel("obj-panel-lanes", 4, 4, 254, 161, "live_desktop")  # the lanes canvas sits on it, no title (the canvas has its own header)
     panels.append(sc.make_body_panel(W))
     ptheme.append(["obj-panel-body", "live_surface_bg", list(sc.LIVE_THEME["live_surface_bg"])])
@@ -69,17 +69,16 @@ def layout(h):
     gx = 466.0
     controls.append(h.dial("chance", gx, 23.0, 33.0, 42.0))
     controls.append(h.dial("mix", gx + 40.0, 23.0, 33.0, 42.0))
-    controls.append(h.dial("drift", gx, 70.0, 33.0, 42.0))
-    controls.append(h.button("reroll", gx + 40.0, 70.0, 33.0, 22.0, text="Reroll"))
-    controls.append(h.menu("split", gx, 114.0, 73.0, 15.0))
-    controls.append(h.menu("midi_in", gx, 131.0, 73.0, 15.0))
-    controls.append(h.numbox("arch", gx, 148.0, 73.0, 15.0))
-    controls.append(h.park(h.dial("thresh", 0, 0)))
-    controls.append(h.park(h.dial("seed", 0, 0)))
+    controls.append(h.dial("drift", gx + 80.0, 23.0, 33.0, 42.0))
+    controls.append(h.dial("thresh", gx, 70.0, 33.0, 42.0))
+    controls.append(h.dial("seed", gx + 40.0, 70.0, 33.0, 42.0))
+    controls.append(h.button("reroll", gx + 80.0, 70.0, 33.0, 22.0, text="Reroll"))
+    controls.append(h.menu("split", gx, 115.0, 113.0, 15.0))
+    controls.append(h.menu("amode", gx, 132.0, 58.0, 15.0))
+    controls.append(h.numbox("arch", gx + 61.0, 132.0, 52.0, 15.0))
+    controls.append(h.menu("midi_in", gx, 149.0, 113.0, 15.0))
 
     canvas = {"id": "obj-lay-lanes-viz", "files": ["deviate_face_lanes.js"], "rect": [6.0, 5.0, 250.0, 159.0], "role": "display", "ignoreclick": True,
               "keys": ["v_snap", "v_pitch", "v_body", "v_motion", "v_space", "v_echo", "v_grit", "v_ring", "chance", "split"]}
     return {"width": W, "controls": controls, "canvases": [canvas], "panels": panels, "panel_theme": ptheme, "theme": "ableton",
-            "extra_boxes": extra, "extra_lines": [],
-            "off_face": {"thresh": "detection threshold is set rarely; the panel has no room (automatable, in Live's parameter list)",
-                         "seed": "the seed is a set-up choice; no room on the face (automatable, in Live's parameter list)"}}
+            "extra_boxes": extra, "extra_lines": [], "off_face": {}}
