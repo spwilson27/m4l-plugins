@@ -48,3 +48,12 @@ Stage C: all four tests run on this branch and fail for the stated reason.
 Gates: typecheck ok; test_delayplus, test_reverbplus(+face), test_transplit/loudsplit/harmsplit/freqsplit, test_clipplus, test_glitch, all `*paint_bounds*`, test_face_fuzz (0 failures) green; test_device_static: only the known Better Shaper and Neural Amp violations remain. No DSP change, so no Max audio; no face/LOM change beyond the version stamp, so no full Live run.
 
 Smoke: `scripts/vm_smoke.sh "devices/Delay+.adg"` PASS (90/90 parameters, 0 fails, 0 warns, rack Delay+ / Delay+ FX / Delay+ End loaded). The smoke loader repoints the empty Path to the VM devices dir (`smoke_fix_adg.py`), so it shows the empty-Path preset parses and loads, not Live's own relative-only resolution. The other five `.adg` were not smoked (identical generator).
+
+## Review
+- Diff main...HEAD touches only allowed shared files (minify_gen.py, paint_bounds_lib.js, make_delayplus_sets.py, smoke_fix_adg.py, build_delayplus/reverbplus, spectral tests' .adg assertions) plus six .adg and Delay+/Reverb+ .amxd (stamp only). No frozen files, no Amp/Deviate, no AGENTS.md edit.
+- Rebuilt every non-Amp/Deviate device from a clean tree: `git diff devices/` empty, i.e. committed devices equal a fresh rebuild (also deterministic across runs). tests/spectral_probe and tests/out/dropprobe change on rebuild vs HEAD (stale in main, not this lane); left untouched.
+- Minifier output checked by hand: `exp(0 - 1 /x)` kept, `a-1/b` and `(0-1)/x` still compact.
+- Gates green: typecheck, test_adg_portable, test_build_deterministic, test_minify_idiom, test_paint_bounds_lib, delayplus, reverbplus(+face), transplit, loudsplit, harmsplit, freqsplit, clipplus, glitch, face_fuzz, minify --check.
+- Nit: test_minify_idiom's "ordinary subtraction stays minified" check is a weak OR; harmless.
+- Deferred: Live resolving a relative-only (empty Path) .adg outside the smoke loader unverified (only Delay+ smoked); `#0-sstest` kept as test broadcast; S4-2..5.
+Verdict: READY.
