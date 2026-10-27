@@ -36,7 +36,16 @@ function rlShown() {
     return out;
 }
 function rlWheelAt(t) { return 10 * 0.5 * (1 - Math.exp(-Math.max(0, t) / 500)); }
-function rlWheel(now) { return rlBase + rlWheelAt(Math.min(now - rlSpinT0, 4000) / 1); }
+function rlWheel(now) { return rlBase + rlWheelAt(Math.min(now - rlSpinT0, 4000)); }
+/** an angle wrapped into [0, 2 pi) */
+function rlWrap(a) { var t = Math.PI * 2; return a - Math.floor(a / t) * t; }
+/** the Range band: draws are uniform in Value +- Range, clamped to 0..1 */
+function rlBand(v, rg) { return [Math.max(0, v - rg), Math.min(1, v + rg)]; }
+/** true once a hit has happened (a rejected hit still counts: its pocket is the dark zero) */
+function rlHadHit(hits, serial, spinT0) { return hits > 0 || serial > 0 || spinT0 > -1e8; }
+/** the DSP pill rectangle: the free bottom-right corner under the legend, clear of the wheel disc */
+function rlPillRect(W, H, textW) { var w = textW + 10; return [W - 2 - w, H - 13, w, 12]; }
+function rlPillText() { return dvState.dsp.ready ? "" : (dvState.dsp.error ? "DSP failed" : "DSP loading..."); }
 
 function onFrame(t) {
     var now = rlNow(), cur = rlCurMetas(), i, changed = false;
@@ -44,7 +53,7 @@ function onFrame(t) {
     for (i = 0; i < 8; i++) if (Math.abs(cur[i] - rlTo[i]) > 0.01) changed = true;
     if (changed) { rlFrom = rlShown(); rlTo = cur; rlT0 = now; dvAnimate(160); }
     if (t.hitNew) {
-        rlBase = rlWheel(now) * 1;
+        rlBase = rlWrap(rlWheel(now));
         rlSpinT0 = now;
         rlFlash = 1;
         dvAnimate(2600);
@@ -77,7 +86,7 @@ function paint() {
     var W = mgraphics.size[0], H = mgraphics.size[1], i, a, now = rlNow(), g = dvTel.gate ? 1 : 0;
     var wheel = rlWheel(now), tSpin = now - rlSpinT0, pk = dvTel.pk, metas = rlShown();
     var serial = dvTel.serial > 0 ? dvTel.serial : 0, pocket = ((serial % 8) + 8) % 8;
-    var pal = RL;
+    var pal = RL, hadHit = rlHadHit(dvTel.hits, dvTel.serial, rlSpinT0);
 
     // background disc
     dvColor(pal.felt);
@@ -103,7 +112,7 @@ function paint() {
 
     // pocket ring (rotates)
     for (i = 0; i < 8; i++) {
-        var a0 = wheel + i * Math.PI / 4 - Math.PI / 2, zero = (g === 0 && i === pocket);
+        var a0 = wheel + i * Math.PI / 4 - Math.PI / 2, zero = (hadHit && g === 0 && i === pocket);
         dvRingSeg(RL_CX, RL_CY, 57, 66, a0, a0 + Math.PI / 4 - 0.04, 3);
         dvColor(zero ? pal.zero : (i % 2 ? pal.black : pal.red), 1);
         mgraphics.fill();
@@ -119,7 +128,7 @@ function paint() {
     for (i = 0; i < 3; i++) {
         r = rings[i];
         dvColor(pal.dim, 0.35); dvCircle(RL_CX, RL_CY, r[2] - 1.4); mgraphics.set_line_width(2.6); mgraphics.stroke();
-        var sw = rlLevel(r[0] / 1) * Math.PI * 2 * 0.98;
+        var sw = rlLevel(r[0]) * Math.PI * 2 * 0.98;
         if (sw > 0.05) { dvRingSeg(RL_CX, RL_CY, r[2] - 2.7, r[2], -Math.PI / 2, -Math.PI / 2 + sw, Math.ceil(sw / 0.4)); rlFill(r[1], 0.95); }
     }
 
@@ -137,7 +146,7 @@ function paint() {
         key = DV_META_KEYS[i];
         v = dvNorm("v_" + key); rg = dvNorm("r_" + key);
         a = -Math.PI / 2 + i * Math.PI / 4;
-        lo = Math.max(0, v - rg / 2); hi = Math.min(1, v + rg / 2);
+        lo = rlBand(v, rg)[0]; hi = rlBand(v, rg)[1];
         if (hi - lo > 0.005) { dvRingSeg(RL_CX, RL_CY, rad(lo), rad(hi), a - 0.2, a + 0.2, 2); rlFill(pal.brass, 0.28); }
         vpts.push(rlPt(a, rad(v)));
         dpts.push(rlPt(a, rad(metas[i] / 100)));
@@ -174,14 +183,19 @@ function paint() {
     dvColor(pal.black, 0.5); dvCircle(bp[0], bp[1], 2.6); mgraphics.set_line_width(0.6); mgraphics.stroke();
 
     // legend column: draw per meta
-    var lx = 154;
-    dvText(g ? "DRAW" : "ZERO", lx, 20, 8, g ? pal.ivory : pal.red, true);
-    dvText(dvTel.src ? "MIDI" : "", lx + 28, 20, 6, pal.dim, true);
+    var lx = 154, head = !hadHit ? "READY" : (g ? "DRAW" : "ZERO");
+    dvText(head, lx, 19, 8, !hadHit ? pal.dim : (g ? pal.ivory : pal.red), true);
+    if (dvTel.src) dvText("MIDI", W - 3 - dvTextW("MIDI", 7, true), 19, 7, pal.dim, true);
     for (i = 0; i < 8; i++) {
-        var ly = 31 + i * 15, m = metas[i] / 100;
-        dvText(RL_NAMES[i], lx, ly + 6, 6.5, pal.dim, true);
-        dvColor(pal.black, 0.7); mgraphics.rectangle(lx, ly + 8, 38, 2.4); mgraphics.fill();
-        dvColor(g ? pal.brass : pal.dim, 1); mgraphics.rectangle(lx, ly + 8, Math.max(1, 38 * m), 2.4); mgraphics.fill();
+        var ly = 28 + i * 14, m = metas[i] / 100;
+        dvText(RL_NAMES[i], lx, ly + 7, 7.5, pal.dim, true);
+        dvColor(pal.black, 0.7); mgraphics.rectangle(lx, ly + 9, 38, 2.4); mgraphics.fill();
+        dvColor(g ? pal.brass : pal.dim, 1); mgraphics.rectangle(lx, ly + 9, Math.max(1, 38 * m), 2.4); mgraphics.fill();
     }
-    dvDrawDspPill(W - 2, 1, 8, DVC);
+    var pt = rlPillText();
+    if (pt) {
+        var pr = rlPillRect(W, H, dvTextW(pt, 7, true));
+        dvPill(pr[0], pr[1], pr[2], pr[3], dvState.dsp.error ? DVC.coral : DVC.amber, 0.9);
+        dvText(pt, pr[0] + 5, pr[1] + 9, 7, [0.08, 0.08, 0.08, 1], true);
+    }
 }
