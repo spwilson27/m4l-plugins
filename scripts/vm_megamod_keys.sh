@@ -49,10 +49,10 @@ tunnel() {
 }
 
 sync_repo() {
+  host_build megamod || return 1
   (cd "$ROOT" && node scripts/megamod_key_seed.js >/dev/null) || return 1
   rsync -az --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ --exclude vendor \
     -e "sshpass -e ssh" "$ROOT/scripts" "$ROOT/src" "$ROOT/tests" "$ROOT/devices" "admin@${IP}:${VMREL}/" || return 1
-  "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/build_megamod.py >/dev/null"
 }
 
 case "${1:-}" in

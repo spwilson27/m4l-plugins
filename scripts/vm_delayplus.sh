@@ -24,7 +24,7 @@ IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
-  rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
+  rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ --exclude '*_test.als' \
     -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
@@ -40,8 +40,10 @@ case "${1:-}" in
   audio)
     sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_delayplus_audio_tests.py' ;;
   live)
+    host_build delayplus || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_delayplus.py >/dev/null' || exit 1
+    # no node in the VM: the devices came over in the sync, the VM only writes the set (VM paths)
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 -c "import sys; sys.path.insert(0, \"scripts\"); import build_delayplus as b; b.build_sets([\"main\"])" >/dev/null' || exit 1
     # reopen the Set in the running Live (loads the rebuilt devices, ~3 s); DP_COLD=1 = kill + relaunch (~8-10 s)
     if [ -n "${DP_COLD:-}" ]; then "$ROOT/scripts/vm_live_open.sh" cold "~/${VMREL}/delayplus_test.als"
     else "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/delayplus_test.als" --fresh; fi ;;

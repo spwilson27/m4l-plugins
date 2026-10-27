@@ -49,8 +49,9 @@ case "${1:-}" in
     sync_repo || exit 1
     "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_xo_runtime_test.py' ;;
   live)
+    host_build xo_map || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_xo_map.py >/dev/null &&
+    "${SSH[@]}" 'cd ~/'"$VMREL"' &&
       /usr/bin/python3 scripts/make_xo_set.py --out "$HOME/'"$VMREL"'/xo_test.als" --xo "devices/'"$XO_DEV"'.amxd" --track-name "'"$XO_DEV"'" || exit 1
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       find "$HOME/Library/Preferences/Ableton" -maxdepth 2 \( -name CrashRecoveryInfo.cfg -o -name CrashDetection.cfg \) -delete;  # (an unmatched glob aborts rm in the VM zsh)

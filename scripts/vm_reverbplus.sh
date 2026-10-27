@@ -25,7 +25,7 @@ IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
-  rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
+  rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ --exclude '*_test.als' \
     -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
@@ -41,8 +41,9 @@ case "${1:-}" in
   audio)
     sync_repo && "${SSH[@]}" "cd ~/${VMREL} && /usr/bin/python3 scripts/run_reverbplus_audio_tests.py ${*:2}" ;;
   live)
+    host_build reverbplus || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_reverbplus.py >/dev/null &&
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 -c "import sys; sys.path.insert(0, \"scripts\"); import build_reverbplus as b; b.build_sets([b.BASE_NAME], True)" >/dev/null &&
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
       open -a "Ableton Live 12 Suite" "$HOME/'"$VMREL"'/reverbplus_test.als" &&

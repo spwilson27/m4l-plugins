@@ -1,3 +1,5 @@
 previews
 node_modules
 tests/out/xo_runtime/
+/delayplus_test.als
+/reverbplus_test.als

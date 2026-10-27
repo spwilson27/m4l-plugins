@@ -28,7 +28,7 @@ IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
-  rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
+  rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ --exclude '*_test.als' \
     -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
@@ -46,8 +46,9 @@ case "${1:-}" in
   ui)
     sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_envtrig_ui_tests.py' ;;
   live)
+    host_build envtrig || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_envtrig.py >/dev/null &&
+    "${SSH[@]}" 'cd ~/'"$VMREL"' &&
       DEV="$HOME/'"$VMREL"'/devices/Envelope Trigger.amxd" &&
       /usr/bin/python3 scripts/make_delayplus_sets.py --start "$DEV" --end "$DEV" --name "Envelope Trigger" \
         --track "Envelope Trigger::$DEV" --als "$HOME/'"$VMREL"'/envtrig_test.als" >/dev/null &&

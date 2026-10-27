@@ -10,3 +10,13 @@ vm_dir_rel() {
   case "$d" in ""|.|..|*/../*|../*|*"'"*|*'"'*|*'$'*|*'`'*|/*) echo "bad M4L_VM_DIR: $d" >&2; exit 2 ;; esac
   VMREL="$d"
 }
+
+# The VM has no node, so every build_*.py (they minify embedded JS through node) runs on the HOST; the VM only
+# generates its Live sets (python, no node) from the devices the sync copied over. Needs $ROOT. `live` paths call this
+# before sync_repo.   host_build delayplus reverbplus ...
+host_build() {
+  local s
+  for s in "$@"; do
+    (cd "$ROOT" && python3 "scripts/build_$s.py" >/dev/null) || { echo "host build of $s failed" >&2; return 1; }
+  done
+}

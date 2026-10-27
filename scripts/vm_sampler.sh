@@ -118,9 +118,9 @@ case "${1:-}" in
     "$ROOT/scripts/vm_shot.sh" /tmp/bs_mseg_live.png || true
     wait $LIVEPY || exit 1 ;;
   live)
+    host_build sampler || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/build_sampler.py >/dev/null &&
-      /usr/bin/python3 scripts/make_sampler_set.py || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/make_sampler_set.py || exit 1
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
       rm -rf "$HOME"/Library/Preferences/Ableton/Live\ */Undo;

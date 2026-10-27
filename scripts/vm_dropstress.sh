@@ -13,5 +13,6 @@ SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=1
 if [ -z "${M4L_LIVE_LOCK_HELD:-}" ]; then
   M4L_LIVE_LOCK_WAIT=${M4L_LIVE_LOCK_WAIT:-7200} M4L_LIVE_SET=dropstress exec "$ROOT/scripts/vm_live_lock.sh" dropstress -- "$0" "$@"
 fi
+host_build dropprobe || exit 1
 rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
-"${SSH[@]}" "cd ~/${VMREL} && /usr/bin/python3 scripts/build_dropprobe.py >/dev/null && DS_DEBUG=${DS_DEBUG:-} DS_FRONT=${DS_FRONT:-Live} DS_NAME=${DS_NAME:-1} /usr/bin/python3 scripts/drop_stress.py --cells $1 --drops ${2:-300} --max-crashes ${3:-3}"
+"${SSH[@]}" "cd ~/${VMREL} && DS_DEBUG=${DS_DEBUG:-} DS_FRONT=${DS_FRONT:-Live} DS_NAME=${DS_NAME:-1} /usr/bin/python3 scripts/drop_stress.py --cells $1 --drops ${2:-300} --max-crashes ${3:-3}"

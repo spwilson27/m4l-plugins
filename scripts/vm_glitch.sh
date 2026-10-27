@@ -44,6 +44,7 @@ case "${1:-}" in
   audio)
     sync_repo && "${SSH[@]}" "cd ~/${VM_DIR} && /usr/bin/python3 scripts/run_glitch_audio_tests.py" ;;
   live)
+    host_build glitch || exit 1
     sync_repo || exit 1
     "${SSH[@]}" "cd ~/${VM_DIR} && /usr/bin/python3 scripts/make_glitch_set.py || exit 1
       pkill -f 'MacOS/Live' ; for i in \$(seq 1 40); do pgrep -f 'MacOS/Live' >/dev/null || break; sleep 0.5; done;

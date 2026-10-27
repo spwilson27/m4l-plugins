@@ -25,8 +25,9 @@ case "${1:-}" in live|test|livetest) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || exec "$
 case "${1:-}" in
   livetest) shift; "$0" live && "$0" test "$@" ;;
   live)
+    host_build mbsplit || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" "cd ~/${DIR} && /usr/bin/python3 scripts/build_mbsplit.py >/dev/null && /usr/bin/python3 scripts/make_mbsplit_set.py || exit 1
+    "${SSH[@]}" "cd ~/${DIR} && /usr/bin/python3 scripts/make_mbsplit_set.py || exit 1
       pkill -f 'MacOS/Live' ; for i in \$(seq 1 40); do pgrep -f 'MacOS/Live' >/dev/null || break; sleep 0.5; done;
       rm -f \"\$HOME\"/Library/Preferences/Ableton/Live\\ */CrashRecoveryInfo.cfg \"\$HOME\"/Library/Preferences/Ableton/Live\\ */CrashDetection.cfg;
       rm -rf \"\$HOME\"/Library/Preferences/Ableton/Live\\ */Undo;
