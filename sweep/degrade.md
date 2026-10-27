@@ -38,3 +38,12 @@ Red run: `node tests/test_degrade_sweep2.js` -> 3/3 fail for the stated reasons;
 | DEG-S4-02..06 | logged only, not changed (S4) | - |
 
 Gate: typecheck, build, test_degrade, bugsweep, sweep2 (3/3), preview read, test_device_static and face_fuzz OK. VM Max audio: full suite and sweep2 runner PASS (new scripts/vm_degrade.sh). Live: vm_smoke PASS (21/21 params, 0 fails). No frozen files touched; nothing DEFERRED(shared).
+
+## Review
+Stage E independent review of main...HEAD: READY.
+- Rebuild of devices/Degrade.amxd is byte-identical to the committed file (git diff clean after build).
+- Gates re-run on host: typecheck, build, test_degrade, test_degrade_sweep2 (3/3 pass); runners compile.
+- Soft knee is C1 at 0.9 (slope 1 both sides), max 1.0; scope name flows from setbuffer; no frozen/shared files edited (scripts/vm_degrade.sh is a new per-device wrapper, not an edit of existing infra).
+- AGENTS.md: one exact addition inside section 10. Tests assert the real bug conditions (no tautologies).
+- Not re-run in review: VM Max/Live (reported PASS in Fix stage).
+- Deferred shared items: none.
