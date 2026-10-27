@@ -92,6 +92,16 @@ Reused: `scripts/max_harness.py`, `scripts/vm_live_lock.sh` (`batch`), `scripts/
 
 Deferred to shared lanes: F1 `.adg` absolute paths; `scripts/minify_gen.py` should keep `0- N/` safe (no other core uses the idiom today); `tests/paint_bounds_lib.js` move_to-before-arc false positive; `#0-sstest` / `#0-amptest` test hooks.
 
+### Wave 3 (merged 2026-10-27)
+| Lane | S1 | S2 | S3 | S4 (logged) | Fixed | Notes |
+|---|---|---|---|---|---|---|
+| envtrig | 0 | 2 | 1 | 3 | short name `MIDI To` -> `MIDI Panel`, dial text colour, UI runner prefix | |
+| degrade | 0 | 2 | 1 | 6 | `---degscope`, wet path soft knee (no level step), dial text colour; F6 was a test bug | codec echo latency unreported (S4) |
+| percipitator | 0 | 2 | 0 | ? | `---percipwt` / `---percipscope`, MIDI input routing | real MIDI chord in Live not checked |
+| reciprocator | 0 | 0 | 1 | 6 | dial text colour | |
+| tinyspace | 0 | 1 | 1 | ? | dial text colour, duck slewed (no hard cut on seed change) | VM audio not re-run after the slew |
+| sand | 0 | 3 | 0 | ? | `---sandwave`, Param `mix` -> `wetamt`, fixnan on input | |
+
 ### Wave 2 (merged 2026-10-27)
 | Lane | S1 | S2 | S3 | S4 (logged) | Fixed | Notes |
 |---|---|---|---|---|---|---|
