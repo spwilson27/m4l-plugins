@@ -19,3 +19,11 @@ Counts: S1 0, S2 0, S3 1, S4 3.
 | F9 | not reproduced | see above | smoke PASS | n/a |
 
 Not run in this stage: vm_mbsplit.sh livetest (rack sum, linking, work sharing) - Live lock was contended by other lanes; to be run before fixing.
+
+## Verify
+- MB-01 KEEP: re-run, fails for the stated reason (set_f1/set_f3 clamp without echoing ui_f*; code at src/mbsplit_ui.js set_f1..f3 emits ui_* only when emitDspState(neighChanged) is true). User-visible: numbox/saved value disagrees with the sound. Deterministic, not an iteration-1 item.
+- MB-01b KEEP: same cause, F3 at the bottom of the stack; deterministic.
+- MB-02 KEEP (runner change, no test): sound, makes audio suite test the shipped minified gen; guarded by MBSPLIT_MINIFY=0.
+- MB-03, MB-04 stay log-only S4 (no tests, nothing to delete); MB-04 is by design (-70 dB = off).
+- F9 not reproduced: accepted; no test.
+- No tests rejected or deleted.
