@@ -144,7 +144,35 @@ function pcpDspSchedule() {
     pcpDsp.task.schedule(30);
 }
 
+var pcpMidiRouteDone = false;
+
+// Live gives an audio effect a MIDI input (this_device midi_inputs 0) that defaults to "No Input" and shows no chooser,
+// so the sidechain chord strip never received a note. At init a "No Input" routing becomes "All Ins".
+function pcpMidiRoute() {
+    if (pcpMidiRouteDone) return;
+    pcpMidiRouteDone = true;
+    try {
+        var api = new LiveAPI(function () {}, "this_device midi_inputs 0");
+        if (!api || !api.id || String(api.id) === "0") { pcpMidiRouteDone = false; return; }
+        var lv = function (raw, key) {
+            var v = raw;
+            if (Array.isArray(v)) v = v.length > 1 ? v[1] : v[0];
+            if (v && typeof v === "object" && typeof v.stringify === "function") v = v.stringify();
+            if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { return null; } }
+            return (v && typeof v === "object" && key in v) ? v[key] : null;
+        };
+        var cur = lv(api.get("routing_type"), "routing_type");
+        var types = lv(api.get("available_routing_types"), "available_routing_types");
+        if (!cur || !types) { pcpMidiRouteDone = false; return; }
+        if (String(cur.display_name) !== "No Input") return;
+        for (var i = 0; i < types.length; i++) {
+            if (String(types[i].display_name) === "All Ins") { api.set("routing_type", types[i]); return; }
+        }
+    } catch (e) { pcpMidiRouteDone = false; }
+}
+
 function init_dsp() {
+    pcpMidiRoute();
     pcpDspSchedule();
 }
 
