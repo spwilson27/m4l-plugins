@@ -18,3 +18,10 @@
 | RP-S4-04 | S4 | previews | render_preview ignores parameter_units (Decay "2", Bass Mult "1"); Live is correct. | log only |
 
 Counts: S1 0, S2 1, S3 0, S4 4.
+
+## Verify
+- RP-S2-01 KEEP: red test run, fails for the stated reason (got 4800, expected 9600); code confirms rpIrReprocess sets status "processing" during a load and ir_loaded returns unless status is "loading"; user-visible (dropped IR never used); not an iteration-1 item.
+- RP-S4-01 KEEP (log only, S4): deliberate dedupe, minor; no test.
+- RP-S4-02 KEEP (log only, S4): no test.
+- RP-S4-03 REJECT as a device finding: infra/shared /tmp clobbering between lanes, not a Reverb+ bug.
+- RP-S4-04 REJECT as a bug: preview renderer limitation already documented in AGENTS 27 (Live is correct).
