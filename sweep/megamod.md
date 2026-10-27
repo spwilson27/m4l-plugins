@@ -15,3 +15,5 @@ Previews rendered (committed state + scratch builds of every UB_PREVIEW_* state)
 ## Verified OK (no finding)
 - Parameter pool: 257 LOM params, unique short names, ranges/units/enums as documented; marker Int 0..2; Depth only for pool slots <64 (by design).
 - New audio case `extremes` (all generator types at range extremes: 40 Hz / 0.01 Hz, inverted/degenerate MSEG loop, 32 steps+glide, synced div 0/15 at 300 bpm, follower +36 dB / 0.05 ms attack, ADSR thresh 0/-60, XY slew 1): finite and within -1..1 -> PASS (kept as a regression test in scripts/run_megamod_audio_tests.py).
+- Live smoke (`vm_smoke.sh --budget 700`): PASS, 0 fails, 1 warn (budget exhausted at 220/256 params swept, 723 s; each param is set 0.15 s apart, so full coverage needs ~900 s). Two instances ready, isolation held, meters 0.857/0.858. Screenshots in tests/out/smoke/mega_modulator/ (device collapsed at default width with 0 modulators; fine).
+- Not run in this stage: `vm_megamod_live_suite.sh` (blocked by MM-02 until ROOT is exported; Live lock queue was long). Recommended for stage C after fixes: `ROOT=$PWD scripts/vm_live_lock.sh megamod-suite -- scripts/vm_megamod_live_suite.sh`.
