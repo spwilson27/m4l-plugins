@@ -82,6 +82,10 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Amp (section 30; one engine, five faces: Amp Stack / Neural / Pedal / Lab / Rack). VM: scripts/vm_amp.sh audio, scripts/vm_amp.sh livetest
      npm run -s typecheck && python3 scripts/build_amp.py && node tests/test_amp.js && for d in Stack Neural Pedal Lab Rack; do python3 scripts/render_preview.py "devices/Amp $d.amxd"; done
+
+     # Deviate (section 31; one build writes all five faces: Roulette, Constellation, Lanes, Tube, Matrix; Read previews/deviate_<face>{,_idle,_extreme}.png)
+     npm run -s typecheck && python3 scripts/build_deviate.py && for t in tests/test_deviate*.js; do node $t || break; done && node tests/test_parameter_info.js && python3 scripts/render_deviate_previews.py
+     scripts/vm_deviate.sh audio && M4L_LIVE_LOCK_WAIT=7200 scripts/vm_deviate.sh run   # Max suite, then Live (five devices, one Set, screenshots), in the VM (section 1a)
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -1947,3 +1951,135 @@ WaveNet (any channels <= 32, kernel <= 8, dilations, non-gated or gated, activat
 - Real Max (`scripts/vm_amp.sh audio`): the generated gen's raw model output equals the JS reference (which equals the official NAM torch model within float32) exactly for Nano / Feather / Lite / Standard WaveNets and 1- and 2-layer LSTMs; chain and sleep cases pass. Real-time CPU (`adstatus cpu`, audio_device driver, looping stimulus): Feather 2.5 %, Lite 11.7 %, Standard ~40 % of the VM's core (Nano 1.7 %, LSTM 1x16 2.3 %, no model 0.1 %; the VM core is much slower than the host's).
 - Live 12.4.7 (`scripts/vm_amp.sh livetest`, five devices on five tracks): every device's DSP runs, the built-in capture plays the test tone (track meter 0.85), Crunch -> Lead through the LOM switches banks without a hot-load, a Standard file hot-loads and plays, an LSTM file plays, a broken file is rejected while the previous model keeps playing, tone / cab / normalize / mix through the LOM. Live's CPU meter read 16 % with all five Feather amps running.
 - Not checked: dropping a `.nam` onto the drop zones and the Load dialog with real input (the engine path behind them is the same as `test_load`), Set save / reopen with a loaded file.
+
+---
+
+## 31. Architecture of `devices/Deviate <Face>.amxd` (Roulette, Constellation, Lanes, Tube, Matrix)
+
+A transient-triggered randomised multi-FX for drum fills, modelled on Beatsurfing RANDOM's "spin + deviance". Every hit (an audio onset, or a MIDI note-on used as a trigger only) takes a seeded random **draw** of 8 meta-parameters (Snap, Pitch, Body, Motion, Space, Echo, Grit, Ring). Each has a Value and a Range (deviance): draw = uniform in Value ± Range, clamped to 0..100. The metas drive 36 hidden parameters across 17 hidden effects. The hit is split into Transient / Body / Long (tail) chains. Nothing is audible more than **2.0 s** after the last hit. One DSP, one parameter set and one state blob ship as **five builds** that differ only in their audio-reactive face. Presets interchange across faces.
+
+### Files
+- `src/deviate_config.js` (Node-requirable): constants, `DV_PARAMS` (mirror of `P` in `scripts/build_deviate.py`, ORDER IS FOREVER, append only), the frozen telemetry layout `DV_SCOPE`, the hidden mapping table `DV_HIDDEN` + `dvHiddenFromMetas`, the draw (`dvHash`, `dvStep`), the Ring law (`dvRingTr`, `dvRingEnv`), the windows, the blob codec and `dvPreviewTel`.
+- `src/deviate_ir.js`: the built-in IR bank (10 synthesized stereo IRs, ≤ 2 s, deterministic, energy-normalised, ordered tight → weird → big), built in JS at load. No files.
+- DSP: `src/deviate_core.genexpr` (detector, draw, windows, the three chains, Ring envelope, per-effect clears, mix), `src/deviate_fx.genexpr` (forks of the Glitch helpers plus the new snap / click / resonator / chorus modules), `src/deviate_conv.genexpr` (a fork of the Reverb+ convolver: 48 tail slots, a per-input-slot IR tag), `src/deviate_spec.genexpr` (the Spectral split stage, its own gen~).
+- `src/deviate_engine.js` + `src/deviate_dsp.js`: the non-presentation engine v8ui (`obj-engine`).
+- `src/deviate_face_common.js`: the prelude of every face (`dvPoll`, `dvTel`, `dvSend`, drawing helpers).
+- Faces: `src/deviate_face_<face>.js` and the layout modules `scripts/deviate_faces/<face>.py`. The face contract is `scripts/deviate_faces/README.md`; the shared 4 x 2 meta block is `_blocks.py`.
+- Build, tests, VM:
+  - `scripts/build_deviate.py [face] [--out-dir] [--no-sets] [--dump-params]` builds every face found in `scripts/deviate_faces/*.py`.
+  - `scripts/render_deviate_previews.py` renders the `hit`, `idle` and `extreme` stills.
+  - `scripts/run_deviate_audio_tests.py` + `tests/deviate_probe.js`.
+  - `scripts/test_deviate_live.js`, `scripts/make_deviate_set.py`, `scripts/vm_deviate.sh`.
+  - `scripts/measure_deviate.py` (compile time and CPU in the VM).
+  - `tests/test_deviate*.js`.
+
+### Parameters (32 + Device On, identical in every build)
+- **Metas:** `Snap … Ring` are the Values (0..100 %; defaults 30, **50**, 30, 20, 30, 20, 20, 10). `R Snap … R Ring` are the Ranges: "<Meta> Range", default 50, unitstyle 9 `%.0f %`, so "50 %" fits a 33 px box (unitstyle 5 dropped the "%" there in Live).
+- **Globals:**
+
+  | Parameter | Range | Default | Notes |
+  |---|---|---|---|
+  | `Sens` | % | 50 | |
+  | `Thresh` | −60..0 dB | −36 | |
+  | `Chance` | % | 100 | share of hits that re-roll |
+  | `Mix` | % | 100 | |
+  | `Seed` | 0..1000 | 0 | `parameter_type 0`, unitstyle 0 |
+  | `Drift` | % | 0 | glide to a new draw over hits |
+  | `Reroll` | | | momentary `live.text` |
+  | `L Snap … L Ring` | | | per-meta Lock toggles |
+  | `Split` | Envelope / Spectral | | stored only |
+  | `MIDI In` | | | `parameter_invisible 2`, mirrors `this_device midi_inputs 0` (Live shows no chooser) |
+- **Pitch** is bipolar: −12..+12 st on the body, neutral at 50. Every other meta at 0 bypasses its family.
+- **Seed:** the same Seed and hit sequence give the same draws. The hit counter resets on Set load and on transport start, so bounces repeat.
+- **Lock** keeps the last drawn value and ignores Value and Range edits.
+- **Chance:** a hit that loses the Chance coin keeps the previous draw (`HIT_GATE 0`).
+- **Drift** `kd = 1 − 0.56·drift/100`: at 100 a new draw is about 90 % reached after 4 hits.
+- **Reroll** draws again with no hit. The engine owns `dvreroll`: every press becomes a 0 → 1 → 0 pulse over about 100 ms, because the Button-mode `live.text` emits a bare bang that the gen never saw.
+
+### DSP
+- **Detector:** the Envelope Trigger onset logic on the mono sum (fast / slow envelopes, a 30 ms lockout). MIDI note-ons arrive as the counter `dvmtrig` (Mega Modulator mtrig pattern) and are deduped against audio inside the lockout.
+- **Draw:** done in the gen on the hit sample with an exact integer hash (seed mix plus four squarings mod 67108859), not a `sin` hash. It matches `dvStep` bit for bit (the audio case `seed_repro` checks float32 parity). The page applies at `t0 + LAT − 96`, so the T chain sees it.
+- **Latency:** 256 samples in Envelope split mode, 1279 in Spectral (STFT 1023 + 256). The engine sets the patcher `latency` attribute at runtime and Live follows in `latency_in_samples` (verified). It switches to Spectral only after the spec stage's alive counter (scope 49) moves, sending `dvsplit 1` and the latency in the same tick. A DSP restart drops a Spectral device back to Envelope until the stage runs again. Mode changes fade over 256 samples.
+- **Split and chains:** Envelope splits by time windows (T fades out over 10–20 ms, the tail fades in over 120–180 ms, B = the rest). Spectral splits with the percussive mask, T + B = the delayed input exactly.
+  - T chain: snap shaper › drive › click burst › crush › filter.
+  - B chain: comb › formant › phaser › grain pitch shift › ring mod › saturation. A 6-mode resonator bank rings beside the B chain, excited by the whole hit.
+  - L chain: chorus / flanger plus sends to reverb, delay, slap and the convolver.
+- **Mix:** chains return residue (`fx(x) − x`), so **Mix 0 is the bit-exact delayed dry.** The mix smoother snaps to its target, the residue is `fixnan`'d before scaling, the soft limit acts on the residue only, and sleep passes the dry through.
+- **Ring law:** `Tr = 0.05·(1.83/0.05)^(ring/100)` s. The envelope is 1 for 150 ms, then `10^(−3.3·(age − 0.15)/Tr)`, then a 20 ms fade to exact 0, which is 2.0 s at Ring 100.
+  - Every in-loop feedback (reverb RT60, delay feedback, comb, resonator T60 ≤ 1.2 s) is derived from 0.9·Tr, so the envelope restarting on a hit meets only naturally decayed residue.
+  - A Reroll that shortens Ring lets the envelope fall no faster than its decay plus 1/(20 ms) per sample, so there is no step.
+- **Per-effect clears:** an effect is skipped while its smoothed wet ≤ 0.02. On every skip edge its small states clear at once and its rings clear in 192-sample slices, so a re-enabled effect never replays an old tail (audio case `stale_wake`).
+  - The end-of-life wipe is per effect as well. An effect that wakes mid-clear finishes its clear first (`wipe_rehit`).
+  - The convolver's rings and slot tags are wiped at once at the end of a life.
+- **Convolver:** starts 256 samples before the page applies. In Envelope mode it starts at hit detection, with the previous 96 samples of its tap replayed from a history ring. Its IR choice and wet are computed at detection, so it convolves the hit from its first sample (`conv_onset`: error 1e-7 against the time-domain convolution).
+  - A new hit with a different IR convolves exactly except for the one head and one tail frame that straddle the switch.
+  - The IR spectra are computed by the engine into `---deviateir` after the GUI is up (2.4 s in Live).
+- **Gen layout:** the main gen (`fft_init` + conv + fx + core) plus the Spectral stage, a separate shell gen~ created with it and hot-loaded with `setattr gen` on the first Spectral selection.
+- **Deferred DSP:** the device ships without gen~ (hub `dv_genin` = `gate 1 1`, `dv_plugin` / `dv_plugout`, `Global("deviate_dspq")`, trace `Global("deviate_trace")`, `/tmp/deviate_core_<hash>.gendsp`). It is **silent until the gen runs**; the face shows a `DSP loading…` pill until then. The `.gendsp` has 4 inputs, so `build_deviate.py` has its own `gendsp_json`.
+- **Compile and CPU** (harness, VM):
+  - Gen compile is about 3.1 s, over the 2.5 s target; Live is expected near 1.7 s, as for Reverb+, but that is not measured. The convolver is about 0.6–0.7 s of it. The face is up at once, and DSP is ready 0.75 s after gen creation in Live.
+  - CPU on the real-time driver: idle 0.5 % average, a hit every 250 ms 1.2 %, all metas 100 with the convolver 2.8 %, Spectral 2.0 %.
+- **Buffers:** `---deviatescope` (telemetry, 1536), `---deviatectl` (JS → gen restore), `---deviateir` (IR spectra + directory, version last), `---deviatespec` (5 × 2048 ring for the faces' FFT).
+- **Telemetry `DV_SCOPE`:** written every 64 samples; while asleep only ALIVE (48) moves.
+  - Header slots: frames, sr, hits, draw serial, onset age, split mode, latency, asleep, reroll, Tr, ring env, IR tag, detector envelopes, mtrig.
+  - 16..23 drifted metas, 24..31 raw draws, 32..37 peaks, 39 HIT_GATE, 40 HIT_SRC, 49 SPEC_ALIVE.
+  - 64..127 hidden values, 128..159 the gen's echo of every parameter (refreshed only while awake: wake the gen with a hit before reading it).
+  - 256.. waveform ring.
+- **GenExpr gotchas found here:** a variable named `gate` broke the compile; a function without a `return` failed; a function of about 66 statements failed (keep functions short).
+
+### Engine and state
+- **Engine:** `obj-engine` is a v8ui not in presentation. It owns the parameter store, the deferred DSP and its resend list, the latency attribute, MIDI note → `dvmtrig`, the MIDI From chooser, the IR bank and the blob.
+- **Blob:** `DeviateStateData` (`parameter_type 3`, version 1): flags, reroll counter, the targets and the drifted metas ×100, then tagged trailing sections that are kept even when unknown.
+  - Live calls `getvalueof()` only after `notifyclients()`, so the engine polls DRAW_SERIAL / REROLL every 300 ms and notifies when they move.
+  - Verified with `duplicate_track`. A real Set save / reopen was not run.
+- **Test hook:** `r ---deviatetest`. The expanded per-instance name is published in `Global("deviate_hooks").map` as `{LOM device id: name}`; a literal `#0` is forbidden by the static check. Messages: `test_report`, `test_hit`, `test_reroll`, `test_set <key> <v>`, `test_blob`, `test_front`. Reports go to `Global("deviate_test").report_<id>`.
+- **Live z-order:** Live draws the v8ui canvases IN FRONT of `live.*` widgets, whatever the box order. Every face's canvas is `ignoreclick` (`role: "display"`), and the engine calls `patcher.bringtofront()` on all 33 `live.*` boxes at +0.4 / 1.5 / 4 s. The widgets then draw over the canvas and take real clicks (spike S1, `UNDER_CONTROLS = True`). A canvas that takes clicks must not overlap a widget.
+
+### Faces (height 169)
+
+| Face | Width | Look |
+|---|---|---|
+| Roulette | 468 | Felt-and-brass wheel: spokes = metas, radar polygon of the draw; a hit spins the wheel and a ball lands; rim rings T/B/L. |
+| Constellation | 560 | Night sky: a star per meta at the drawn value, halo = Range, particle burst on a hit. |
+| Lanes | 548 | Ableton-native theme: three scrolling T/B/L level lanes with hit hairlines, meta cells in rows. |
+| Tube | 520 | Amber bezel with a phosphor CRT XY portrait, persistence, spectrum trace, LED draw bars. |
+| Matrix | 476 | LED dot-matrix history of the last 16 draws, spectrum strip, per-meta rows. |
+
+- Every face shows the 8 Values, 8 Ranges, Reroll, Mix, Chance and Sens.
+- Faces read the telemetry header first and the body only when FRAMES moved, and never redraw while idle.
+- `preview()` is deterministic (`dvPreviewTel` states `idle | hit | ring | extreme`).
+- The preview renderer fills only the last rectangle of a multi-rect path, so faces fill each rectangle separately. It also shows unit-formatted `live.numbox` values without their number in some cases, while Live shows them.
+
+### Build / Test / Preview
+```bash
+npm run -s typecheck && python3 scripts/build_deviate.py && for t in tests/test_deviate*.js; do node $t || break; done && node tests/test_parameter_info.js && python3 scripts/render_deviate_previews.py   # then Read previews/deviate_<face>{,_idle,_extreme}.png
+scripts/vm_deviate.sh audio [case ...]                                      # real Max, VM only (host_build first; M4L_VM_DIR=<lane> for parallel work)
+M4L_LIVE_LOCK_WAIT=7200 scripts/vm_deviate.sh run                           # Live: all five devices in deviate_test.als, under the Live lock
+```
+
+**Audio cases (all pass, VM):**
+- **Nulls and latency:**
+  - `mix0_null`, `neutral_null` (Envelope and Spectral), `split_sum` and `mix0_exact` are bit-exact. `mix0_exact` covers a +12 dBFS input, a Mix 100 → 0 move mid-run, and a signal under the sleep threshold.
+  - `latency_env` 256, `latency_spec` 1279.
+- **Draw and trigger:** `hit_once`, `seed_repro`, `range0_novar`, `chance0`, `lock`, `reroll_nohit`, `midi_hit`.
+- **Metas:** a per-meta audibility case for each meta.
+- **Ring caps:** `ring_cap_{space,reverb,echo,body,all}` (residue < 1e-9 from 2.06 s).
+- **Spectral and the convolver:** `spec_t`, `mode_switch`, `conv_onset`.
+- **Tails and clears:** `wipe_rehit`, `stale_wake`, `reroll_shorten` (largest envelope fall 0.14 per row).
+- **Robustness:** `fuzz` (25 seeds, no NaN, peak 2.6), `sleep_silent`, `telemetry_layout`, `gendsp_file`.
+
+**Live run (`scripts/test_deviate_live.js`, Live 12.4.x, about 100 s under one hold):**
+- DSP ready ×5 with no `dsp-error`, and the widths match the files.
+- 32 parameters per device, identical across the five and equal to `--dump-params`. Live lists them in its own order, so they are compared as sets.
+- A LOM value reaches the gen echo.
+- **First device only:** `test_hit` moves only that device's HITS / DRAW_SERIAL, with draws within V ± R and locks held. Chance 0 gives HIT_GATE 0. Reroll moves the serial by 1. Split → `latency_in_samples` 1279 and back to 256 within 2 s. MIDI From routed from a MIDI track counts hits.
+- Each track's output meter is 0.77–0.90 on a drum loop, with the hit counters rising.
+- Screenshots: `previews/live/deviate_<face>.png`.
+
+### Known rough edges
+- A page applying while a ring is only partly cleared (a hit within about 4 ms of a life's end) finishes the clear in that sample: a one-off spike of up to about 130k pokes.
+- On a Reroll only the Ring envelope is smoothed; the T/B/R window gains still jump.
+- The `dvreroll` edge can be lost when a 1-then-0 pair lands in one vector. The engine's 100 ms pulse avoids it, but automation pulses may not.
+- Ring buffers are sized for ≤ 96 kHz (reverb 16384, delay 65536, IRs capped at 98304 samples); at 192 kHz the reverb and delay reads wrap. At 96 kHz the 48 convolver tail slots reach about 1 s.
+- The grain pitch shifter is a two-grain overlap-add without alignment, so pure tones get a slight tremolo (as in Glitch).
+- Hit / reroll / split / MIDI Live checks cover the first device only. `live.numbox` drags with synthetic input did not move values in the VM, which is a limit of the synthetic input.
