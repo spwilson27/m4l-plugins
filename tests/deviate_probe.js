@@ -17,6 +17,8 @@ var tapNames = [];
 var drawP = null;
 var rWins = [];      // [a, b] ms pairs: max residue (output - delayed source) inside
 var clickMs = [];    // click start times (ms) of the spec_t source
+var exactFromMs = -1; // exdiff: max |output - delayed source| from this time on (exactness of Mix 0 after a settling time)
+var dumpWins = [];   // [start sample, count] windows of the signed residue (output L - delayed source), dumped as `dump<k>`
 var resultPath = "/tmp/deviate_audio.txt";
 var armed = false;
 
@@ -37,6 +39,17 @@ function dparams() {
 function rwindows() {
     rWins = Array.prototype.slice.call(arguments).map(function (s) {
         var q = String(s).split(":");
+        return [Number(q[0]), Number(q[1])];
+    });
+}
+
+function exactfrom(ms) {
+    exactFromMs = Number(ms);
+}
+
+function dumps() {
+    dumpWins = Array.prototype.slice.call(arguments).map(function (w) {
+        var q = String(w).split(":");
         return [Number(q[0]), Number(q[1])];
     });
 }
@@ -108,6 +121,22 @@ function analyze(durMs) {
         cntR++;
         if (i5 > 0) maxStep = Math.max(maxStep, Math.abs(L[i5] - L[i5 - 1]));
     }
+    if (exactFromMs >= 0) {
+        var exL = 0, exR = 0, ex0 = Math.max(latArg, Math.round(exactFromMs * 48));
+        for (var ie = ex0; ie < n; ie++) {
+            exL = Math.max(exL, Math.abs(L[ie] - S[ie - latArg]));
+            exR = Math.max(exR, Math.abs(R[ie] - S[ie - latArg]));
+        }
+        kv("exdiffL", exL);
+        kv("exdiffR", exR);
+    }
+    for (var dw = 0; dw < dumpWins.length; dw++) {
+        var dv = [];
+        for (var id = dumpWins[dw][0]; id < dumpWins[dw][0] + dumpWins[dw][1] && id < n; id++) {
+            dv.push(Number((L[id] - (id >= latArg ? S[id - latArg] : 0)).toPrecision(7)));
+        }
+        kv("dump" + dw, dv.join(","));
+    }
     kv("src_rms", cntR ? Math.sqrt(srcSq / cntR) : 0);
     kv("res_rms", cntR ? Math.sqrt(resSq / cntR) : 0);
     kv("maxstep", maxStep);
@@ -162,6 +191,14 @@ function analyze(durMs) {
                 kv("max_" + nm, mx);
             }
         }
+        // the largest fall of the Ring envelope telemetry between two consecutive rows, and its highest value (a jump to 0 is a click)
+        var envDrop = 0, envHi = 0;
+        for (var r3 = 1; r3 < rows; r3++) {
+            envDrop = Math.max(envDrop, get("ringenv", r3 - 1) - get("ringenv", r3));
+            envHi = Math.max(envHi, get("ringenv", r3));
+        }
+        kv("ringenv_maxdrop", envDrop);
+        kv("ringenv_hi", envHi);
         for (var r2 = 1; r2 < rows; r2++) {
             if (get("hits", r2) !== get("hits", r2 - 1)) hitRows.push(r2);
             if (get("applied", r2) !== get("applied", r2 - 1)) appliedRows.push(r2);

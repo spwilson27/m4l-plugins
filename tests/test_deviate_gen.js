@@ -251,7 +251,8 @@ sys.stdout.write(json.dumps(out))
 
 
 // ---- 5. whole-core simulation: the per-sample statements of the core run in Node (History = old value on read, as in Max) ----
-function makeSim(overrides) {
+function makeSim(overrides, fresh) {
+    const FN = fresh ? gx.load(full) : fns; // fft_init keeps a persistent guard per load: a sim that runs the convolver needs its own functions
     const raw = stripComments(core).split("\n");
     const decls = { Param: [], History: [], Data: [], Delay: [], Buffer: [] };
     let lastDecl = -1;
@@ -284,7 +285,7 @@ function makeSim(overrides) {
     const B = { max: Math.max, min: Math.min, abs: Math.abs, floor: Math.floor, pow: Math.pow, exp: Math.exp, sin: Math.sin, tanh: Math.tanh,
         clip: (x, lo, hi) => Math.max(lo, Math.min(hi, x)), peek: (b, i, c) => b.peek(i, c), poke: (b, v, i, c) => b.poke(v, i, c), wrap, dim: (bf) => bf.size,
         fixnan: (x) => (Number.isFinite(x) ? x : 0), sqrt: Math.sqrt, tan: Math.tan, cos: Math.cos, log: Math.log, log10: Math.log10, round: Math.round };
-    Object.assign(B, fns);
+    Object.assign(B, FN);
     const bnames = Object.keys(B);
     const fn = new Function("H", "W", "P", "IO", ...bnames, ...names, body);
     const IO = { sr: 48000, in1: 0, in2: 0, in3: 0, in4: 0, out1: 0, out2: 0 };
@@ -509,6 +510,163 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
         ok(nan === 0 && sawMode1 && sim.H.modeCur === 0 && sim.H.latCur === 256 && sim.H.swGain === 1, `sim: mode switch 256 <-> 1279 completes (nan ${nan})`);
         ok(jump < 0.2, `sim: no click while the tap moves (largest step ${jump})`);
     }
+}
+
+
+// ---- 6. review fixes (Node twins of the audio cases conv_onset, wipe_rehit, stale_wake, reroll_shorten, mix0_exact) ----
+{
+    // the early conv page values equal the hidden values the page applies (cwE / tgE in the hit branch)
+    const rng = cfg.dvRng(4242);
+    let worst = 0;
+    for (let t = 0; t < 200; t++) {
+        const E = [], T = [];
+        for (let i = 0; i < 8; i++) { E.push(rng() * 100); T.push(rng() * 100); }
+        const hv = cfg.dvHiddenFromMetas(E, T);
+        const cw = 0.9 * Math.min(1, Math.max(0, E[4] * 0.01 * 1.0274682411155285));
+        const tg = Math.min(9, Math.floor(Math.min(1, Math.max(0, T[4] * 0.01)) * 10));
+        worst = Math.max(worst, Math.abs(cw - hv[cfg.DV_HIDDEN_INDEX.conv_wet]), Math.abs(tg - hv[cfg.DV_HIDDEN_INDEX.conv_ir]));
+    }
+    ok(worst < 1e-12, `the early conv wet / IR formulas of the hit branch equal dv_hidden (${worst})`);
+    ok(code.includes("1.0274682411155285") && cfg.dvJitter(cfg.DV_HIDDEN_INDEX.conv_wet) === 1.0274682411155285 && cfg.dvJitter(cfg.DV_HIDDEN_INDEX.conv_ir) === 1, "jitter literal of conv_wet");
+}
+const ZERO_R = { dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, dvr7: 0 };
+{
+    // conv_onset: the convolver output of a hit that starts a new life equals the convolution of the hit from its first sample (IR 6, Envelope and Spectral)
+    const irm = require("../src/deviate_ir.js");
+    const builder = irm.dvIrBuilder(48000);
+    while (!builder.done()) builder.step(8);
+    const irs = new gx.DataSim(cfg.DV_IR.SAMPS);
+    for (const c of builder.chunks()) for (let i = 0; i < c.data.length; i++) irs.a[c.offset + i] = c.data[i];
+    irs.a[cfg.DV_IR.READY] = 1;
+    const IR = builder.irs[6];
+    for (const mode of [0, 1]) {
+        for (const start of [3000, 3037]) { // two block phases
+            const lat = mode ? 1279 : 256;
+            const sim = makeSim(Object.assign({ dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 60, dvv5: 0, dvv6: 0, dvv7: 0, dvsplit: mode }, ZERO_R), true);
+            sim.data.ir = irs;
+            const N = start + 100 + 2600 + lat;
+            const x = new Float64Array(N);
+            for (let n = 0; n < N; n++) x[n] = burst(n, start, 100, 0.8) * (0.7 + 0.3 * Math.sin(n * 0.37));
+            const oL = new Float64Array(N);
+            for (let n = 0; n < N; n++) { sim.step(x[n]); oL[n] = sim.data.dvCout.peek(0); }
+            let e = 0, en = 0;
+            for (let t = start + lat - 20; t < N; t++) {
+                let ref = 0;
+                for (let k = 0; k < IR.len; k++) { const m = t - lat - k; if (m < start) break; if (m < start + 100) ref += IR.L[k] * x[m]; }
+                e += (oL[t] - ref) * (oL[t] - ref); en += ref * ref;
+            }
+            ok(en > 1e-3 && Math.sqrt(e / en) < 1e-3, `conv_onset: ${mode ? "Spectral" : "Envelope"} mode, burst at ${start}: convolver output = IR * hit from its first sample (rel error ${Math.sqrt(e / Math.max(en, 1e-30)).toExponential(2)}, energy ${en.toExponential(2)})`);
+            ok(sim.H.cvArm === 1, "conv_onset: the stream is armed");
+        }
+    }
+}
+{
+    // wipe_rehit: identical hits at gaps between the end of a life and the next apply of 100 / 400 samples give the same response as at a gap of 6000
+    // (the previous hit's wipe is finished or cancelled safely: no holes in the new hit's rings)
+    const mk = () => makeSim(Object.assign({ dvv0: 30, dvv1: 50, dvv2: 60, dvv3: 70, dvv4: 70, dvv5: 80, dvv6: 40, dvv7: 10, dvl7: 1 }, ZERO_R), true);
+    const tr = cfg.dvRingTr(10);
+    const life = Math.round((0.15 + tr + 0.02) * 48000);
+    const run = (gap) => {
+        const sim = mk();
+        const outs = [];
+        const per = life + gap;
+        for (let h = 0; h < 5; h++) {
+            const o = [];
+            for (let n = 0; n < per; n++) o.push(sim.step(burst(n, 600, 100, 0.8)));
+            outs.push(o);
+        }
+        return outs;
+    };
+    const ref = run(6000);
+    for (const gap of [100, 400]) {
+        const got = run(gap);
+        let worst = 0;
+        // hit k response over the first `life` samples after its burst (the next burst starts at 600 + per)
+        for (let h = 1; h < 5; h++) {
+            for (let n = 600; n < life + 100; n++) worst = Math.max(worst, Math.abs(got[h][n] - ref[h][n]));
+        }
+        ok(worst < 1e-9, `wipe_rehit: gap ${gap}: hits 2..5 equal the isolated response (worst ${worst.toExponential(2)})`);
+    }
+    // the old behaviour must be detectable by this test: a gap-6000 hit 1 differs from hit 2 only through the hit counter (none here)
+    let w2 = 0;
+    for (let n = 600; n < life + 100; n++) w2 = Math.max(w2, Math.abs(ref[1][n] - ref[0][n]));
+    ok(w2 < 1e-9, `wipe_rehit: isolated hits are identical to each other (${w2.toExponential(2)})`);
+}
+{
+    // stale_wake: delay + slap on for hit 1, off for hit 2, on for hit 3 inside one Ring-100 life: hit 3 has no residue of hit 1
+    const V = { dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 0, dvv5: 90, dvv6: 0, dvv7: 100 };
+    const run = (hits) => {
+        const sim = makeSim(Object.assign({}, V, ZERO_R), true);
+        const out = [];
+        let n = 0;
+        for (const h of hits) {
+            for (; n < h.t; n++) out.push(sim.step(0));
+            sim.P.dvv5 = h.v5;
+            for (let q = 0; q < 100; q++, n++) out.push(sim.step(burst(q, 0, 100, 0.8)));
+        }
+        for (; n < 48000 * 3.4; n++) out.push(sim.step(0));
+        return out;
+    };
+    const sr = 48000;
+    const a = run([{ t: 3000, v5: 90 }, { t: 3000 + 0.4 * sr, v5: 0 }, { t: 3000 + 0.8 * sr, v5: 90 }]);
+    const b = run([{ t: 3000 + 0.4 * sr, v5: 0 }, { t: 3000 + 0.8 * sr, v5: 90 }]);
+    let worst = 0, sig = 0;
+    for (let n = 3000 + 0.8 * sr; n < 3000 + 2.8 * sr; n++) { worst = Math.max(worst, Math.abs(a[n] - b[n])); sig = Math.max(sig, Math.abs(b[n])); }
+    ok(sig > 0.05 && worst < 1e-9, `stale_wake: hit 3 equals the run without hit 1 (worst diff ${worst.toExponential(2)}, signal ${sig.toFixed(3)})`);
+}
+{
+    // reroll_shorten: a Reroll that shortens Ring mid-tail ramps the envelope out (no jump to 0)
+    const sim = makeSim(Object.assign({ dvv0: 30, dvv2: 50, dvv3: 50, dvv4: 0, dvv5: 50, dvv6: 0, dvv7: 100 }, ZERO_R), true);
+    let prev = 0, worstDrop = 0, sawLong = 0;
+    const sr = 48000;
+    for (let n = 0; n < sr * 2.2; n++) {
+        if (n === Math.round(sr * 0.6)) { sim.P.dvv7 = 0; sim.P.dvreroll = 0; }
+        if (n === Math.round(sr * 0.6) + 100) sim.P.dvreroll = 1;
+        sim.step(burst(n, 1000, 100, 0.8));
+        const e = sim.H.envLast;
+        if (n > sr * 0.5) worstDrop = Math.max(worstDrop, prev - e);
+        if (n === Math.round(sr * 0.6) + 90) sawLong = e;
+        prev = e;
+    }
+    ok(sawLong > 0.05, `reroll_shorten: envelope still audible when Ring is shortened (${sawLong.toFixed(3)})`);
+    ok(worstDrop < 0.006 && sim.H.envLast === 0, `reroll_shorten: envelope falls at most ${worstDrop.toFixed(5)} per sample and reaches 0`);
+}
+{
+    // mix0_exact: Mix 0 is the delayed dry, bit for bit, also for +12 dBFS input, after Mix moved 1 -> 0, with a NaN residue and through sleep
+    const mkX = (n) => 4 * Math.sin(n * 0.013) * (n % 9000 < 4000 ? 1 : 0.3) + burst(n, 2000, 100, 3);
+    const sim = makeSim({ dvwet: 1, dvv0: 60, dvv2: 60, dvv3: 60, dvv5: 60, dvv6: 60, dvv7: 30 }, true);
+    const hist = [];
+    let bad = 0, nan = 0;
+    for (let n = 0; n < 60000; n++) {
+        if (n === 12000) sim.P.dvwet = 0;
+        const x = mkX(n);
+        hist.push(x);
+        const y = sim.step(x);
+        if (!Number.isFinite(y)) nan++;
+        if (n > 12000 + 9000 && y !== (n >= 256 ? hist[n - 256] : 0)) bad++;
+    }
+    ok(bad === 0 && nan === 0 && sim.H.wsm === 0, `mix0_exact: after Mix moved to 0 the output is the delayed dry bit for bit incl. +12 dBFS (${bad} mismatches, wsm ${sim.H.wsm})`);
+    // quiet input below the sleep threshold is passed through, not zeroed
+    const sim2 = makeSim({ dvwet: 0 }, true);
+    let bad2 = 0, asleepSeen = 0;
+    const h2 = [];
+    for (let n = 0; n < 40000; n++) {
+        const x = 4e-6 * Math.sin(n * 0.2);
+        h2.push(x);
+        const y = sim2.step(x);
+        if (sim2.sc(cfg.DV_SCOPE.ASLEEP) === 1) asleepSeen++;
+        if (y !== (n >= 256 ? h2[n - 256] : 0)) bad2++;
+    }
+    ok(bad2 === 0 && asleepSeen > 1000, `mix0_exact: a signal under the sleep threshold passes through asleep (${bad2} mismatches, asleep ${asleepSeen} ticks)`);
+    // digital silence stays exact zero asleep
+    const sim3 = makeSim({ dvwet: 1 }, true);
+    let nz = 0;
+    for (let n = 0; n < 30000; n++) { const y = sim3.step(0); if (n > 20000 && y !== 0) nz++; }
+    ok(nz === 0 && sim3.sc(cfg.DV_SCOPE.ASLEEP) === 1, "mix0_exact: digital silence asleep is exact zeros");
+    // a bad residue cannot touch the dry at Mix 0 (DataSim refuses non-finite pokes, so this one is structural): the residue is fixnan'd before it is scaled and
+    // Mix 0 selects the delayed dry itself
+    ok(code.includes("resL = fixnan(resL);") && code.includes("limL = (wsmN > 0) ? limSL : xdL;") && code.includes("o1 = fixnan(limL * sgN);"), "mix0_exact: residue fixnan'd first, Mix 0 selects xd (no sleep zeroing, no soft limit of the dry)");
+    ok(!/outScale/.test(code), "mix0_exact: no outScale zeroing when asleep");
 }
 
 console.log(`${checks} checks, ${fails} failed`);

@@ -38,6 +38,14 @@ Cases (what each proves; numbers are printed by the run):
   mode_switch      Split Mode toggled mid-ring (default metas, Spectral stage loaded): no NaN, bounded, latency telemetry 256 -> 1279 -> 256
   sleep_silent     silence: exact zeros, ALIVE and FRAMES keep moving, ASLEEP = 1
   fuzz_a / fuzz_b  25 seeds each, extreme draws (Values 100, Ranges 100, Chance, Drift), a hit every 400 ms: no NaN, peak < 4
+  conv_onset       a burst that starts a new life with IR 6: (output with the IR bank) - (output without it) = 0.7 * wet * (IR 6 * burst) from the
+                   first sample (time-domain IR from build_cache/deviate_ir_48000_td.json), i.e. the convolver gets the whole hit
+  wipe_rehit       four identical hits 250 ms apart at Ring 10 (the next apply lands a few ms after the end of a life, inside the old wipe window), delay /
+                   reverb / slap / comb / chorus / grain on: every hit's response equals the first hit's (no hole punched into a new hit's rings)
+  stale_wake       delay on, off, on across three hits in one Ring-100 life: the response after hit 3 equals a run without hit 1 (no residue of hit 1)
+  reroll_shorten   a Reroll that shortens Ring while the tail is at 0.4: the Ring envelope telemetry never falls by more than 0.3 per row (no jump to 0)
+  mix0_exact       Mix 0 is the delayed dry bit for bit: +12 dBFS input with extreme metas; Mix moved 100 -> 0 mid-run; a signal under the sleep threshold
+                   passes through while asleep
   telemetry_layout every slot class of DV_SCOPE: SR, LATENCY, FRAMES, ALIVE, ECHO block = the Params sent, HIDDEN slots =
                    dvHiddenFromMetas of the telemetry metas, waveform ring written, peaks move
 """
@@ -210,6 +218,8 @@ pp = per * sf;
 php = idx - floor(s1 * sf);
 tper = php >= 0 ? php - pp * floor(php / pp) : -1;
 sig = (kind > 5.5 && kind < 6.5) ? drum(tper, tf) * amp : sig;
+// kind 7: a steady 300 Hz tone of amplitude amp (a quiet one, under the sleep threshold, for mix0_exact)
+sig = (kind > 6.5 && kind < 7.5) ? amp * sin(twopi * 300 * idx / samplerate) : sig;
 out1 = sig;
 out2 = sig;
 out3 = sig;
@@ -276,7 +286,9 @@ def device(code, case):
         mh.msg("dev-probemsg", "setbuffers #0-dvscope #0-dvtap, tapnames " + " ".join(n for n, _ in TAP_SLOTS)
                + (", dparams " + case["dparams"] if case.get("dparams") else "")
                + (", rwindows " + " ".join(case["rwin"]) if case.get("rwin") else "")
-               + (", clicks " + " ".join(str(x) for x in case["clicks"]) if case.get("clicks") else ""), 40, 130, 900),
+               + (", clicks " + " ".join(str(x) for x in case["clicks"]) if case.get("clicks") else "")
+               + (", exactfrom " + str(case["exactfrom"]) if case.get("exactfrom") is not None else "")
+               + (", dumps " + " ".join(case["dumps"]) if case.get("dumps") else ""), 40, 130, 900),
         mh.box("dev-buf-scope", "buffer~ #0-dvscope @samps 1536", 980, 20, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-ctl", "buffer~ #0-dvctl @samps 64", 980, 45, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-ir", "buffer~ #0-dvir @samps %d" % (2500000 if case.get("ir") else 4096), 980, 70, 200, numoutlets=2, outlettype=["float", "bang"]),
@@ -397,6 +409,39 @@ def fuzz_case(tag, seeds):
                 vals_extra([100] * 8, [100] * 8, dvchance=100, dvdrift=30), events=ev)
 
 
+# ---- cases of the review fixes (conv_onset, wipe_rehit, stale_wake, reroll_shorten, mix0_exact) ----
+CV_V = [0, 50, 0, 0, 60, 0, 0, 0]      # Space 60: conv wet 0.9 * 0.6 * 1.0274..., IR tag 6; the reverb is on too (cancelled by the run without the IR bank)
+CV_START = 100 * SR // 1000
+CV_WIN = 2200
+WR_V = [0, 50, 60, 70, 70, 80, 40, 10]
+WR_STARTS = [100, 344, 588, 832]   # 244 ms apart: the next page applies about 110 samples after a Ring 10 life ended, inside the wipe window
+WR_PIECES = [(15, 80), (80, 150), (150, 235)]
+SW_V = [0, 50, 0, 0, 0, 90, 0, 100]
+SW_EVENTS = [(450, "dev-gen", 0, "dvv5 0"), (850, "dev-gen", 0, "dvv5 90")]
+SW_WINS = ["925:1300", "1300:2000", "2000:2800"]
+
+
+def review_cases():
+    out = {}
+    cv = lambda tag, ir: case(f"conv_onset_{tag}", 420, "kind 2, amp 0.8, s1 100, blen 100", vals_extra(CV_V, [0] * 8), ir=ir,  # noqa: E731
+                              dumps=[f"{CV_START + LAT_ENV}:{CV_WIN}"])
+    out["conv_onset"] = [cv("ir", True), cv("noir", False)]
+    wins = [f"{s + a}:{s + b}" for s in WR_STARTS for a, b in WR_PIECES]
+    out["wipe_rehit"] = [case("wipe_rehit", 1250, "kind 2, amp 0.8, s1 100, s2 344, s3 588, s4 832, blen 100", vals_extra(WR_V, [0] * 8), rwin=wins)]
+    out["stale_wake"] = [
+        case("stale_wake_a", 2600, "kind 2, amp 0.8, s1 100, s2 500, s3 900, blen 100", vals_extra(SW_V, [0] * 8), events=SW_EVENTS, rwin=SW_WINS),
+        case("stale_wake_b", 2600, "kind 2, amp 0.8, s1 500, s2 900, blen 100", vals_extra(SW_V, [0] * 8), events=SW_EVENTS, rwin=SW_WINS),
+    ]
+    out["reroll_shorten"] = [case("reroll_shorten", 900, "kind 2, amp 0.8, s1 100, blen 100", vals_extra([0, 50, 60, 0, 60, 60, 0, 100], [0] * 8) + ", dvreroll 0",
+                                  events=[(450, "dev-gen", 0, "dvv7 0"), (455, "dev-gen", 0, "dvreroll 1")])]
+    out["mix0_exact"] = [
+        case("mix0_exact_hot", 700, "kind 2, amp 4.0, s1 100, s2 300, blen 200", "dvwet 0, " + vals_extra([100] * 8, [100] * 8)),
+        case("mix0_exact_move", 1500, "kind 4, amp 0.9, s1 100, s2 300, s3 600, s4 900", "dvwet 1", events=[(150, "dev-gen", 0, "dvwet 0")], exactfrom=450),
+        case("mix0_exact_sleep", 1500, "kind 7, amp 0.000005", "dvwet 0", exactfrom=600),
+    ]
+    return out
+
+
 def cases():
     out = {
         "mix0_null": [
@@ -440,6 +485,7 @@ def cases():
     for i, m in enumerate(METAS):
         if m != "ring":
             out[f"meta_{m}"] = [meta_case(i)]
+    out.update(review_cases())
     out["ring_cap_space"] = [ring_case("ring_cap_space", [4], ir=True)]
     out["ring_cap_reverb"] = [ring_case("ring_cap_reverb", [4], ir=False)]
     out["ring_cap_echo"] = [ring_case("ring_cap_echo", [5])]
@@ -852,6 +898,106 @@ def check_telemetry(m, errors):
         errors.append(f"telemetry_layout: RING_ENV never reached 1 ({m.get('max_ringenv')})")
 
 
+def check_conv_onset(res, errors):
+    a, b = res.get("conv_onset_ir", {}), res.get("conv_onset_noir", {})
+    da, db = lst(a.get("dump0")), lst(b.get("dump0"))
+    td_path = os.path.join(ROOT, "build_cache", "deviate_ir_48000_td.json")
+    if not os.path.isfile(td_path):
+        errors.append("conv_onset: build_cache/deviate_ir_48000_td.json is missing (the host build writes it: python3 scripts/build_deviate.py)")
+        return
+    with open(td_path, encoding="utf-8") as f:
+        ir = json.load(f)["irs"]["6"]["L"]
+    if len(da) != CV_WIN or len(db) != CV_WIN:
+        errors.append(f"conv_onset: dumps have {len(da)} / {len(db)} samples, want {CV_WIN}")
+        return
+    cw = 0.9 * min(1.0, 60 * 0.01 * 1.0274682411155285)
+    x = [0.8 * math.sin(2 * math.pi * 1000 * k / SR) for k in range(100)]
+    ref = [0.7 * cw * sum(x[m] * ir[j - m] for m in range(100) if 0 <= j - m < len(ir)) for j in range(CV_WIN)]
+    got = [p - q for p, q in zip(da, db)]
+    e = sum((g - r) ** 2 for g, r in zip(got, ref))
+    en = sum(r * r for r in ref)
+    rel = math.sqrt(e / max(en, 1e-30))
+    first_ref = next((j for j, r in enumerate(ref) if abs(r) > 1e-4), -1)
+    first_got = next((j for j, g in enumerate(got) if abs(g) > 1e-4), -1)
+    print(f"  conv_onset: reference energy {en:.4e}, relative error {rel:.2e}, first sample above 1e-4: ref {first_ref}, got {first_got} (after the page apply + 96)")
+    if not (en > 1e-4):
+        errors.append(f"conv_onset: vacuous (reference energy {en})")
+    if not (rel < 5e-3):
+        errors.append(f"conv_onset: the convolver output differs from IR * hit (relative error {rel:.3e}); the hit's start is missing or misaligned")
+    if first_ref != first_got:
+        errors.append(f"conv_onset: the output starts at +{first_got}, the convolution of the whole hit at +{first_ref}")
+    for tag, m in (("ir", a), ("noir", b)):
+        if m.get("nan", 1) != 0:
+            errors.append(f"conv_onset_{tag}: {m.get('nan')} non-finite samples")
+
+
+def check_wipe_rehit(m, errors):
+    keys = lambda h: [f"rmax_{WR_STARTS[h] + a}_{WR_STARTS[h] + b}" for a, b in WR_PIECES]  # noqa: E731
+    ref = [m.get(k) for k in keys(0)]
+    print("  wipe_rehit: hit 1 windows " + " ".join(f"{v:.6f}" for v in ref if v is not None))
+    if any(v is None for v in ref) or ref[0] < 1e-3 or ref[1] < 1e-3:
+        errors.append(f"wipe_rehit: vacuous, hit 1 residue windows {ref}")
+        return
+    for h in (1, 2, 3):
+        got = [m.get(k) for k in keys(h)]
+        for r, g, k in zip(ref, got, keys(h)):
+            if g is None or abs(g - r) > 1e-6 * r + 1e-9:
+                errors.append(f"wipe_rehit: hit {h + 1} window {k} = {g}, hit 1 had {r}: a ring was wiped or left dirty under the new hit")
+    if m.get("nan", 1) != 0:
+        errors.append(f"wipe_rehit: {m.get('nan')} non-finite samples")
+    if m.get("t_hits") != 4:
+        errors.append(f"wipe_rehit: HITS {m.get('t_hits')}, want 4")
+
+
+def check_stale_wake(res, errors):
+    a, b = res.get("stale_wake_a", {}), res.get("stale_wake_b", {})
+    ks = [k for k in a if k.startswith("rmax_")]
+    print("  stale_wake: " + " ".join(f"{k}={a[k]:.6f}/{b.get(k, float('nan')):.6f}" for k in sorted(ks)))
+    if a.get("t_hits") != 3 or b.get("t_hits") != 2:
+        errors.append(f"stale_wake: hits {a.get('t_hits')} / {b.get('t_hits')}, want 3 / 2")
+    for k in ks:
+        if k in ("rmax_925_1300", "rmax_1300_2000") and not (b.get(k, 0) > 1e-3):
+            errors.append(f"stale_wake: vacuous, run B window {k} = {b.get(k)}")
+        elif abs(a[k] - b[k]) > 1e-5 * b.get(k, 0) + 1e-9:
+            errors.append(f"stale_wake: window {k}: with hit 1 {a[k]}, without {b[k]}: the delay replays residue of hit 1")
+    for tag, m in (("a", a), ("b", b)):
+        if m.get("nan", 1) != 0:
+            errors.append(f"stale_wake_{tag}: {m.get('nan')} non-finite samples")
+
+
+def check_reroll_shorten(m, errors):
+    print(f"  reroll_shorten: envelope peak {m.get('ringenv_hi', 0):.3f}, largest fall between two rows {m.get('ringenv_maxdrop', 0):.3f}, final {m.get('t_ringenv')}, Tr {m.get('t_trs')}")
+    if m.get("t_reroll") != 1:
+        errors.append(f"reroll_shorten: REROLL {m.get('t_reroll')}, want 1")
+    if not (m.get("ringenv_hi", 0) > 0.9):
+        errors.append(f"reroll_shorten: vacuous (envelope peak {m.get('ringenv_hi')})")
+    if not (m.get("t_trs", 9) < 0.06):
+        errors.append(f"reroll_shorten: the Reroll did not shorten Ring (TR_S {m.get('t_trs')})")
+    if not (m.get("ringenv_maxdrop", 9) < 0.3):
+        errors.append(f"reroll_shorten: the Ring envelope fell by {m.get('ringenv_maxdrop')} in one step (a click); it must ramp out")
+    if m.get("t_ringenv") != 0:
+        errors.append(f"reroll_shorten: the envelope must end at exactly 0, it is {m.get('t_ringenv')}")
+    if m.get("nan", 1) != 0:
+        errors.append(f"reroll_shorten: {m.get('nan')} non-finite samples")
+
+
+def check_mix0_exact(res, errors):
+    h, mv, sl = res.get("mix0_exact_hot", {}), res.get("mix0_exact_move", {}), res.get("mix0_exact_sleep", {})
+    if h.get("nan", 1) != 0 or h.get("diffL", 1) != 0 or h.get("diffR", 1) != 0:
+        errors.append(f"mix0_exact hot: +12 dBFS input at Mix 0 must be the delayed dry bit for bit (diff {h.get('diffL')} / {h.get('diffR')}, nan {h.get('nan')})")
+    if not (h.get("maxL", 0) > 3.9):
+        errors.append(f"mix0_exact hot: vacuous (peak {h.get('maxL')})")
+    if mv.get("exdiffL", 1) != 0 or mv.get("exdiffR", 1) != 0 or mv.get("nan", 1) != 0:
+        errors.append(f"mix0_exact move: from 450 ms (Mix moved to 0 at 150 ms) the output must be the delayed dry exactly (diff {mv.get('exdiffL')} / {mv.get('exdiffR')})")
+    if not (mv.get("maxL", 0) > 0.3 and mv.get("t_applied", 0) >= 3):
+        errors.append(f"mix0_exact move: vacuous (peak {mv.get('maxL')}, pages {mv.get('t_applied')})")
+    if sl.get("exdiffL", 1) != 0 or sl.get("exdiffR", 1) != 0 or sl.get("nan", 1) != 0:
+        errors.append(f"mix0_exact sleep: a signal under the sleep threshold must pass through exactly (diff {sl.get('exdiffL')} / {sl.get('exdiffR')})")
+    if sl.get("t_asleep") != 1 or not (1e-6 < sl.get("maxL", 0) < 1e-5):
+        errors.append(f"mix0_exact sleep: not asleep with a quiet signal (ASLEEP {sl.get('t_asleep')}, peak {sl.get('maxL')})")
+    print(f"  mix0_exact: hot diff {h.get('diffL')}, move diff {mv.get('exdiffL')}, sleep diff {sl.get('exdiffL')} (asleep {sl.get('t_asleep')}, peak {sl.get('maxL')})")
+
+
 def run_group(code, name, only_dry=False):
     errors = []
     cs = cases()[name]
@@ -942,6 +1088,16 @@ def run_group(code, name, only_dry=False):
         check_fuzz(name, g(name), errors)
     elif name == "telemetry_layout":
         check_telemetry(g("telemetry_layout"), errors)
+    elif name == "conv_onset":
+        check_conv_onset(res, errors)
+    elif name == "wipe_rehit":
+        check_wipe_rehit(g("wipe_rehit"), errors)
+    elif name == "stale_wake":
+        check_stale_wake(res, errors)
+    elif name == "reroll_shorten":
+        check_reroll_shorten(g("reroll_shorten"), errors)
+    elif name == "mix0_exact":
+        check_mix0_exact(res, errors)
     return errors
 
 
