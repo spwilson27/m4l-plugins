@@ -963,6 +963,7 @@ scripts/vm_sampler.sh test    # scripts/test_sampler_live.js through an ssh tunn
 - `play_pos` only applies while `freeze` is on.
 - A mono buffer plays on both outputs (`channelmode="clamp"`).
 - **Buffers**:
+  - **Naming (sweep2)**: every per-instance buffer / receive is `---bs<name>` in the patcher (Live expands `---` per instance; `#0` is not expanded in a top-level device, so `#0-` names were shared by all instances). The patcher passes the names to the faces: `setbuffers <samp> <voices> <scope> <pitch> <debug> <mpe> <wt1> <wt2> <samp2>`. The face publishes its expanded debug name in `Global("better_sampler_hooks").map[LOM device id]`; bridge tests address `messnamed(<that name>, ...)` and other buffers by replacing `bsdebug` in it. Below, `#0-bsX` means the `---bsX` buffer.
   - `#0-bsamp`: the sample.
   - `#0-bsvoices`: 16 x 8 voice slots.
   - `#0-bsscope`: telemetry 0..39, 40..47 echo the gen's running `sliced`, `loop_mode`, `slice_play`, `mode`, `freeze`, `reverse`, `root_note`, `loop_start` (the Live test compares them with the device parameters), and 48 holds the cumulative Fragments grain count.
