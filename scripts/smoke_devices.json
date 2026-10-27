@@ -25,7 +25,7 @@
       "regex": "transplit dsp ready"
     },
     "skipParams": [],
-    "notes": "rack of two chains; params of both chains are swept; linking inside one rack is expected",
+    "notes": "rack of 2 chains",
     "readyInstances": 4
   },
   "devices/Transient Split.amxd": {
@@ -35,6 +35,246 @@
       "regex": "transplit dsp ready"
     },
     "skipParams": [],
-    "notes": "standalone (no rack): control for the .adg run"
+    "notes": "standalone, deferred gen (spectral_split_trace)"
+  },
+  "devices/Loud Split.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "loudsplit dsp ready"
+    },
+    "skipParams": [],
+    "notes": "standalone, deferred gen (spectral_split_trace)"
+  },
+  "devices/Loud Split.adg": {
+    "kind": "rack",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "loudsplit dsp ready"
+    },
+    "skipParams": [],
+    "readyInstances": 6,
+    "notes": "rack of 3 chains"
+  },
+  "devices/Harmonic Split.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "harmsplit dsp ready"
+    },
+    "skipParams": [],
+    "notes": "standalone, deferred gen (spectral_split_trace)"
+  },
+  "devices/Harmonic Split.adg": {
+    "kind": "rack",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "harmsplit dsp ready"
+    },
+    "skipParams": [],
+    "readyInstances": 6,
+    "notes": "rack of 3 chains"
+  },
+  "devices/Freq Split.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "freqsplit dsp ready"
+    },
+    "skipParams": [],
+    "notes": "standalone, deferred gen (spectral_split_trace)"
+  },
+  "devices/Freq Split.adg": {
+    "kind": "rack",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "freqsplit dsp ready"
+    },
+    "skipParams": [],
+    "readyInstances": 8,
+    "notes": "rack of 4 chains"
+  },
+  "devices/Delay+.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "delayplus_trace",
+      "regex": "\\+\\d+ dsp ready after"
+    },
+    "skipParams": [],
+    "notes": "Start alone (unpaired)"
+  },
+  "devices/Delay+ End.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "delayplus_trace",
+      "regex": "end-dsp ready after"
+    },
+    "skipParams": [],
+    "notes": "End alone"
+  },
+  "devices/Delay+.adg": {
+    "kind": "rack",
+    "ready": {
+      "global": "delayplus_trace",
+      "regex": "\\+\\d+ dsp ready after"
+    },
+    "skipParams": [],
+    "readyInstances": 2,
+    "notes": "Start+End pair in rack"
+  },
+  "devices/Reverb+.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "reverbplus_trace",
+      "regex": "\\d+ dsp ready after"
+    },
+    "skipParams": [],
+    "notes": "Start alone"
+  },
+  "devices/Reverb+ End.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "reverbplus_trace",
+      "regex": "end-dsp ready after"
+    },
+    "skipParams": [],
+    "notes": "End alone"
+  },
+  "devices/Reverb+.adg": {
+    "kind": "rack",
+    "ready": {
+      "global": "reverbplus_trace",
+      "regex": "\\d+ dsp ready after"
+    },
+    "skipParams": [],
+    "readyInstances": 2,
+    "notes": "Start+End pair in rack"
+  },
+  "devices/Multiband Split.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "mbsplit_trace",
+      "regex": "dsp ready after"
+    },
+    "skipParams": []
+  },
+  "devices/Mega Modulator.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "megamod_load_trace",
+      "regex": "dsp-ready"
+    },
+    "skipParams": [],
+    "notes": "pass-through modulator: meter follows input; trace dsp-ready"
+  },
+  "devices/Amp Stack.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "amp_trace",
+      "regex": "dsp ready after"
+    },
+    "skipParams": []
+  },
+  "devices/Better Sampler Reactive 2.amxd": {
+    "kind": "instrument",
+    "ready": {
+      "global": "better_sampler_trace",
+      "regex": "dsp ready"
+    },
+    "skipParams": [
+      "Sample File"
+    ],
+    "notes": "as Better Sampler",
+    "needsSignal": false
+  },
+  "devices/Ableton MCP Bridge.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Analyzer.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Better Shaper.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Cepstra.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Clip+.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Degrade.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/EQ+.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Envelope Trigger.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Glitch.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace); glitch trace Global is per-instance glitch_trace_<key>"
+  },
+  "devices/Oscilloscope.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Percipitator.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Reciprocator.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Sand.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/Theme Editor.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
+  },
+  "devices/XO Sample Map.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "meter-based ready (no global trace)"
   }
 }
