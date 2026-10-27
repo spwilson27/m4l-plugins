@@ -59,7 +59,7 @@ def build_oscilloscope(out_path, routing_mode=0, edit_sub=0, view_mode=0, cycle_
         sc.newobj("obj-plugin", "plugin~", 40, 40, 70, numinlets=1, numoutlets=2, outlettype=["signal", "signal"]),
         sc.newobj("obj-plugout", "plugout~", 40, 220, 70, numinlets=2, numoutlets=0),
         sc.newobj("obj-gen-in", "gate 1 1", 160, 40, 70, numinlets=2, numoutlets=1, outlettype=[""]),
-        sc.newobj("obj-buf", "buffer~ ---analyzerscope @samps 17952", 280, 40, 250, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
+        sc.newobj("obj-buf", "buffer~ ---analyzerscope @samps 42528", 280, 40, 250, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         sc.newobj("obj-loadbang", "loadbang", 160, 80, 70, numoutlets=1, outlettype=["bang"]),
         sc.newobj("obj-thisdevice", "live.thisdevice", 280, 80, 100, numoutlets=1, outlettype=["bang"]),
         sc.newobj("obj-freebang", "freebang", 420, 80, 70, numoutlets=1, outlettype=["bang"]),

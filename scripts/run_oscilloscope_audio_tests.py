@@ -91,7 +91,7 @@ def analyzer(boxes, lines):
         mh.gen_box("dev-gen", GEN, 200, 240),
         mh.msg("dev-params", "f1 150, f2 1000, f3 6000", 200, 40, 220),
         mh.msg("dev-bind", "scope #0-analyzerscope", 200, 70, 220),
-        mh.box("dev-buf", "buffer~ #0-analyzerscope @samps 17952", 200, 110, 280,
+        mh.box("dev-buf", "buffer~ #0-analyzerscope @samps 42528", 200, 110, 280,
                numoutlets=2, outlettype=["float", "bang"]),
     ]
     lines += [

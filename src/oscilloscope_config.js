@@ -3,13 +3,13 @@
 // Overlay/Split toggle, and backward-compatible v3 blob serialization.
 // Pure (no Max objects at load time). Prepended into the v8ui and required by Node tests.
 //
-// buffer~ ---analyzerscope (OSC_BUF_SAMPS = 17952):
+// buffer~ ---analyzerscope (OSC_BUF_SAMPS = 42528):
 //   0 frame (heartbeat, +1 every 480-sample packet)
 //   1 sample rate (e.g. 48000)
 //   2 scope write head (0..OSC_RING_N-1)
 //   32..1567 packet ring (64 packets x 24 floats: L/R RMS, peak, true peak)
-//   1568..5663 scope L ring (4096 samples)
-//   5664..9759 scope R ring (4096 samples)
+//   1568..17951 scope L ring (16384 samples)
+//   17952..34335 scope R ring (16384 samples)
 
 var OSC_VERSION = 5;
 var OSC_W = 460;
@@ -22,11 +22,11 @@ var OSC_HDR_SCOPE = 2;
 var OSC_PKT_STRIDE = 24;
 var OSC_PKT_COUNT = 64;
 var OSC_PKT_BASE = 32;
-var OSC_RING_N = 4096;
+var OSC_RING_N = 16384;
 var OSC_SCOPE_L = OSC_PKT_BASE + OSC_PKT_COUNT * OSC_PKT_STRIDE; // 1568
-var OSC_SCOPE_R = OSC_SCOPE_L + OSC_RING_N;                       // 5664
+var OSC_SCOPE_R = OSC_SCOPE_L + OSC_RING_N;                       // 17952
 var OSC_FFT_N = 8192;
-var OSC_BUF_SAMPS = OSC_SCOPE_R + OSC_RING_N + OSC_FFT_N;         // 17952
+var OSC_BUF_SAMPS = OSC_SCOPE_R + OSC_RING_N + OSC_FFT_N;         // 42528
 
 // EQ-Eight Style Mode Selection Box (`routingMode` 0..1) + Tristate Channel Toggle Button (`editSub` 0..2):
 //   - routingMode 0: "Stereo" — Tristate Ch button cycles: 0 = "L / R" (both), 1 = "L" (Left only), 2 = "R" (Right only)

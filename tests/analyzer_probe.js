@@ -56,7 +56,7 @@ function analyze(durMs) {
             corr = c;
         }
     }
-    var ring = chunk(scope, 1568, 4096);
+    var ring = chunk(scope, 1568, 16384);
     var scopePk = 0;
     var i;
     for (i = 0; i < ring.length; i++) scopePk = Math.max(scopePk, Math.abs(ring[i]));

@@ -187,7 +187,7 @@ const gen = fs.readFileSync(path.join(ROOT, "src", "analyzer_core.genexpr"), "ut
 ok(!/\be\d/.test(gen), "gen identifiers are not e0..e9");
 ok(!gen.includes("delay("), "gen does not call delay()");
 ok(gen.includes('Buffer scope("analyzerscope")'), "telemetry buffer is analyzerscope");
-for (const token of ["1568", "5664", "9760", "17952", "480"]) ok(gen.includes(token), "gen layout includes " + token);
+for (const token of ["1568", "17952", "34336", "42528", "480"]) ok(gen.includes(token), "gen layout includes " + token);
 ok(gen.includes("out1 = in1") && gen.includes("out2 = in2"), "the tap copies its input");
 const bufAt = gen.indexOf("\nBuffer ");
 const dataAt = gen.indexOf("\nData ");
@@ -254,7 +254,7 @@ for (const devName of deviceNames) {
     ok(byId["obj-plugin"].text === "plugin~" && byId["obj-plugin"].varname === "an_plugin", devName + ": plugin~");
     ok(byId["obj-plugout"].text === "plugout~" && byId["obj-plugout"].varname === "an_plugout", devName + ": plugout~");
     ok(byId["obj-gen-in"].text === "gate 1 1" && byId["obj-gen-in"].varname === "an_genin", devName + ": message hub is gate 1 1");
-    ok(byId["obj-buf"].text.includes("---analyzerscope") && byId["obj-buf"].text.includes("17952"), devName + ": scope buffer is ---analyzerscope @samps 17952");
+    ok(byId["obj-buf"].text.includes("---analyzerscope") && byId["obj-buf"].text.includes("42528"), devName + ": scope buffer is ---analyzerscope @samps 42528");
     ok(byId["obj-msg-scope"].text === "scope ---analyzerscope", devName + ": scope bind is ---analyzerscope");
     ok(byId["obj-msg-setbuf"].text === "setbuffer ---analyzerscope", devName + ": setbuffer is ---analyzerscope");
     for (const b of boxes) {
