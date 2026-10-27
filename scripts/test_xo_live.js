@@ -417,7 +417,7 @@ try {
         // blob round trip with the edited terms (what Live does on Set save / reload)
         hook("test_blob");
         const bl = waitFor("blob", () => { const x = report(); return x && x.blobTest ? x : null; }, 5000, 200);
-        check(!!bl && bl.blobTest.restored && bl.blobTest.blob[0] === 3, "h. the state blob (v3) round trips the edited terms and Match folders inside Live");
+        check(!!bl && bl.blobTest.restored && bl.blobTest.blob[0] === 4, "h. the state blob (v4) round trips the edited terms and Match folders inside Live");
         if (bl) console.log("  blob tail: " + JSON.stringify(bl.blobTest.blob.slice(-9)));
         // Reset restores the defaults and the original counts
         hook("test_terms_reset");

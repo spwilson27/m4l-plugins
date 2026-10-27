@@ -43,3 +43,18 @@ Independent run of `node tests/test_xo_sweep2.js`: 7/7 fail deterministically, e
 - XO-S2-06 KEEP: output name is basename + settings only; reproduced identical path for a/Kick.wav and b/Kick.wav.
 - XO-S2-07 KEEP: loose files in the added root are skipped when there are >= 4 sub-folders; reproduced.
 REJECT: none.
+
+## Fix
+| finding | status | notes |
+|---|---|---|
+| XO-S2-01 | fixed | `recallSavedSample` resolves by sourcePath (src/xo_node_engine.js) |
+| XO-S2-02 | fixed | blob v4 stores reverse/speed/grain/mode per row (src/xo_strip_ui.js); v2/v3 still load; tests + Live check updated to v4 |
+| XO-S2-03 | fixed | specWin clamped to available samples, out-of-range reads 0 |
+| XO-S2-04 | fixed | harness sends `test_selected 1` (tests/test_xo_map.js); `vm_xo.sh max` now passes in the VM |
+| XO-S2-05 | fixed (partial) | render decodes the loudest channel, so right-only content is no longer silent; stereo image is still folded to mono (S4 remains) |
+| XO-S2-06 | fixed | rendered name includes a path hash |
+| XO-S2-07 | fixed | root-level files collected first in both scan paths |
+S4 items: XO-S4-01 shared lib false positive (DEFERRED(shared): tests/paint_bounds_lib.js should allow move_to before arc); others untouched, XO-S4-02 AGENTS drift not rewritten.
+
+Commits: 7606c00 (fixes) plus follow-up commit (Live test v4 + AGENTS + report).
+Gate: typecheck, build, test_xo_map/layout/search/stretch/bugsweep/sweep2 (all pass), test_device_static (0 violations, 2 allowlisted), test_face_fuzz (0 failures), preview Read OK, `vm_xo.sh max` PASS, Live `vm_xo.sh live`+`test` PASS (all checks), `vm_smoke.sh` PASS (0 fails, 0 warns).
