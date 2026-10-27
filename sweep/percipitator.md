@@ -19,3 +19,9 @@ Audio suite not re-run (no DSP change; no findings in gen code reading: neutral 
 - PCP-S2-01 KEEP: real S2 (#0 not expanded in top-level device, AGENTS 15/Glitch/Mega notes); test run fails because build still has #0-percip names.
 - PCP-S2-02 KEEP: real S2 (audio-effect midi_inputs defaults to "No Input", measured for Mega Modulator/Cepstra); test run fails because no midi_inputs routing in src. Test is a static grep, acceptable as a red marker.
 - S4 items: log only, no tests.
+
+## Fix
+- PCP-S2-01 fixed: buffers/messages renamed `---percipwt` / `---percipscope` (build, face, core comment, tests); gen still binds by variable name. Audio harness keeps its own `#0-` names (own patch).
+- PCP-S2-02 fixed: `pcpMidiRoute()` in `src/percipitator_dsp.js` (from `init_dsp`) sets `this_device midi_inputs 0` from "No Input" to "All Ins" (Cepstra pattern).
+- S4 items left as logged.
+- Gate: typecheck, build, test_percipitator, bugsweep, sweep2 tests, preview (Read OK), test_device_static (0 violations), test_face_fuzz (0 failures), vm_smoke PASS (14/14 params). Audio suite not re-run (no DSP change). Real MIDI chord delivery in Live not exercised.

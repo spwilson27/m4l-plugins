@@ -1,6 +1,6 @@
 // Percipitator — 16-Band Scale-Quantized Wavetable Resynthesizer.
 //
-// Buffers (bound on loadbang via `wt #0-percipwt, scope #0-percipscope`):
+// Buffers (bound on loadbang via `wt ---percipwt, scope ---percipscope`):
 //   wt    ("percipwt")   : 8192 samples (4 frames x 2048 samples: Sine -> Triangle -> Saw -> Square)
 //   scope ("percipscope"): 64 samples (indices 0..35 are the telemetry the face reads):
 //     0..15  : per-band post-sieve/tilt/freeze resynthesis amplitude (0..1.5)

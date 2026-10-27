@@ -125,7 +125,7 @@ assert.ok(gen.includes("for (b = 0; b < 16; b += 1)"), "Bands must run in one lo
 assert.strictEqual((gen.match(/\bband_track\(/g) || []).length, 2, "band_track must have one definition and one call site");
 assert.strictEqual((gen.match(/\bvoice_osc\(/g) || []).length, 2, "voice_osc must have one definition and one call site");
 assert.ok(gen.includes("Data svfF(16);"), "SVF coefficients must be cached");
-assert.strictEqual(byId["obj-scope-buf"].text, "buffer~ #0-percipscope @samps 64", "Scope buffer must cover slot 35");
+assert.strictEqual(byId["obj-scope-buf"].text, "buffer~ ---percipscope @samps 64", "Scope buffer must cover slot 35");
 
 const lines = patcher.lines.map((l) => l.patchline);
 function hasLine(src, srcOut, dst, dstIn) {
@@ -165,7 +165,7 @@ assert.strictEqual(byId["obj-ctrl-pitch"].appearance, 3, "Pitch must use appeara
 assert.strictEqual(byId["obj-ctrl-fshift"].appearance, 3, "Shift must use appearance 3 (Bipolar center fill)");
 assert.strictEqual(byId["obj-ctrl-warp"].appearance, 3, "Warp must use appearance 3 (Bipolar center fill)");
 assert.strictEqual(byId["obj-ctrl-tilt"].appearance, 3, "Tilt must use appearance 3 (Bipolar center fill)");
-assert.strictEqual(byId["obj-msg-gen-buf"].text, "wt #0-percipwt, scope #0-percipscope", "Gen buffer bind message mismatch");
+assert.strictEqual(byId["obj-msg-gen-buf"].text, "wt ---percipwt, scope ---percipscope", "Gen buffer bind message mismatch");
 
 // Verify requested removals & placements:
 assert.ok(!boxes.some((b) => b.varname === "Freeze" || b.id === "obj-freeze"), "Freeze button must be removed");
@@ -190,7 +190,7 @@ assert.strictEqual(byId["obj-ctrl-mix"].presentation_rect[1], 143.0, "Mix must s
 
 for (const b of boxes) {
     if (b.text && b.text.startsWith("buffer~")) {
-        assert.ok(b.text.includes("#0-"), `buffer~ must use #0- prefix: ${b.text}`);
+        assert.ok(b.text.includes("---"), `buffer~ must use --- prefix: ${b.text}`);
     }
 }
 
@@ -325,7 +325,7 @@ ui.loadbang();
 ui.pullScope();
 ui.paint();
 assert.ok(!(sandbox.mgraphics._text || []).some((t) => t.indexOf("DSP") === 0), "Static paint must not draw the DSP pill");
-assert.ok(ui.bandAmps[3] > 0.3, "pullScope must update bandAmps from #0-percipscope");
+assert.ok(ui.bandAmps[3] > 0.3, "pullScope must update bandAmps from ---percipscope");
 
 // Verify balanced volume-independent droplets even when Vol is at -36 dB, and no tether lines to keyboard
 ui.set_vol(-36);
@@ -467,7 +467,7 @@ assert.strictEqual(ui.pullScope(), true, "pullScope() must wake up immediately w
     }
 }
 
-// 8. Gen procedural fallback (voice_osc, used while #0-percipwt reads empty) must be
+// 8. Gen procedural fallback (voice_osc, used while ---percipwt reads empty) must be
 // phase-aligned with the canonical wavetable frames it substitutes for: the Triangle frame
 // peaks at phase 0.25 and troughs at phase 0.75 (generateStandardWavetable frame 1).
 {

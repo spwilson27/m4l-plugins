@@ -19,8 +19,8 @@ outlets = 1;
 
 var wtBuf = null;
 var scopeBuf = null;
-var wtBufName = "#0-percipwt";
-var scopeBufName = "#0-percipscope";
+var wtBufName = "---percipwt";
+var scopeBufName = "---percipscope";
 var uiTask = null;
 
 var localWt = generateStandardWavetable();

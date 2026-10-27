@@ -435,7 +435,7 @@ def build():
                     "numoutlets": 2,
                     "outlettype": ["float", "bang"],
                     "patching_rect": [560.0, 220.0, 230.0, 20.0],
-                    "text": "buffer~ #0-percipwt @samps 8192",
+                    "text": "buffer~ ---percipwt @samps 8192",
                 }
             },
             {
@@ -448,7 +448,7 @@ def build():
                     "numoutlets": 2,
                     "outlettype": ["float", "bang"],
                     "patching_rect": [560.0, 250.0, 220.0, 20.0],
-                    "text": "buffer~ #0-percipscope @samps 64",
+                    "text": "buffer~ ---percipscope @samps 64",
                 }
             },
             {
@@ -500,7 +500,7 @@ def build():
                     "numoutlets": 1,
                     "outlettype": [""],
                     "patching_rect": [560.0, 345.0, 240.0, 20.0],
-                    "text": "setbuffer #0-percipwt #0-percipscope",
+                    "text": "setbuffer ---percipwt ---percipscope",
                 }
             },
             {
@@ -513,7 +513,7 @@ def build():
                     "numoutlets": 1,
                     "outlettype": [""],
                     "patching_rect": [560.0, 375.0, 250.0, 20.0],
-                    "text": "wt #0-percipwt, scope #0-percipscope",
+                    "text": "wt ---percipwt, scope ---percipscope",
                 }
             },
             {
