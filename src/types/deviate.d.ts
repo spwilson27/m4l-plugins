@@ -8,6 +8,11 @@ declare var DV_THEMED: boolean;
 declare var DV_CANVAS_ID: string;
 declare var GEN_DSP_TEXT: string;
 declare var GEN_DSP_HASH: string;
+/** the Spectral split stage (src/deviate_spec.genexpr) as .gendsp text, its hash, and the silent stub gen~ it is hot-loaded into */
+declare var GEN_SPEC_TEXT: string;
+declare var GEN_SPEC_HASH: string;
+declare var GEN_SPEC_STUB: string;
+declare var GEN_SPEC_STUB_HASH: string;
 /** parameter key -> [gen message, divisor] for the keys the engine re-sends to the gen */
 declare var DV_GEN_PARAMS: { [key: string]: [string, number] };
 /** [panel box id, Live theme colour name, fallback rgba] */

@@ -1,9 +1,9 @@
 "use strict";
-// Aggregator for the Deviate DSP-side Node tests: config/draw/hidden/blob contract, IR bank, and the gen core (lint, draw and hidden
-// parity through the GenExpr transpiler, contract checks, whole-core simulation).
+// Aggregator for the Deviate DSP-side Node tests: config/draw/hidden/blob contract, IR bank, the gen core (lint, draw and hidden parity through
+// the GenExpr transpiler, contract checks, whole-core simulation), the effect helpers, the convolver against direct convolution and the Spectral stage.
 const { spawnSync } = require("child_process");
 const path = require("path");
-const parts = ["test_deviate_config.js", "test_deviate_ir.js", "test_deviate_gen.js"];
+const parts = ["test_deviate_config.js", "test_deviate_ir.js", "test_deviate_gen.js", "test_deviate_fx.js", "test_deviate_conv.js", "test_deviate_spec.js", "test_deviate_engine.js"];
 let bad = 0;
 for (const f of parts) {
     const r = spawnSync(process.execPath, [path.join(__dirname, f)], { encoding: "utf8", cwd: path.resolve(__dirname, "..") });
