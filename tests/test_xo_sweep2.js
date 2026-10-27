@@ -198,5 +198,19 @@ check("XO-S2-06 same-named samples from two folders render to different edited f
   assert.notStrictEqual(pa, pb, "both samples render to " + pa + " (the second overwrites the first)");
 });
 
+// ---------------------------------------------------------------------------
+// XO-S2-07: scanDirectories with >= 4 sub-folders only collects files INSIDE the sub-folders; audio files lying directly in the
+// added folder are never indexed (the per-sub-folder budget branch skips the root level).
+// ---------------------------------------------------------------------------
+check("XO-S2-07 scan of a folder with 4+ sub-folders also indexes the files in the folder itself", () => {
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "xo-s207-"));
+  const tone = (i) => 0.6 * Math.sin(2 * Math.PI * 300 * i / 44100) * Math.exp(-i / 4000);
+  writeWav16(path.join(dir, "loose_root.wav"), 44100, 1, 6000, tone);
+  for (const d of ["a", "b", "c", "d"]) { fs.mkdirSync(path.join(dir, d)); writeWav16(path.join(dir, d, d + "_x.wav"), 44100, 1, 6000, tone); }
+  const r = engine.scanDirectories([dir], 1000, 1, 1500);
+  const names = r.corpusSamples.map((x) => x.name).sort();
+  assert(names.includes("loose_root"), "indexed " + JSON.stringify(names) + " - the loose file in the root folder is missing");
+});
+
 console.log(failures ? failures + " FAILED" : "all passed");
 process.exit(failures ? 1 : 0);
