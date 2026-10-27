@@ -40,3 +40,8 @@ Rejected: none.
 - CP-05 fixed (smallest change): Hard Limit clip also after the emphasis stage; True Peak still before emphasis (documented). ceil_filt_shelf/cut peak 0.501 = ceiling.
 - CP-06/08/09/10: log only (CP-06 AGENTS 29 doc: scope length corrected; width text left). CP-10 covered by CP-05 (ext_filt peak 1.0).
 Gate: typecheck, build, test_clipplus, sweep2 test (3/3 ok), preview, test_device_static ok, test_face_fuzz 0 failures; VM audio 42/42 ok; vm_smoke PASS 20/20; Live two-instance check all ok; screenshot read, Options column intact.
+
+## Review
+Stage E independent review of main...HEAD. Fresh rebuild of devices/Clip+.amxd is byte-identical to the committed one. Diff touches only Clip+ files, sweep/ and own AGENTS section 29 (frozen/shared files untouched). Red tests prove each bug (CP-01..03 node, CP-04/05 VM audio with floor-variant control). Fix found: AGENTS 29 still said the message-box bind makes `#0` expand; reworded. Gates re-run: typecheck, build, test_clipplus, sweep2 test 3/3, bugsweep, test_device_static, preview.
+Verdict: READY.
+Deferred shared items: none (CP-06 width/Mid Size doc drift left as S4; CP-09 toggle str_for_value val1/val2 is Live behaviour; True Peak still precedes emphasis by design).
