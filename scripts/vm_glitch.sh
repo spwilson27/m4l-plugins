@@ -15,10 +15,10 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-glitch "${GLITCH_VM_DIR:-}"; VM_DIR="$VMREL"
 WAV=/tmp/glitch_test_220.wav
 export SSHPASS=admin
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "admin@${IP}")
