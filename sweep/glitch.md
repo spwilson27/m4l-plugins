@@ -23,3 +23,10 @@ Counts: S1 0, S2 2, S3 0, S4 6.
 | G-07 | S4 | Fuzz: set_out(48000) draws "+48000.0dB" (face does not clamp; Live does). | face fuzz | log only |
 | G-09 | S2 | Parameter-path changes (set_chaos, set_morphx/y, set_mode, set_seqrate, set_glide, set_seqlen from automation/LOM/macro) update gState but never notifyclients, so Live keeps a stale GlitchStateData blob; on Set load setvalueof(stale)+syncParamsOut overwrite the restored parameter. Live evidence: Chaos 80 -> duplicate_track clone has 50 (param and face). | scripts/test_glitch_persist_live.js FAIL 'clone: Chaos 80 -> 50' (latency 1023, seed/tiles/slots/Mix/Out/Morph X/Mode/Seq Length all PASS) | tests/test_glitch_sweep2.js G-09 x6 (FAIL) |
 | G-08 | gap | Live suite had no latency_in_samples == 1023 check and no save/restore (duplicate_track) check. Added scripts/test_glitch_persist_live.js (see result below). | | n/a |
+
+## Verify
+- G-01 KEEP: ran tests/test_glitch_sweep2.js, fails for the stated reason (ROOT used at line 18, assigned at line 21 under set -u); real tooling bug. Note: vm_glitch.sh is device-owned, but the same bug in vm_megamod_keys.sh belongs to the megamod lane.
+- G-09 KEEP (x6 tests): ran, all fail with "no notifyclients"; onParamIn (src/glitch_ui.js:214) updates gState for chaos/morph/mode/seq* without done(), unlike the chaos(v) message path; expected value matches the blob-persistence contract (AGENTS s19). Fix should debounce/notify without churning undo. Live repro (scripts/test_glitch_persist_live.js, Chaos 80 -> clone 50) not re-run in this stage (no Live lock taken).
+- G-08 KEEP: scripts/test_glitch_persist_live.js is a new check, not a bug.
+- G-02..G-07 log-only S4 nits: no red tests, nothing to verify or delete; G-04 and G-07 are cosmetic and low value.
+- Rejected: none.
