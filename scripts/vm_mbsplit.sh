@@ -10,7 +10,7 @@ set -u
 VM=macos-1
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIR=ableton-mbsplit
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton-mbsplit; DIR="$VMREL"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
@@ -25,8 +25,9 @@ case "${1:-}" in live|test|livetest) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || exec "$
 case "${1:-}" in
   livetest) shift; "$0" live && "$0" test "$@" ;;
   live)
+    host_build mbsplit || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" "cd ~/${DIR} && /usr/bin/python3 scripts/build_mbsplit.py >/dev/null && /usr/bin/python3 scripts/make_mbsplit_set.py || exit 1
+    "${SSH[@]}" "cd ~/${DIR} && /usr/bin/python3 scripts/make_mbsplit_set.py || exit 1
       pkill -f 'MacOS/Live' ; for i in \$(seq 1 40); do pgrep -f 'MacOS/Live' >/dev/null || break; sleep 0.5; done;
       rm -f \"\$HOME\"/Library/Preferences/Ableton/Live\\ */CrashRecoveryInfo.cfg \"\$HOME\"/Library/Preferences/Ableton/Live\\ */CrashDetection.cfg;
       rm -rf \"\$HOME\"/Library/Preferences/Ableton/Live\\ */Undo;

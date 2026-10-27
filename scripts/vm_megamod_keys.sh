@@ -21,7 +21,7 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
-VMREL="${MM_VM_DIR:-Software/ableton-mmnames}"   # the VM checkout (relative to the VM home); MM_VM_DIR lets a second run use its own
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-mmnames "${MM_VM_DIR:-}"; VMREL="$VMREL"   # the VM checkout (relative to the VM home); MM_VM_DIR lets a second run use its own
 VMDIR="\$HOME/$VMREL"
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,10 +49,10 @@ tunnel() {
 }
 
 sync_repo() {
+  host_build megamod || return 1
   (cd "$ROOT" && node scripts/megamod_key_seed.js >/dev/null) || return 1
   rsync -az --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ --exclude vendor \
     -e "sshpass -e ssh" "$ROOT/scripts" "$ROOT/src" "$ROOT/tests" "$ROOT/devices" "admin@${IP}:${VMREL}/" || return 1
-  "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/build_megamod.py >/dev/null"
 }
 
 case "${1:-}" in

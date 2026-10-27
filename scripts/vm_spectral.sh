@@ -26,7 +26,7 @@ set -u
 VM=macos-1
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIR="${SPECTRAL_VM_DIR:-ableton-spectral}"   # own VM checkout (rsync --delete): never share ~/ableton with other sessions
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton-spectral "${SPECTRAL_VM_DIR:-}"; DIR="$VMREL"   # own VM checkout (rsync --delete): never share ~/ableton with other sessions
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
@@ -59,18 +59,19 @@ case "${1:-}" in
       mkdir -p "$ROOT/tests/spectral_probe/old"   # fixture: the pre-rack device (committed with the framework); extracted from HEAD only if it is missing
       [ -s "$ROOT/tests/spectral_probe/old/Transient Split.amxd" ] || git -C "$ROOT" show 'HEAD:devices/Transient Split.amxd' > "$ROOT/tests/spectral_probe/old/Transient Split.amxd" || exit 1
     fi
+    host_build spectral_probe transplit loudsplit harmsplit freqsplit || exit 1
     sync_repo || exit 1
     if [ "$1" = sumlive ]; then
       if [ "${2:-}" = old ]; then
-        BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && /usr/bin/python3 scripts/make_spectral_sum_set.py --only "Transient Split" --devices tests/spectral_probe/old'
+        BUILD='/usr/bin/python3 scripts/make_spectral_sum_set.py --only "Transient Split" --devices tests/spectral_probe/old'
       else
-        BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && for s in transplit loudsplit harmsplit freqsplit; do /usr/bin/python3 scripts/build_$s.py >/dev/null || exit 1; done && /usr/bin/python3 scripts/make_spectral_sum_set.py'
+        BUILD='/usr/bin/python3 scripts/make_spectral_sum_set.py'
       fi
       SETF=spectral_sum_test.als
     elif [ "$1" = probelive ]; then
-      BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && /usr/bin/python3 scripts/make_spectral_probe_set.py'; SETF=spectral_probe_test.als
+      BUILD='/usr/bin/python3 scripts/make_spectral_probe_set.py'; SETF=spectral_probe_test.als
     else
-      BUILD='for s in transplit loudsplit harmsplit freqsplit; do /usr/bin/python3 scripts/build_$s.py >/dev/null || exit 1; done && /usr/bin/python3 scripts/make_spectral_set.py'; SETF=spectral_test.als
+      BUILD='/usr/bin/python3 scripts/make_spectral_set.py'; SETF=spectral_test.als
     fi
     "${SSH[@]}" "cd ~/${DIR}"' && '"$BUILD"' || exit 1
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;

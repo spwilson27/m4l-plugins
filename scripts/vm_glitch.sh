@@ -15,7 +15,7 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
-VM_DIR="${GLITCH_VM_DIR:-Software/ableton-glitch}"
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-glitch "${GLITCH_VM_DIR:-}"; VM_DIR="$VMREL"
 WAV=/tmp/glitch_test_220.wav
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,6 +44,7 @@ case "${1:-}" in
   audio)
     sync_repo && "${SSH[@]}" "cd ~/${VM_DIR} && /usr/bin/python3 scripts/run_glitch_audio_tests.py" ;;
   live)
+    host_build glitch || exit 1
     sync_repo || exit 1
     "${SSH[@]}" "cd ~/${VM_DIR} && /usr/bin/python3 scripts/make_glitch_set.py || exit 1
       pkill -f 'MacOS/Live' ; for i in \$(seq 1 40); do pgrep -f 'MacOS/Live' >/dev/null || break; sleep 0.5; done;

@@ -26,11 +26,12 @@ export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
+. "$ROOT/scripts/vm_common.sh"; vm_dir_rel ableton
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
 sync_repo() {
   rsync -az --delete --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ \
-    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
+    -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:${VMREL}/"
 }
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
@@ -44,46 +45,46 @@ case "${1:-}" in
     sync_repo ;;
   audio)
     # SAMPLER_CASE / SAMPLER_PAN_ONLY on the host are forwarded. Unset runs the full suite.
-    sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") SAMPLER_MX_ONLY=$(printf '%q' "${SAMPLER_MX_ONLY:-}") SAMPLER_WT_ONLY=$(printf '%q' "${SAMPLER_WT_ONLY:-}") SAMPLER_PHASE_ONLY=$(printf '%q' "${SAMPLER_PHASE_ONLY:-}") SAMPLER_BI_ONLY=$(printf '%q' "${SAMPLER_BI_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
+    sync_repo && "${SSH[@]}" "cd ~/${VMREL} && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") SAMPLER_MX_ONLY=$(printf '%q' "${SAMPLER_MX_ONLY:-}") SAMPLER_WT_ONLY=$(printf '%q' "${SAMPLER_WT_ONLY:-}") SAMPLER_PHASE_ONLY=$(printf '%q' "${SAMPLER_PHASE_ONLY:-}") SAMPLER_BI_ONLY=$(printf '%q' "${SAMPLER_BI_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
   drag)
     # The helper is an AppKit window. ssh is a background session and NSPanel init never returns there,
     # so the test runs as the console user (Aqua), same password as the VM login.
-    sync_repo && "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_drag_test.py" ;;
+    sync_repo && "${SSH[@]}" "cd ~/${VMREL} && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/${VMREL}/scripts/run_sampler_drag_test.py" ;;
   titledrag)
     # Drag the filename drawn on Reactive 2. The device is the one just built on the host (the VM has no
     # node, so this does not rebuild). Opens sampler_test.als for the bridge, then loads Reactive 2.
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
-    "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/sampler_test.als' || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
+    "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/sampler_test.als" || exit 1
     "${SSH[@]}" 'mkdir -p ~/.m4l_loader "$HOME/Music/Ableton/User Library/Remote Scripts"'
     tar -C "$ROOT/scripts/live_remote" -cf - M4LTestLoader | "${SSH[@]}" 'cd "$HOME/Music/Ableton/User Library/Remote Scripts" && tar -xf -'
     sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
-    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
-    "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_title_drag_test.py" ;;
+    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/${VMREL}/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
+    "${SSH[@]}" "cd ~/${VMREL} && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/${VMREL}/scripts/run_sampler_title_drag_test.py" ;;
   wtface)
     # Load Reactive 2 and prove every drawn parameter's live.* face: Play Position and Osc 2 Position
     # set and read back, a click on the wavetable slider selects that parameter, and a right-click
     # opens its menu. The device is the one just built on the host (the VM has no node).
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
-    "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/sampler_test.als' || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
+    "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/sampler_test.als" || exit 1
     "${SSH[@]}" 'mkdir -p ~/.m4l_loader "$HOME/Music/Ableton/User Library/Remote Scripts"'
     tar -C "$ROOT/scripts/live_remote" -cf - M4LTestLoader | "${SSH[@]}" 'cd "$HOME/Music/Ableton/User Library/Remote Scripts" && tar -xf -'
     sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
-    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
-    "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_FACE_VM=1 PYTHONUNBUFFERED=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_wt_face_test.py" ;;
+    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/${VMREL}/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
+    "${SSH[@]}" "cd ~/${VMREL} && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_FACE_VM=1 PYTHONUNBUFFERED=1 /usr/bin/python3 \$HOME/${VMREL}/scripts/run_sampler_wt_face_test.py" ;;
   wtvis)
     # Arrange a modulated frame and a Resonance row, photograph the VM, and check the picture:
     # no light triangle beside the scan square, and a grey knob trace under the bright frame.
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
-    "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/sampler_test.als' || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
+    "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/sampler_test.als" || exit 1
     "${SSH[@]}" 'mkdir -p ~/.m4l_loader "$HOME/Music/Ableton/User Library/Remote Scripts"'
     tar -C "$ROOT/scripts/live_remote" -cf - M4LTestLoader | "${SSH[@]}" 'cd "$HOME/Music/Ableton/User Library/Remote Scripts" && tar -xf -'
     sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
-    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
+    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/${VMREL}/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
     "${SSH[@]}" 'rm -f /tmp/bs_wtvis_ready /tmp/bs_wtvis_done'
-    "${SSH[@]}" "cd ~/ableton && PYTHONUNBUFFERED=1 BS_WTVIS_VM=1 /usr/bin/python3 scripts/run_sampler_wt_vis_test.py" &
+    "${SSH[@]}" "cd ~/${VMREL} && PYTHONUNBUFFERED=1 BS_WTVIS_VM=1 /usr/bin/python3 scripts/run_sampler_wt_vis_test.py" &
     LIVEPY=$!
     for _i in $(seq 1 80); do
       "${SSH[@]}" 'test -f /tmp/bs_wtvis_ready' && break
@@ -91,7 +92,7 @@ case "${1:-}" in
     done
     "${SSH[@]}" 'test -f /tmp/bs_wtvis_ready' || { echo "the device view was not ready" >&2; "${SSH[@]}" 'touch /tmp/bs_wtvis_done'; wait $LIVEPY; exit 1; }
     # The pointer leaves a white arrow on the scan. Park it in the corner before the picture.
-    "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/python3 -c 'import sys; sys.path.insert(0, \"scripts\"); import mm_os_input as mo; mo._mouse(5, 40, 60)'" || true
+    "${SSH[@]}" "cd ~/${VMREL} && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/python3 -c 'import sys; sys.path.insert(0, \"scripts\"); import mm_os_input as mo; mo._mouse(5, 40, 60)'" || true
     sleep 0.3
     "$ROOT/scripts/vm_shot.sh" /tmp/bs_wtvis.png || { "${SSH[@]}" 'touch /tmp/bs_wtvis_done'; wait $LIVEPY; exit 1; }
     python3 "$ROOT/scripts/run_sampler_wt_vis_test.py" --check /tmp/bs_wtvis.png || { "${SSH[@]}" 'touch /tmp/bs_wtvis_done'; wait $LIVEPY; exit 1; }
@@ -101,14 +102,14 @@ case "${1:-}" in
     # Open the MSEG, hold a note, and require the playhead and the published level to move.
     # The host photographs the device while the note is sounding.
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
-    "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/sampler_test.als' || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
+    "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/sampler_test.als" || exit 1
     "${SSH[@]}" 'mkdir -p ~/.m4l_loader "$HOME/Music/Ableton/User Library/Remote Scripts"'
     tar -C "$ROOT/scripts/live_remote" -cf - M4LTestLoader | "${SSH[@]}" 'cd "$HOME/Music/Ableton/User Library/Remote Scripts" && tar -xf -'
     sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
-    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
+    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/${VMREL}/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
     "${SSH[@]}" 'rm -f /tmp/bs_mseg_ready'
-    "${SSH[@]}" "cd ~/ableton && PYTHONUNBUFFERED=1 /usr/bin/python3 scripts/run_sampler_mseg_live.py" &
+    "${SSH[@]}" "cd ~/${VMREL} && PYTHONUNBUFFERED=1 /usr/bin/python3 scripts/run_sampler_mseg_live.py" &
     LIVEPY=$!
     for _i in $(seq 1 50); do
       "${SSH[@]}" 'test -f /tmp/bs_mseg_ready' && break
@@ -117,13 +118,13 @@ case "${1:-}" in
     "$ROOT/scripts/vm_shot.sh" /tmp/bs_mseg_live.png || true
     wait $LIVEPY || exit 1 ;;
   live)
+    host_build sampler || exit 1
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_sampler.py >/dev/null &&
-      /usr/bin/python3 scripts/make_sampler_set.py || exit 1
+    "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/make_sampler_set.py || exit 1
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
       rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
       rm -rf "$HOME"/Library/Preferences/Ableton/Live\ */Undo;
-      open -a "Ableton Live 12 Suite" "$HOME/ableton/sampler_test.als" &&
+      open -a "Ableton Live 12 Suite" "$HOME/'"$VMREL"'/sampler_test.als" &&
       for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
       echo "bridge did not come up" >&2; exit 1' ;;
   test)

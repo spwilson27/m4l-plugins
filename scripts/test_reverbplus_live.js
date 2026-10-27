@@ -155,10 +155,11 @@ function faceSection(pair, setP, getP, trackPath) {
     const tag = "[face]";
     if (!SSH_TARGET) { console.log("INFO face checks skipped (no --ssh): they need real OS input in the VM"); return; }
     const env = Object.assign({ SSHPASS: "admin" }, process.env);
+    const VMD = String(process.env.M4L_VM_DIR || "ableton").replace(/^~\//, "").replace(/^\/Users\/[^/]+\//, "").replace(/\/+$/, "");
     const sh = (cmd) => execFileSync("sshpass", ["-e", "ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", SSH_TARGET, cmd], { encoding: "utf8", env });
-    const os = (...a) => sh(`cd ~/ableton && /usr/bin/python3 scripts/mm_os_input.py ${a.join(" ")}`);
+    const os = (...a) => sh(`cd ~/${VMD} && /usr/bin/python3 scripts/mm_os_input.py ${a.join(" ")}`);
     const note = (code) => evalLom(code);
-    sh("cd ~/ableton && clang -fobjc-arc -framework Cocoa scripts/rp_drag_source.m -o /tmp/rp_drag_source && mkdir -p /tmp/rpdrop && rm -f /tmp/rpdrop/* && /usr/bin/python3 - <<'PYEOF'\n" +
+    sh(`cd ~/${VMD} && clang`+" -fobjc-arc -framework Cocoa scripts/rp_drag_source.m -o /tmp/rp_drag_source && mkdir -p /tmp/rpdrop && rm -f /tmp/rpdrop/* && /usr/bin/python3 - <<'PYEOF'\n" +
         "import wave, struct, math\n" +
         "w = wave.open('/tmp/rpdrop/ir_src.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100)\n" +
         "w.writeframes(b''.join(struct.pack('<h', int(20000 * math.exp(-i / 4000.0) * math.sin(i * 0.37))) for i in range(30000)))\n" +
