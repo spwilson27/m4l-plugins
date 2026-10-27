@@ -155,7 +155,12 @@ SR = mh.DEFAULT_SR
 def gen_source():
     """Exactly the gen code the device embeds (build_freqsplit.py)."""
     import build_freqsplit
-    return build_freqsplit.gen_code()
+    code = build_freqsplit.gen_code()
+    # the device embeds the MINIFIED text (spectral_common.gendsp_json -> minify_gen): test that, not the readable source (SS_MINIFY=0 for debugging)
+    if os.environ.get("SS_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        code = minify_gen(code)
+    return code
 
 
 def stim_code(kind, delay_dry, freqs=(), amps=()):

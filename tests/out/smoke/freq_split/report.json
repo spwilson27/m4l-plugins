@@ -1,0 +1,572 @@
+{
+ "device": "devices/Freq Split.amxd",
+ "slug": "freq_split",
+ "kind": "audio",
+ "port": 19911,
+ "config": {
+  "kind": "audio",
+  "ready": {
+   "global": "spectral_split_trace",
+   "regex": "freqsplit dsp ready"
+  },
+  "skipParams": [],
+  "readyTimeoutMs": 45000,
+  "needsSignal": true,
+  "notes": "standalone, deferred gen (spectral_split_trace)"
+ },
+ "started": "2026-10-27T17:30:22.551Z",
+ "steps": {
+  "ready": {
+   "ok": true,
+   "ms": 422,
+   "trace": [
+    "+1717 freqsplit dsp ready after 997 ms [#i1_ax5oxz @220643]",
+    "+243 freqsplit dsp ready after 155 ms [#i1_cha766 @221262]"
+   ],
+   "meterPeakA": 0.8509086966514587,
+   "meterPeakB": 0.8509086966514587
+  },
+  "baseline": [
+   0.8583738207817078,
+   0.8583738207817078
+  ],
+  "sweep": {
+   "total": 13,
+   "tested": 13,
+   "exhausted": false,
+   "ms": 4246,
+   "isolationParamChanges": 0,
+   "bMeterMax": 0.8583738207817078
+  }
+ },
+ "devicesA": [
+  {
+   "name": "Freq Split",
+   "cls": "MxDeviceAudioEffect",
+   "path": "T devices 0",
+   "params": 14
+  }
+ ],
+ "shotDefault": "/tmp/sweep2/spectral/tests/out/smoke/freq_split/default.png",
+ "params": [
+  {
+   "label": "Freq Split[devices 0] / XFade",
+   "name": "XFade",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.8140835165977478,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100.00 %",
+     "meterA": 0.7543803453445435,
+     "ok": true
+    },
+    {
+     "v": 24,
+     "rb": 24,
+     "str": "24.00 %",
+     "meterA": 0.7183950543403625,
+     "ok": true
+    },
+    {
+     "v": 37,
+     "rb": 37,
+     "str": "37.00 %",
+     "meterA": 0.7933076024055481,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Splits",
+   "name": "Splits",
+   "min": 1,
+   "max": 1024,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1",
+     "meterA": 0.8385545015335083,
+     "ok": true
+    },
+    {
+     "v": 251.388381958,
+     "rb": 251.3883819580078,
+     "str": "16",
+     "meterA": 0.8483778238296509,
+     "ok": true
+    },
+    {
+     "v": 1024,
+     "rb": 1024,
+     "str": "1024",
+     "meterA": 0.815263569355011,
+     "ok": true
+    },
+    {
+     "v": 517,
+     "rb": 517,
+     "str": "132.28",
+     "meterA": 0.7533687949180603,
+     "ok": true
+    },
+    {
+     "v": 722,
+     "rb": 722,
+     "str": "359.14",
+     "meterA": 0.7150867581367493,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Lim Thr",
+   "name": "Lim Thr",
+   "min": -120,
+   "max": 12,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -120,
+     "rb": -120,
+     "str": "-120.0 dB",
+     "meterA": 0.7640512585639954,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0.8348323702812195,
+     "ok": true
+    },
+    {
+     "v": 12,
+     "rb": 12,
+     "str": "12.0 dB",
+     "meterA": 0.8535873293876648,
+     "ok": true
+    },
+    {
+     "v": -113,
+     "rb": -113,
+     "str": "-113.0 dB",
+     "meterA": 0.8289567828178406,
+     "ok": true
+    },
+    {
+     "v": -71,
+     "rb": -71,
+     "str": "-71.0 dB",
+     "meterA": 0.7588909268379211,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Mix",
+   "name": "Mix",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0 %",
+     "meterA": 0.7026962637901306,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.7362133264541626,
+     "ok": true
+    },
+    {
+     "v": 77,
+     "rb": 77,
+     "str": "77 %",
+     "meterA": 0.8350437879562378,
+     "ok": true
+    },
+    {
+     "v": 56,
+     "rb": 56,
+     "str": "56 %",
+     "meterA": 0.7738596200942993,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Output",
+   "name": "Output",
+   "min": 0,
+   "max": 5,
+   "q": true,
+   "items": [
+    "Auto",
+    "Ch 1",
+    "Ch 2",
+    "Ch 3",
+    "Ch 4",
+    "All"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Auto",
+     "meterA": 0.7966437935829163,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Ch 1",
+     "meterA": 0.8059373497962952,
+     "ok": true
+    },
+    {
+     "v": 5,
+     "rb": 5,
+     "str": "All",
+     "meterA": 0.7072531580924988,
+     "ok": true
+    },
+    {
+     "v": 3,
+     "rb": 3,
+     "str": "Ch 3",
+     "meterA": 0.747331440448761,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Size",
+   "name": "Size",
+   "min": 0,
+   "max": 2,
+   "q": true,
+   "items": [
+    "1k",
+    "2k",
+    "4k"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "1k",
+     "meterA": 0.6486471891403198,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "2k",
+     "meterA": 0.730819582939148,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "4k",
+     "meterA": 0.7841694951057434,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Limiter",
+   "name": "Limiter",
+   "min": 0,
+   "max": 1,
+   "q": true,
+   "items": [
+    "val1",
+    "val2"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "val1",
+     "meterA": 0.8384437561035156,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "val2",
+     "meterA": 0.8575154542922974,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Display",
+   "name": "Display",
+   "min": 0,
+   "max": 1,
+   "q": true,
+   "items": [
+    "Pre",
+    "Post"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Pre",
+     "meterA": 0.7852398753166199,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Post",
+     "meterA": 0.7248654961585999,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Bend",
+   "name": "Bend",
+   "min": -100,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -100,
+     "rb": -100,
+     "str": "-100 %",
+     "meterA": 0.7262062430381775,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0 %",
+     "meterA": 0.813183605670929,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8447819948196411,
+     "ok": true
+    },
+    {
+     "v": 72,
+     "rb": 72,
+     "str": "72 %",
+     "meterA": 0.84445720911026,
+     "ok": true
+    },
+    {
+     "v": -35,
+     "rb": -35,
+     "str": "-35 %",
+     "meterA": 0.7944172024726868,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Insert",
+   "name": "Insert",
+   "min": 0,
+   "max": 2,
+   "q": true,
+   "items": [
+    "High",
+    "Mid",
+    "Low"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "High",
+     "meterA": 0.7204040288925171,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Mid",
+     "meterA": 0.7163878083229065,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "Low",
+     "meterA": 0.7945148944854736,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Nudge",
+   "name": "Nudge",
+   "min": -4,
+   "max": 4,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -4,
+     "rb": -4,
+     "str": "-4",
+     "meterA": 0.8483253121376038,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0",
+     "meterA": 0.8533123135566711,
+     "ok": true
+    },
+    {
+     "v": 4,
+     "rb": 4,
+     "str": "4",
+     "meterA": 0.8082635998725891,
+     "ok": true
+    },
+    {
+     "v": -2,
+     "rb": -2,
+     "str": "-2",
+     "meterA": 0.7391368746757507,
+     "ok": true
+    },
+    {
+     "v": -3,
+     "rb": -3,
+     "str": "-3",
+     "meterA": 0.7209894061088562,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Pinch",
+   "name": "Pinch",
+   "min": -100,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -100,
+     "rb": -100,
+     "str": "-100 %",
+     "meterA": 0.7688422799110413,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0 %",
+     "meterA": 0.8311243653297424,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8583738207817078,
+     "ok": true
+    },
+    {
+     "v": -86,
+     "rb": -86,
+     "str": "-86 %",
+     "meterA": 0.7988659739494324,
+     "ok": true
+    },
+    {
+     "v": -36,
+     "rb": -36,
+     "str": "-36 %",
+     "meterA": 0.7474606037139893,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Freq Split[devices 0] / Spin",
+   "name": "Spin",
+   "min": -50,
+   "max": 50,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -50,
+     "rb": -50,
+     "str": "-50.0 %",
+     "meterA": 0.7183950543403625,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 %",
+     "meterA": 0.7514141201972961,
+     "ok": true
+    },
+    {
+     "v": 50,
+     "rb": 50,
+     "str": "50.0 %",
+     "meterA": 0.8347129225730896,
+     "ok": true
+    },
+    {
+     "v": -37,
+     "rb": -37,
+     "str": "-37.0 %",
+     "meterA": 0.8544211387634277,
+     "ok": true
+    },
+    {
+     "v": 21,
+     "rb": 21,
+     "str": "21.0 %",
+     "meterA": 0.8260520100593567,
+     "ok": true
+    }
+   ]
+  }
+ ],
+ "shotAfter": "/tmp/sweep2/spectral/tests/out/smoke/freq_split/after_sweep.png",
+ "fails": [],
+ "warns": [],
+ "durationMs": 15441
+}

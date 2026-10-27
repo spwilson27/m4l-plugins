@@ -79,8 +79,8 @@ ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) 
 	d1 = d0 + 5.5;
 	t0 = 0.1 - 0.12 * bs;
 	t1 = max(0.3 - 0.27 * bs, t0 + 0.02);
-	dk = exp(0 - 1 / clip(tdecay, 1, 125));
-	dtn = exp(0 - 1 / clip(tsmooth, 1, 64));
+	dk = exp(-1 / clip(tdecay, 1, 125));
+	dtn = exp(-1 / clip(tsmooth, 1, 64));
 	invD = 1 / (d1 - d0);
 	invTs = 1 / (t1 - t0);
 	nzMode = ttype > 0.5 ? 1 : 0;

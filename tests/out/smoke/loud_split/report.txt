@@ -1,0 +1,12 @@
+devices/Loud Split.amxd (audio) PASS  16 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Loud Split(14)
+ready after 430 ms (meter A 0.846, B 0.846, trace +1505 loudsplit dsp ready after 964 ms [#i1_fj9fb8 @159828] | +231 loudsplit dsp ready after 156 ms [#i1_8uq080 @160425])
+baseline meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/loud_split/default.png (device area), /tmp/sweep2/spectral/tests/out/smoke/loud_split/default_full.png
+sweep: 13/13 parameters, 59 sets in 5 s
+after sweep meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/loud_split/after_sweep.png (device area), /tmp/sweep2/spectral/tests/out/smoke/loud_split/after_sweep_full.png
+TIMING loud_split 25 s (rc 0)

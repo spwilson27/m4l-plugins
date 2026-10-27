@@ -1,0 +1,12 @@
+devices/Freq Split.amxd (audio) PASS  15 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Freq Split(14)
+ready after 422 ms (meter A 0.851, B 0.851, trace +1717 freqsplit dsp ready after 997 ms [#i1_ax5oxz @220643] | +243 freqsplit dsp ready after 155 ms [#i1_cha766 @221262])
+baseline meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/freq_split/default.png (device area), /tmp/sweep2/spectral/tests/out/smoke/freq_split/default_full.png
+sweep: 13/13 parameters, 52 sets in 4 s
+after sweep meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/freq_split/after_sweep.png (device area), /tmp/sweep2/spectral/tests/out/smoke/freq_split/after_sweep_full.png
+TIMING freq_split 26 s (rc 0)

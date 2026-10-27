@@ -1,0 +1,12 @@
+devices/Transient Split.amxd (audio) PASS  14 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Transient Split(11)
+ready after 424 ms (meter A 0.839, B 0.839, trace +1552 transplit dsp ready after 954 ms [#i1_54lurf @131525] | +229 transplit dsp ready after 158 ms [#i1_5d5nuo @132121])
+baseline meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/transient_split/default.png (device area), /tmp/sweep2/spectral/tests/out/smoke/transient_split/default_full.png
+sweep: 10/10 parameters, 40 sets in 3 s
+after sweep meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/transient_split/after_sweep.png (device area), /tmp/sweep2/spectral/tests/out/smoke/transient_split/after_sweep_full.png
+TIMING transient_split 24 s (rc 0)

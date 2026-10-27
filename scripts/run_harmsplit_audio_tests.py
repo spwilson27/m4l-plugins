@@ -72,7 +72,12 @@ F0 = 220.0
 def gen_source():
     """Exactly the gen code the device embeds (build_harmsplit.py)."""
     import build_harmsplit
-    return build_harmsplit.gen_code()
+    code = build_harmsplit.gen_code()
+    # the device embeds the MINIFIED text (spectral_common.gendsp_json -> minify_gen): test that, not the readable source (SS_MINIFY=0 for debugging)
+    if os.environ.get("SS_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        code = minify_gen(code)
+    return code
 
 
 def stim_code(kind, delay_dry, f0=F0, sr=SR):

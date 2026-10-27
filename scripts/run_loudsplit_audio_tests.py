@@ -63,7 +63,12 @@ DEFAULT_PARAMS = {"thrhi": -24, "thrlo": -48, "rthrhi": -12, "rthrlo": -36, "kne
 def gen_source():
     """Exactly the gen code the device embeds (build_loudsplit.py)."""
     import build_loudsplit
-    return build_loudsplit.gen_code()
+    code = build_loudsplit.gen_code()
+    # the device embeds the MINIFIED text (spectral_common.gendsp_json -> minify_gen): test that, not the readable source (SS_MINIFY=0 for debugging)
+    if os.environ.get("SS_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        code = minify_gen(code)
+    return code
 
 
 def stim_code(case):
