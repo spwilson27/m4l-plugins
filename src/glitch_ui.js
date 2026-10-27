@@ -226,13 +226,14 @@ function onParamIn(key, n) {
             // moving Morph X / Y from outside (automation, MIDI map, the LOM) makes the morph audible
             if (gReady && gState.audition !== "morph") setAudition("morph", true);
             else pushEngine();
+            done();
             break;
         }
-        case "chaos": gState.chaos = clamp(n / 100, 0, 1); break;
-        case "mode": setAudition(n > 1.5 ? "seq" : (n > 0.5 ? "morph" : "working"), false); break;
-        case "seqrate": setSeqRate(gState, Math.round(n)); pushEngine(); break;
-        case "glide": setSeqGlide(gState, n / 100); pushEngine(); break;
-        case "seqlen": setSeqLength(gState, Math.round(n)); pushEngine(); break;
+        case "chaos": gState.chaos = clamp(n / 100, 0, 1); done(); break;
+        case "mode": setAudition(n > 1.5 ? "seq" : (n > 0.5 ? "morph" : "working"), false); done(); break;
+        case "seqrate": setSeqRate(gState, Math.round(n)); pushEngine(); done(); break;
+        case "glide": setSeqGlide(gState, n / 100); pushEngine(); done(); break;
+        case "seqlen": setSeqLength(gState, Math.round(n)); pushEngine(); done(); break;
         case "randomize":
             if (n > 0.5 && !(prev > 0.5) && gReady) { doRandomize(null); sendParam("randomize", 0); }
             break;
