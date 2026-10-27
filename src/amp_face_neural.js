@@ -1,26 +1,21 @@
-// Amp face "Neural": Ableton-native look. The canvas draws the network the model runs: one column of nodes
-// per layer, dilated taps between columns (the spread grows with the dilation 1, 2, 4, ...), node size and
-// brightness from the per-layer activity, and signal pulses that sweep left to right faster and brighter
-// with the output level. The input waveform enters at the left, the output waveform leaves at the right.
-// Header: model selector (Model parameter) and Load .nam. All other parameters are native Live widgets
-// outside the canvas. Colours come from the Live theme (spectral_theme.js).
+// Neural Amp face, laid out like Ableton's Amp: this canvas is the display at the top left (where Amp draws
+// its cabinet), the model tabs, the drop zone and the knob row are native Live widgets under it, Output mode,
+// Cabinet, Volume and Dry/Wet sit in the right column. The canvas draws the network the model runs: one
+// column of nodes per layer, dilated taps between columns (the spread grows with the dilation), dilation
+// arcs, node size and brightness from the per-layer activity, and signal pulses that sweep left to right
+// faster and brighter with the output level. The input waveform enters at the left, the output waveform
+// leaves at the right. Load .nam sits in the display's top-right corner. Colours come from the Live theme.
 
 var NRL = {
-    W: 330, H: 161,
-    lcd: { x: 0, y: 21, w: 330, h: 125 },
-    px0: 50, px1: 280, py0: 48, py1: 120, rows: 9,
+    W: 380, H: 89,
+    lcd: { x: 0, y: 0, w: 380, h: 89 },
+    px0: 52, px1: 328, py0: 26, py1: 55, rows: 7,
     phase: 0, hover: "", act: [], tick: 0
 };
-var NRL_NAMES = ["Clean", "Crunch", "Lead", "File"];
 
 sptThemeWatch();
 
-function nrlSegRects() {
-    var out = [], x = 0;
-    for (var i = 0; i < 4; i++) { out.push({ i: i, x: x, y: 1, w: 42, h: 16 }); x += 43; }
-    return out;
-}
-function nrlLoadRect() { return { x: 262, y: 1, w: 68, h: 16 }; }
+function nrlLoadRect() { return { x: 310, y: 2, w: 67, h: 14 }; }
 function nrlIn(x, y, r) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
 
 /** @param {string} s @param {number} maxW @param {number} size */
@@ -65,17 +60,7 @@ function nrlArrays() {
 function nrlColX(i, n) { return NRL.px0 + (n > 1 ? i * (NRL.px1 - NRL.px0) / (n - 1) : 0.5 * (NRL.px1 - NRL.px0)); }
 function nrlRowY(r) { return NRL.py0 + r * (NRL.py1 - NRL.py0) / (NRL.rows - 1); }
 
-function nrlHeader() {
-    var rs = nrlSegRects(), sel = Math.round(ampP.model), names = ampModelNames();
-    for (var i = 0; i < rs.length; i++) {
-        var r = rs[i], on = r.i === sel, hov = NRL.hover === "m" + i;
-        sptRgba(on ? sptColor("live_control_selection") : sptColor("live_control_bg"), on ? 1 : (hov ? 1 : 0.9));
-        mgraphics.rectangle(r.x, r.y, r.w, r.h);
-        mgraphics.fill();
-        var label = i < 3 ? String(names[i] || NRL_NAMES[i]) : "File";
-        sptText(nrlFit(label, r.w - 6, SPT_SIZE_SMALL), r.x + r.w / 2, r.y + 11.5,
-            on ? sptColor("live_lcd_bg") : sptColor(hov ? "live_lcd_control_fg_alt" : "live_control_fg"), SPT_SIZE_SMALL, 1);
-    }
+function nrlLoadButton() {
     var l = nrlLoadRect(), hv = NRL.hover === "load";
     sptRgba(sptColor(hv ? "live_control_selection" : "live_control_bg"));
     mgraphics.rectangle(l.x, l.y, l.w, l.h);
@@ -84,15 +69,15 @@ function nrlHeader() {
     // folder glyph
     sptRgba(fg);
     mgraphics.set_line_width(1);
-    mgraphics.move_to(l.x + 6.5, l.y + 12);
-    mgraphics.line_to(l.x + 6.5, l.y + 4.5);
-    mgraphics.line_to(l.x + 10, l.y + 4.5);
-    mgraphics.line_to(l.x + 11.5, l.y + 6);
-    mgraphics.line_to(l.x + 16.5, l.y + 6);
-    mgraphics.line_to(l.x + 16.5, l.y + 12);
-    mgraphics.line_to(l.x + 6.5, l.y + 12);
+    mgraphics.move_to(l.x + 5.5, l.y + 11);
+    mgraphics.line_to(l.x + 5.5, l.y + 3.5);
+    mgraphics.line_to(l.x + 9, l.y + 3.5);
+    mgraphics.line_to(l.x + 10.5, l.y + 5);
+    mgraphics.line_to(l.x + 15.5, l.y + 5);
+    mgraphics.line_to(l.x + 15.5, l.y + 11);
+    mgraphics.line_to(l.x + 5.5, l.y + 11);
     mgraphics.stroke();
-    sptText("Load .nam", l.x + 20, l.y + 11.5, fg, SPT_SIZE_SMALL, 0);
+    sptText("Load .nam", l.x + 19, l.y + 10.5, fg, SPT_SIZE_SMALL, 0);
 }
 
 /** Smoothed activity per column, resampled when the layer count differs from what the engine reports. */
@@ -130,10 +115,7 @@ function nrlWaveOut() {
 
 function nrlNetwork() {
     var L = NRL.lcd;
-    var ys = [], g = [];
-    for (var yy = 1; yy < 5; yy++) ys.push(L.y + yy * L.h / 5);
-    for (var xx = 1; xx < 6; xx++) g.push(L.x + xx * L.w / 6);
-    sptLcd(L.x, L.y, L.w, L.h, { xs: [], ys: [L.y + L.h / 2] });
+    sptLcd(L.x, L.y, L.w, L.h, { xs: [], ys: [L.y + 42] });
     var cyan = sptColor("live_display_line_two"), orange = sptColor("live_display_line_one");
     var kind = amp.model.kind, n = nrlLayerCount();
     var lvl = Math.min(1, (ampTel.out_rms || 0) * 5 + (ampTel.sat || 0) * 0.3);
@@ -155,7 +137,7 @@ function nrlNetwork() {
         for (i = 0; i < n; i++) {
             var cx = NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / Math.max(1, n - 1);
             if (n === 1) cx = (NRL.px0 + NRL.px1) / 2;
-            var cw = 34, ch = 72, cy = (NRL.py0 + NRL.py1) / 2 - ch / 2;
+            var cw = 34, ch = 30, cy = (NRL.py0 + NRL.py1) / 2 - ch / 2;
             var a = Math.min(1, act[i] * 1.4 + boost(cx) * 0.5);
             if (i < n - 1) sptCurve([[cx + cw / 2, cy + ch / 2], [nrlLstmX(i + 1, n) - cw / 2, cy + ch / 2]], cyan, 0.5);
             sptRgba(sptMuted(orange, 0.25 + 0.55 * a));
@@ -212,11 +194,11 @@ function nrlNetwork() {
             var A0 = arrs[ai], xs = nrlColX(A0.start, n), xe = nrlColX(Math.min(n - 1, A0.start + A0.count - 1), n);
             if (ai > 0) {
                 var bx = (nrlColX(A0.start - 1, n) + xs) / 2;
-                sptCurve([[bx, NRL.lcd.y + 22], [bx, NRL.lcd.y + NRL.lcd.h - 16]], sptColor("live_lcd_title"), 0.7);
+                sptCurve([[bx, NRL.lcd.y + 20], [bx, NRL.lcd.y + 60]], sptColor("live_lcd_title"), 0.7);
             }
-            var by = NRL.lcd.y + NRL.lcd.h - 17;
+            var by = NRL.lcd.y + 63;
             sptCurve([[xs - 3, by - 3], [xs - 3, by], [xe + 3, by], [xe + 3, by - 3]], sptColor("live_display_scale_text"), 0.9);
-            sptText("array " + (ai + 1) + " · " + A0.ch + " ch", (xs + xe) / 2, by + 9, sptColor("live_lcd_title"), SPT_SIZE_SMALL, 1);
+            sptText("array " + (ai + 1) + " · " + A0.ch + " ch", (xs + xe) / 2, by + 8.5, sptColor("live_lcd_title"), SPT_SIZE_SMALL, 1);
         }
         // nodes
         for (i = 0; i < n; i++) {
@@ -234,27 +216,28 @@ function nrlNetwork() {
     }
     NRL.tick++;
     // waveforms at both ends
-    var wc = L.y + L.h / 2;
-    nrlWave(nrlWaveIn(), 4, NRL.px0 - 8, wc, 36, orange, 0.9);
-    nrlWave(nrlWaveOut(), NRL.px1 + 8, L.w - 4, wc, 36, cyan, 0.95);
+    var wc = L.y + 42;
+    nrlWave(nrlWaveIn(), 4, NRL.px0 - 8, wc, 20, orange, 0.9);
+    nrlWave(nrlWaveOut(), NRL.px1 + 8, L.w - 4, wc, 20, cyan, 0.95);
     // entry / exit gates
-    sptCurve([[NRL.px0 - 5, L.y + 6], [NRL.px0 - 5, L.y + L.h - 6]], sptColor("live_lcd_frame"), 1);
-    sptCurve([[NRL.px1 + 5, L.y + 6], [NRL.px1 + 5, L.y + L.h - 6]], sptColor("live_lcd_frame"), 1);
-    sptText("in", 4, L.y + L.h - 5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
-    sptText("out", L.w - 4, L.y + L.h - 5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
+    sptCurve([[NRL.px0 - 5, L.y + 19], [NRL.px0 - 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
+    sptCurve([[NRL.px1 + 5, L.y + 19], [NRL.px1 + 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
+    sptText("in", 4, L.y + 25, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+    sptText("out", L.w - 4, L.y + 25, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
     var dls = nrlDils(), dmin = Math.min.apply(null, dls), dmax = Math.max.apply(null, dls);
     var arrN = nrlArrays().length;
     var cap = kind === "LSTM" ? arrN + " LSTM layers · " + (arrN ? amp.model.arrays[0].ch : 0) + " hidden"
         : arrN + (arrN === 1 ? " array · " : " arrays · ") + dls.length + " layers · d " + dmin + (dmax > dmin ? "–" + dmax : "");
-    sptText(cap, L.w / 2, L.y + 9.5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 1);
+    if (ampP.stereo > 0.5) cap += " · stereo ×2";
+    sptText(nrlFit(cap, 230, SPT_SIZE_SMALL), 188, L.y + 11, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 1);
     // gate reduction pill
-    if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w - 6, L.y + 9.5, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
+    if ((ampTel.gate || 1) < 0.5) sptText("gated", nrlLoadRect().x - 5, L.y + 11, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
 }
 
 function nrlLstmX(i, n) { return n === 1 ? (NRL.px0 + NRL.px1) / 2 : NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / (n - 1); }
 
 function nrlInfo() {
-    var y = 157, m = amp.model, txt, col = sptColor("live_lcd_title");
+    var y = 84, m = amp.model, txt, col = sptColor("live_lcd_title");
     if (amp.dsp.error) { txt = "DSP: " + amp.dsp.error; col = sptColor("live_alert"); }
     else if (m.error) { txt = m.error; col = sptColor("live_alert"); }
     else if (!amp.dsp.ready) { txt = "DSP loading…"; col = sptColor("live_control_selection"); }
@@ -262,12 +245,12 @@ function nrlInfo() {
         var rf = (Number(m.rf) || 0) / 48;
         txt = (m.name || "no model") + "  " + (m.label || "") + "  ·  " + (m.kind || "") + "  ·  receptive field " + rf.toFixed(rf < 10 ? 1 : 0) + " ms";
     }
-    sptText(nrlFit(txt, NRL.W - 4, SPT_SIZE_SMALL), 2, y, col, SPT_SIZE_SMALL, 0);
+    sptText(nrlFit(txt, NRL.W - 12, SPT_SIZE_SMALL), 6, y, col, SPT_SIZE_SMALL, 0);
 }
 
 function paint() {
-    nrlHeader();
     nrlNetwork();
+    nrlLoadButton();
     nrlInfo();
 }
 
@@ -275,8 +258,6 @@ function ampFaceFrame() { return true; }
 function ampFaceChanged(what) { }
 
 function nrlHit(x, y) {
-    var rs = nrlSegRects();
-    for (var i = 0; i < rs.length; i++) if (nrlIn(x, y, rs[i])) return "m" + i;
     if (nrlIn(x, y, nrlLoadRect())) return "load";
     return "";
 }
@@ -285,10 +266,6 @@ function onclick(x, y) {
     var h = nrlHit(x, y);
     if (!h) return;
     if (h === "load") ampBrowse();
-    else {
-        var c = Number(h.slice(1));
-        if (c === 3 && !amp.fileModel) ampBrowse(); else ampSet("model", c);
-    }
     mgraphics.redraw();
 }
 
@@ -305,5 +282,5 @@ function preview() {
     ampPreviewSetup(0.75);
     NRL.phase = 0.35;
     for (var i = 0; i < 4; i++) nrlActivity(nrlLayerCount());
-    ampP.input = 4; ampP.bass = 6; ampP.mid = 4.5; ampP.treble = 6.5; ampP.presence = 5.5; ampP.cab = 2;
+    ampP.gain = 4; ampP.bass = 6; ampP.mid = 4.5; ampP.treble = 6.5; ampP.presence = 5.5; ampP.cab = 2;
 }

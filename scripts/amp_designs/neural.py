@@ -1,29 +1,34 @@
-"""Amp Neural: Ableton-native face. The v8ui draws the network the model runs (layers as node columns,
-dilated taps, a signal pulse); every parameter is a native Live widget in the right column."""
+"""Neural Amp: laid out like Ableton's Amp. The v8ui at the top left is the display (the network the model
+runs: layers as node columns, dilated taps, a signal pulse, the input / output waveforms); under it the model
+tabs, the .nam drop zone and the knob row; the right column holds Output mode, Cabinet, Volume and Dry/Wet.
+Every parameter is a native Live widget."""
 SLUG = "neural"
-DEVICE = "Amp Neural"
-WIDTH = 520
+DEVICE = "Neural Amp"
+WIDTH = 470
 FACE_FILES = ["spectral_theme.js", "amp_face_neural.js"]
-VIZ = [4, 4, 330, 161]
-DROP = [340, 147, 174, 18]
-
-_DIAL = {"kind": "dial"}
+VIZ = [6, 4, 380, 89]
+DROP = [306, 96, 80, 15]
 
 
-def _dial(col, row):
-    return {"kind": "dial", "rect": [340 + 44 * col, 3 + 52 * row, 44, 48]}
+def _dial(x, y):
+    return {"kind": "dial", "rect": [x, y, 44, 48]}
 
 
 WIDGETS = {
-    "input": _dial(0, 0), "gate": _dial(1, 0), "bass": _dial(2, 0), "mid": _dial(3, 0),
-    "treble": _dial(0, 1), "presence": _dial(1, 1), "output": _dial(2, 1), "mix": _dial(3, 1),
-    "cab": {"kind": "tab", "rect": [340, 107, 174, 16]},
-    "normalize": {"kind": "toggle", "rect": [340, 127, 174, 16], "text": "Normalize", "texton": "Normalize"},
+    "model": {"kind": "tab", "rect": [6, 96, 296, 15]},
+    "gain": _dial(8, 115), "gate": _dial(60, 115),
+    "bass": _dial(170, 115), "mid": _dial(222, 115), "treble": _dial(274, 115), "presence": _dial(330, 115),
+    "stereo": {"kind": "toggle", "rect": [401, 18, 60, 15], "text": "Mono", "texton": "Stereo"},
+    "cab": {"kind": "menu", "rect": [401, 48, 60, 15]},
+    "volume": _dial(409, 66), "mix": _dial(409, 118),
 }
-LABELS = []
+LABELS = [
+    ("obj-lbl-output", "Output", [395, 4, 72, 14], 9.5, None, 1),
+    ("obj-lbl-cab", "Cabinet", [395, 34, 72, 14], 9.5, None, 1),
+]
 # Section panels first, body panel last (Max draws earlier background panels over later ones).
 PANELS = [
-    ("obj-panel-ctl", [337, 3, 180, 163], [0.165, 0.165, 0.165, 1.0], 3, "live_desktop"),
-    ("obj-panel-body", [0, 0, 520, 169], [0.212, 0.212, 0.212, 1.0], 0, "live_surface_bg"),
+    ("obj-panel-side", [392, 3, 75, 163], [0.165, 0.165, 0.165, 1.0], 3, "live_desktop"),
+    ("obj-panel-body", [0, 0, 470, 169], [0.212, 0.212, 0.212, 1.0], 0, "live_surface_bg"),
 ]
-DESCRIPTION = "Neural amp (NAM / Tone 3000 captures): a live view of the network's layers and dilated taps, native Live controls."
+DESCRIPTION = "Neural amp (NAM / Tone 3000 captures) laid out like Ableton's Amp: a live view of the network's layers, native Live controls."

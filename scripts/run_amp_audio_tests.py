@@ -6,9 +6,14 @@ code per reference model, its weights, a stimulus and the reference output of am
 
   <model>        nano / feather / standard / lstm / lstm2: the raw model output (tapraw) equals the
                  JS reference (which equals the official NAM torch model) within float32 error
-  cpu_<model>    real-time CPU (adstatus cpu, audio_device driver) with the stimulus playing; cpu_none = no model
-  chain          the full chain (gate, normalize, DC block, biquads, output, mix) stays finite and
-                 audible with a model running
+  cpu_<model>    real-time CPU (adstatus cpu, audio_device driver) with the stimulus playing; cpu_none = no model,
+                 cpu_st_<model> = Stereo mode
+  stereo_<model> Output mode Stereo (tapraw 2: out 1 / out 2 = raw L / R model output): both channels
+                 equal the reference (feather, lstm)
+  stereo_iso     Stereo with a silent right input: the left channel still equals the reference and the
+                 right one stays at the model's constant (no state shared between the channels)
+  chain          the full chain (gate, DC block, biquads, volume, dry/wet) stays finite and
+                 audible with a model running, mono and stereo
   sleep          silent input puts the model to sleep (telemetry) and outputs exact zeros
 
   python3 scripts/run_amp_audio_tests.py [case ...]
@@ -29,13 +34,14 @@ SETTLE_MS = 100
 SOURCE = """Buffer st("amp_stim_t");
 Param silent(0);
 Param loop(0);
+Param rgain(1);
 History n(0);
 o = n < dim(st) ? peek(st, n, 0) : 0;
 n = n + 1;
 n = (loop > 0.5) && (n >= dim(st)) ? 0 : n;
 o = silent > 0.5 ? 0 : o;
 out1 = o;
-out2 = o;
+out2 = o * rgain;
 """
 
 
@@ -99,7 +105,7 @@ def check(ok, msg):
 
 
 def main():
-    want = sys.argv[1:] or MODELS + ["chain", "sleep"] + ["cpu_" + m for m in ["none", "nano", "feather", "standard", "lstm"]]
+    want = sys.argv[1:] or MODELS + ["stereo_feather", "stereo_lstm", "stereo_iso", "chain", "chain_stereo", "sleep"] + ["cpu_" + m for m in ["none", "nano", "feather", "standard", "lstm"]]
     bad = 0
     for case in want:
         if case in MODELS:
@@ -107,17 +113,36 @@ def main():
             rel = r["maxerr"] / max(1e-9, r["peakref"])
             bad += not check(r["nans"] == 0 and rel < 2e-3 and r["peakraw"] > 0,
                              f"{case}: maxerr {r['maxerr']:.3g} (peak ref {r['peakref']:.3g}, rel {rel:.2g}), rms err {r['rmserr']:.3g}")
+        elif case.startswith("stereo_") and case[7:] in MODELS:
+            m = case[7:]
+            r = run(case, m, "tapraw 2, stmode 1, mixamt 1", 1300)
+            rel = r["maxerr"] / max(1e-9, r["peakref"])
+            rel1 = r["maxerr1"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and rel < 2e-3 and rel1 < 2e-3 and r["peakraw"] > 0,
+                             f"{case}: L maxerr {r['maxerr1']:.3g}, R maxerr {r['maxerr']:.3g} (peak ref {r['peakref']:.3g})")
+        elif case == "stereo_iso":
+            r = run(case, "feather", "tapraw 2, stmode 1, mixamt 1", 1300, src_params="rgain 0")
+            rel1 = r["maxerr1"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and rel1 < 2e-3 and r["span2"] < 1e-6,
+                             f"stereo_iso: L maxerr {r['maxerr1']:.3g} (rel {rel1:.2g}), R span {r['span2']:.3g}")
+        elif case == "chain_stereo":
+            r = run(case, "feather", "tapraw 0, stmode 1, gatedb -60, outdb -3", 1300, ref=False, src_params="rgain 0.5")
+            bad += not check(r["nans"] == 0 and 0.001 < r["peakout"] < 4 and 0.001 < r["peakraw"] < 4,
+                             f"chain_stereo: peak L {r['peakout']:.3g}, R {r['peakraw']:.3g}")
         elif case.startswith("dbg:"):
             r = run("dbg", "feather", "tapraw 1", 300, ref=False, code_name=case[4:])
             print("DEBUG", {k: v for k, v in r.items() if k != "harness_dir"}, flush=True)
         elif case.startswith("cpu_"):
             m = case[4:]
             extra = "tapraw 0" + (", mok 0" if m == "none" else "")
+            if m.startswith("st_"):   # cpu_st_<model>: Output mode Stereo (a model per channel)
+                m = m[3:]
+                extra += ", stmode 1"
             m = "feather" if m == "none" else m
             r = run(case, m, extra, 3000, ref="cpu", mode="audio_device", src_params="loop 1")
             print(f"INFO {case}: adstatus cpu avg {r['cpuavg']:.1f} %, max {r['cpumax']:.0f} % ({int(r['cpucount'])} readings)", flush=True)
         elif case == "chain":
-            r = run(case, "feather", "tapraw 0, gatedb -60, outdb -3, normdb 6", 1300, ref=False)
+            r = run(case, "feather", "tapraw 0, gatedb -60, outdb -3", 1300, ref=False)
             bad += not check(r["nans"] == 0 and 0.001 < r["peakout"] < 4, f"chain: peak out {r['peakout']:.3g}, rms {r['rmsout']:.3g}")
         elif case == "sleep":
             r = run(case, "feather", "tapraw 1", 1300, ref=False, src_params="silent 1")

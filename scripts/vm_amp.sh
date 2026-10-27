@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Amp Max / Live tests inside the tart VM macos-1 (AGENTS.md 1a: never run Max or Live on the host).
 #   scripts/vm_amp.sh audio [case ...]   host fixtures (node tests/amp_fixtures.js), sync, run the Max harness cases
-#   scripts/vm_amp.sh livetest           under the Live lock: sync, open the bridge set (fresh), load every built
-#                                        Amp device on a new audio track, run scripts/test_amp_live.js (tunnel);
+#   scripts/vm_amp.sh livetest           under the Live lock: sync, open the bridge set (fresh), load the built
+#                                        Neural Amp on a new audio track, run scripts/test_amp_live.js (tunnel);
 #                                        `livetest --shots <dir>` also saves a VM screenshot per device (scripts/vm_shot.sh)
 #   scripts/vm_amp.sh sync
 set -u
@@ -35,7 +35,7 @@ case "$cmd" in
     "$ROOT/scripts/vm_live_open.sh" ensure "~/${DIR}/ableton_mcp_bridge.als" --fresh
     "$ROOT/scripts/vm_live_open.sh" load "/Users/admin/${DIR}/devices/Ableton MCP Bridge.amxd" master || exit 1
     "${SSH[@]}" 'for i in $(seq 1 60); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 0.5; done; echo "no bridge" >&2; exit 1' || exit 1
-    for f in "$ROOT"/devices/Amp\ *.amxd; do
+    for f in "$ROOT/devices/Neural Amp.amxd"; do
       "$ROOT/scripts/vm_live_open.sh" load "/Users/admin/${DIR}/devices/$(basename "$f")" new_audio || exit 1
     done
     LOCAL_PORT=19884

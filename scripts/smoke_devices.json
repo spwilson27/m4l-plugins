@@ -167,7 +167,7 @@
     "skipParams": [],
     "notes": "pass-through modulator: meter follows input; trace dsp-ready"
   },
-  "devices/Amp Stack.amxd": {
+  "devices/Neural Amp.amxd": {
     "kind": "audio",
     "ready": {
       "global": "amp_trace",

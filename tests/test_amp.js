@@ -100,9 +100,46 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
         check(pokes.every((p) => p < A.AMP_SCOPE.LAYER || p === 12 || p === 13 || p < 16), `${name}: header pokes inside the header`);
     }
     for (const [k, v] of [["XY", 64], ["OUT", 1088], ["SAMPS", 3136]]) check(A.AMP_SCOPE[k] === v, `scope ${k} = ${v}`);
-    check(/poke\(scope, nin, 64 \+ xyh \* 2, 0\)/.test(tmpl) && /poke\(scope, wet, 1088 \+ oh, 0\)/.test(tmpl), "template rings match AMP_SCOPE");
+    check(/poke\(scope, nin, 64 \+ xyh \* 2, 0\)/.test(tmpl) && /poke\(scope, \(wet \+ wetR\) \* 0\.5, 1088 \+ oh, 0\)/.test(tmpl), "template rings match AMP_SCOPE");
     check(/poke\(scope, peek\(lsm, q\), 16 \+ q, 0\)/.test(tmpl), "template layer slots match AMP_SCOPE.LAYER");
     check(A.ampRingSize(A.ampParseNam(read("tests/amp_ref/standard.nam"))) < 200000, "standard ring size");
+}
+
+// 3b. the generated network run as JS (GenExpr subset: Data, peek / poke, for, ternaries): per channel state
+// is separate (stereo = two independent models), each channel equals the reference ampForward
+{
+    for (const name of ["nano", "feather", "lstm2"]) {
+        const m = A.ampParseNam(read(`tests/amp_ref/${name}.nam`));
+        const g = A.ampGenNam(m);
+        const datas = [...g.decl.matchAll(/^Data (\w+)\((\d+)\);$/gm)].map((mm) => mm[1]);
+        const assigned = new Set([...g.body.matchAll(/\b([a-z_]\w*)\s*(?:\+=|=(?!=))/gi)].map((mm) => mm[1]));
+        const locals = [...assigned].filter((v) => !datas.includes(v) && !["nob", "nib"].includes(v));
+        const src = g.decl.replace(/^Data (\w+)\((\d+)\);$/gm, "var $1 = new Float64Array($2);")
+            + "\nvar " + locals.join(", ") + ";\n"
+            + "function peek(d, i) { return d[i]; } function poke(d, v, i) { d[i] = v; }\n"
+            + "var tanh = Math.tanh, exp = Math.exp, abs = Math.abs, floor = Math.floor, min = Math.min, max = Math.max, sqrt = Math.sqrt;\n"
+            + "function clip(v, a, b) { return Math.min(b, Math.max(a, v)); }\n"
+            + "return { reset: function () { [" + datas.filter((d) => /^(st|hs|cs)$/.test(d)).join(", ") + "].forEach(function (d) { d.fill(0); }); },\n"
+            + "step: function (w, wb, tp, ninit, nch, nib, nob) {\n" + g.body + "\n} };";
+        const net = new Function(src)();
+        const W = Float64Array.from(m.weights), nib = new Float64Array(2), nob = new Float64Array(2);
+        const n = 3000, xL = [], xR = [];
+        for (let i = 0; i < n; i++) { xL.push(0.6 * Math.sin(2 * Math.PI * 110 * i / 48000) * Math.exp(-i / 9000)); xR.push(0.3 * Math.sin(2 * Math.PI * 247 * i / 48000)); }
+        const refL = A.ampForward(m, xL), refR = A.ampForward(m, xR);
+        let eL = 0, eR = 0, eM = 0, pk = 0;
+        for (let i = 0; i < n; i++) {
+            nib[0] = xL[i]; nib[1] = xR[i];
+            net.step(W, 0, i, i === 0 ? 1 : 0, 2, nib, nob);
+            eL = Math.max(eL, Math.abs(nob[0] - refL[i])); eR = Math.max(eR, Math.abs(nob[1] - refR[i])); pk = Math.max(pk, Math.abs(refL[i]));
+        }
+        net.reset();   // mono: channel 0 only, fresh state
+        for (let i = 0; i < n; i++) {
+            nib[0] = xL[i];
+            net.step(W, 0, i + n, i === 0 ? 1 : 0, 1, nib, nob);
+            eM = Math.max(eM, Math.abs(nob[0] - refL[i]));
+        }
+        check(pk > 0.01 && eL < 1e-6 && eR < 1e-6 && eM < 1e-6, `${name}: generated network, stereo L / R and mono equal the reference (err ${eL.toExponential(1)} / ${eR.toExponential(1)} / ${eM.toExponential(1)})`);
+    }
 }
 
 // 4. built-in captures
@@ -127,12 +164,11 @@ for (const name of ["clean", "crunch", "lead"]) {
     check(Math.abs(A.ampResponseDb(up, 40, 48000) - 20) < 1, "bass 10 = +20 dB low shelf");
     const cab = A.ampToneBiquads(Object.assign({}, flat, { cab: 2 }), 48000);
     check(A.ampResponseDb(cab, 12000, 48000) < -20 && A.ampResponseDb(cab, 30, 48000) < -6, "4x12 rolls off highs and lows");
-    check(A.ampNormDb({ loudness: -12 }) === -6 && A.ampNormDb({ loudness: null }) === 0, "normalize gain");
 }
 
 // 6. built devices
 const designs = fs.readdirSync(path.join(ROOT, "scripts", "amp_designs")).filter((f) => f.endsWith(".py") && !f.startsWith("_"));
-check(designs.length === 5, `five designs (${designs.length})`);
+check(designs.length === 1, `one design (${designs.length})`);
 for (const f of designs) {
     const dev = read(`scripts/amp_designs/${f}`).match(/^DEVICE\s*=\s*"([^"]+)"/m)[1];
     const file = path.join(ROOT, "devices", dev + ".amxd");

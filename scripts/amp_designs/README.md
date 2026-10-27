@@ -1,14 +1,15 @@
-# Amp faces — the design contract
+# Amp face — the design contract
 
-Every Amp device shares one engine (NAM / Tone 3000 `.nam` models in a generated gen~, tone stack,
-cab, gate, telemetry) and differs only in its face. A design is two or three files:
+The Neural Amp is one engine (NAM / Tone 3000 `.nam` models in a generated gen~, tone stack, cab,
+gate, telemetry) plus one face (`neural`; the other four prototypes were removed). The design system
+stays so another face could be added. A design is two or three files:
 
 - `scripts/amp_designs/<slug>.py` — layout module (fields documented at the top of `scripts/build_amp.py`)
 - `src/amp_face_<slug>.js` — the face script (concatenated after `src/amp_config.js` and `src/amp_engine.js`
   into the device's single main v8ui `obj-viz`)
-- `tsconfig.amp-<slug>.json` — typecheck group (copy `tsconfig.amp-stack.json`, swap the face file)
+- `tsconfig.amp-<slug>.json` — typecheck group (copy `tsconfig.amp-neural.json`, swap the face file)
 
-Reference implementation: `scripts/amp_designs/stack.py` + `src/amp_face_stack.js`.
+Reference implementation: `scripts/amp_designs/neural.py` + `src/amp_face_neural.js`.
 Do not edit shared files (`src/amp_config.js`, `src/amp_engine.js`, `src/amp_core.genexpr`,
 `scripts/build_amp.py`, `tests/test_amp_face.js`); ask for a change instead.
 
@@ -24,9 +25,9 @@ python3 scripts/render_preview.py "devices/<DEVICE>.amxd"   # then LOOK at previ
 ## Engine API the face uses (see the header of `src/amp_engine.js`)
 
 - `ampP[key]` raw values; keys and ranges in `AMP_PARAMS` (`src/amp_config.js`):
-  `model` (enum Clean / Crunch / Lead / File), `input` (-24..24 dB), `gate` (-100..-20 dB, -100 = off),
-  `bass` `mid` `treble` `presence` (0..10, 5 = flat), `cab` (enum Off / 1x12 / 4x12 / 2x12),
-  `output` (-40..12 dB), `normalize` (Off / On), `mix` (0..100 %).
+  `model` (enum Clean / Crunch / Lead / File), `gain` (-24..24 dB, into the model), `gate` (-100..-20 dB,
+  -100 = off), `bass` `mid` `treble` `presence` (0..10, 5 = flat), `cab` (enum Off / 1x12 / 4x12 / 2x12),
+  `stereo` (enum Mono / Stereo), `volume` (-40..12 dB), `mix` (0..100 %, Dry/Wet).
 - `ampSet(key, v)` sets a parameter through its live.* object (clamped / rounded for you).
 - `ampBrowse()` opens the file dialog (the "Load .nam" action). `ampModelNames()` = Model enum labels,
   the loaded file's name as entry 3.

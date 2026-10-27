@@ -22,12 +22,11 @@ var AMP_WMAX = AMP_WBANK - 16;
 var AMP_MAX_CH = 32;
 var AMP_MAX_LAYERS = 48;
 var AMP_MAX_RING = 2000000;         // doubles of WaveNet history per architecture
-var AMP_NORM_TARGET_DB = -18;       // NAM plugin's "Normalize" target
 var AMP_NBQ = 10;                   // biquads in ---ampcf: 0..3 tone stack, 4..9 cab
 var AMP_CF_SAMPS = AMP_NBQ * 5 + 6;
 
-// Telemetry ---ampscope. Header 0..63, XY ring 64.. (pairs: input after the Input gain, model output
-// after Normalize, one pair every 4 samples), output ring (final mono output, every sample).
+// Telemetry ---ampscope. Header 0..63, XY ring 64.. (pairs: left input after Gain, left model output,
+// one pair every 4 samples), output ring (final output, mid of L / R, every sample).
 var AMP_SCOPE = {
     FRAMES: 0, SR: 1, IN_PK: 2, OUT_PK: 3, GATE: 4, SAT: 5, IN_RMS: 6, OUT_RMS: 7, MODEL_OK: 8,
     NLAYERS: 9, NAM_PK: 10, ASLEEP: 11, XY_HEAD: 12, OUT_HEAD: 13, SWITCHING: 14, ALIVE: 15,
@@ -44,18 +43,18 @@ var AMP_ACTS = ["Tanh", "Fasttanh", "ReLU", "LeakyReLU", "Sigmoid", "Hardtanh", 
 /** @type {Object<string, [string, string, number, number, number, number, number, (string|null), (string[]|null), string]>} */
 var AMP_PARAMS = {
     model: ["Model", "Model", 0, 3, 1, 2, 0, null, ["Clean", "Crunch", "Lead", "File"], "Built-in capture or the .nam file you loaded."],
-    input: ["Input", "Input", -24, 24, 0, 0, 4, "indb", null, "Level into the model, in decibels. Captures react to level like the real amp."],
+    gain: ["Gain", "Gain", -24, 24, 0, 0, 4, "indb", null, "Level into the model, in decibels. Captures react to level like the real amp: more gain, more drive."],
     gate: ["Gate", "Gate", -100, -20, -100, 0, 4, "gatedb", null, "Noise gate threshold. -100 dB is off."],
     bass: ["Bass", "Bass", 0, 10, 5, 0, 1, null, null, "Low shelf at 150 Hz (NAM tone stack)."],
-    mid: ["Middle", "Mid", 0, 10, 5, 0, 1, null, null, "Peak at 425 Hz."],
+    mid: ["Middle", "Middle", 0, 10, 5, 0, 1, null, null, "Peak at 425 Hz."],
     treble: ["Treble", "Treble", 0, 10, 5, 0, 1, null, null, "High shelf at 1.8 kHz."],
     presence: ["Presence", "Presence", 0, 10, 5, 0, 1, null, null, "High shelf at 4.5 kHz."],
-    cab: ["Cabinet", "Cab", 0, 3, 2, 2, 0, null, ["Off", "1x12", "4x12", "2x12"], "Speaker voicing after the amp. Off for a capture that already includes a cab."],
-    output: ["Output", "Output", -40, 12, 0, 0, 4, "outdb", null, "Output level."],
-    normalize: ["Normalize", "Norm", 0, 1, 1, 2, 0, null, ["Off", "On"], "Level-match captures to -18 dB using the file's loudness."],
-    mix: ["Mix", "Mix", 0, 100, 100, 0, 5, "mixamt", null, "Dry / amp blend."]
+    cab: ["Cabinet", "Cabinet", 0, 3, 2, 2, 0, null, ["Off", "1x12", "4x12", "2x12"], "Speaker voicing after the amp. Off for a capture that already includes a cab."],
+    stereo: ["Output Mode", "Output", 0, 1, 0, 2, 0, "stmode", ["Mono", "Stereo"], "Mono runs one model on the summed input. Stereo runs a model per channel (twice the CPU)."],
+    volume: ["Volume", "Volume", -40, 12, 0, 0, 4, "outdb", null, "Output level after the amp and cab."],
+    mix: ["Dry/Wet", "Dry/Wet", 0, 100, 100, 0, 5, "mixamt", null, "Dry / amp blend."]
 };
-var AMP_PARAM_KEYS = ["model", "input", "gate", "bass", "mid", "treble", "presence", "cab", "output", "normalize", "mix"];
+var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "volume", "mix"];
 
 /** @param {string} key @param {number} v */
 function ampGenValue(key, v) {
@@ -385,29 +384,45 @@ function ampGenAct(name, x) {
 
 /**
  * GenExpr for one architecture. Returns {decl, body}: `decl` goes where the template has
- * //@NAM_DECL (Data declarations), `body` where it has //@NAM_BODY. The body reads `nin` (model
- * input), `wb` (bank offset), `tp` (sample counter), `ninit` (1 on the first sample after a model
- * switch) and assigns `nout` and `nsat` (mean |activation| of the first layer array).
+ * //@NAM_DECL (Data declarations), `body` where it has //@NAM_BODY. The body runs the network once per
+ * channel (`nch` = 1 mono, 2 stereo): channel `chn` reads its input from Data `nib` and writes its
+ * output into Data `nob`; the recurrent / history state is per channel (offset `so`), scratch is shared.
+ * It also reads `wb` (bank offset), `tp` (sample counter), `ninit` (1 on the first sample after a model
+ * switch) and assigns `nsat` (mean |activation| of the first layer array).
  * @param {any} m
  */
 function ampGenNam(m) {
     var g = ampGenNamRaw(m);
     // Weights are copied from buffer~ ---ampw into a Data once per model switch: Data peeks with
     // constant offsets are much cheaper per sample than Buffer peeks at wb + offset.
-    var body = g.body.split("peek(w, wb + ").join("peek(wd, ").split("peek(w, row").join("peek(wd, row")
-        .split("peek(w, wo").join("peek(wd, wo").split("row = wb + ").join("row = ").split("wo = wb + ").join("wo = ");
+    /** @param {string} t */
+    function dataW(t) {
+        return t.split("peek(w, wb + ").join("peek(wd, ").split("peek(w, row").join("peek(wd, row")
+            .split("peek(w, wo").join("peek(wd, wo").split("row = wb + ").join("row = ").split("wo = wb + ").join("wo = ");
+    }
     var copy = "if (ninit > 0) {\n  for (j = 0; j < " + m.nWeights + "; j += 1) { poke(wd, peek(w, wb + j), j); }\n}\n";
-    return { decl: "Data wd(" + m.nWeights + ");\n" + g.decl, body: copy + body, layers: g.layers };
+    var body = copy + g.init + (g.init ? "\n" : "")
+        + "for (chn = 0; chn < nch; chn += 1) {\n"
+        + "xin = peek(nib, chn);\n"
+        + "so = chn * " + g.state + ";\n"
+        + dataW(g.body) + "\n"
+        + "poke(nob, nout, chn);\n"
+        + "}";
+    return { decl: "Data wd(" + m.nWeights + ");\n" + g.decl, body: body, layers: g.layers };
 }
 
-/** @param {any} m */
+/**
+ * The network for one channel. `init` runs once per model switch (outside the channel loop, sets the
+ * state of both channels), `body` once per channel; `state` = per-channel state size (Data offset `so`).
+ * @param {any} m
+ */
 function ampGenNamRaw(m) {
-    var D = [], B = [];
+    var D = [], B = [], I0 = [];
     var nl = Math.min(ampLayerCount(m), AMP_MAX_LAYERS);
     D.push("Data lact(" + AMP_MAX_LAYERS + ");");
     if (m.kind === "LSTM") {
-        var H = m.lstm.hidden, NL = m.lstm.layers;
-        D.push("Data hs(" + (H * NL) + ");", "Data cs(" + (H * NL) + ");", "Data gz(" + (4 * H) + ");", "Data hin(" + H + ");");
+        var H = m.lstm.hidden, NL = m.lstm.layers, SZ = H * NL;
+        D.push("Data hs(" + (2 * SZ) + ");", "Data cs(" + (2 * SZ) + ");", "Data gz(" + (4 * H) + ");", "Data hin(" + H + ");");
         var p = 0, cells = [];
         for (var l = 0; l < NL; l++) {
             var I = l === 0 ? 1 : H;
@@ -416,20 +431,23 @@ function ampGenNamRaw(m) {
             p = cell.H0 + 2 * H;
             cells.push(cell);
         }
-        // Initial state from the weights on every model switch.
-        B.push("if (ninit > 0) {");
+        // Initial state from the weights on every model switch, for both channels.
+        I0.push("if (ninit > 0) {");
         for (l = 0; l < NL; l++) {
-            B.push("  for (j = 0; j < " + H + "; j += 1) { poke(hs, peek(w, wb + " + cells[l].H0 + " + j), " + (l * H) + " + j); poke(cs, peek(w, wb + " + (cells[l].H0 + H) + " + j), " + (l * H) + " + j); }");
+            for (var half = 0; half < 2; half++) {
+                var off = half * SZ + l * H;
+                I0.push("  for (j = 0; j < " + H + "; j += 1) { poke(hs, peek(w, wb + " + cells[l].H0 + " + j), " + off + " + j); poke(cs, peek(w, wb + " + (cells[l].H0 + H) + " + j), " + off + " + j); }");
+            }
         }
-        B.push("}");
+        I0.push("}");
         for (l = 0; l < NL; l++) {
             var C = cells[l], stride = C.I + H;
             B.push("for (g = 0; g < " + (4 * H) + "; g += 1) {");
             B.push("  s = peek(w, wb + " + C.B + " + g);");
             B.push("  row = wb + " + C.W + " + g * " + stride + ";");
-            if (l === 0) B.push("  s += peek(w, row) * nin;");
+            if (l === 0) B.push("  s += peek(w, row) * xin;");
             else B.push("  for (j = 0; j < " + H + "; j += 1) { s += peek(w, row + j) * peek(hin, j); }");
-            B.push("  for (j = 0; j < " + H + "; j += 1) { s += peek(w, row + " + C.I + " + j) * peek(hs, " + (l * H) + " + j); }");
+            B.push("  for (j = 0; j < " + H + "; j += 1) { s += peek(w, row + " + C.I + " + j) * peek(hs, so + " + (l * H) + " + j); }");
             B.push("  poke(gz, s, g);");
             B.push("}");
             B.push("acc = 0;");
@@ -438,9 +456,9 @@ function ampGenNamRaw(m) {
             B.push("  gf = 1 / (1 + exp(-peek(gz, " + H + " + j)));");
             B.push("  gg = tanh(peek(gz, " + (2 * H) + " + j));");
             B.push("  go = 1 / (1 + exp(-peek(gz, " + (3 * H) + " + j)));");
-            B.push("  cc = gf * peek(cs, " + (l * H) + " + j) + gi * gg;");
+            B.push("  cc = gf * peek(cs, so + " + (l * H) + " + j) + gi * gg;");
             B.push("  hh = go * tanh(cc);");
-            B.push("  poke(cs, cc, " + (l * H) + " + j); poke(hs, hh, " + (l * H) + " + j); poke(hin, hh, j);");
+            B.push("  poke(cs, cc, so + " + (l * H) + " + j); poke(hs, hh, so + " + (l * H) + " + j); poke(hin, hh, j);");
             B.push("  acc += abs(hh);");
             B.push("}");
             if (l < AMP_MAX_LAYERS) B.push("poke(lact, acc / " + H + ", " + l + ");");
@@ -449,7 +467,7 @@ function ampGenNamRaw(m) {
         B.push("s = peek(w, wb + " + (p + H) + ");");
         B.push("for (j = 0; j < " + H + "; j += 1) { s += peek(w, wb + " + p + " + j) * peek(hin, j); }");
         B.push("nout = s;");
-        return { decl: D.join("\n"), body: B.join("\n"), layers: nl };
+        return { decl: D.join("\n"), init: I0.join("\n"), body: B.join("\n"), state: SZ, layers: nl };
     }
     var maxCh = 1, ring = 0, li = 0;
     m.layers.forEach(function (/** @type {any} */ A) { maxCh = Math.max(maxCh, A.gated ? 2 * A.ch : A.ch, A.head); });
@@ -460,13 +478,13 @@ function ampGenNamRaw(m) {
     var ringDecl = D.length;
     D.push("");
     var q = 0;
-    B.push("poke(va, nin, 0);");
+    B.push("poke(va, xin, 0);");
     for (var a = 0; a < m.layers.length; a++) {
         var A = m.layers[a], ch = A.ch, cz = A.gated ? 2 * ch : ch;
         // Rechannel (1x1, no bias) from the previous residual (or the input) into vt, then va.
         B.push("for (c = 0; c < " + ch + "; c += 1) {");
         B.push("  s = 0;");
-        if (A.inSize === 1) B.push("  s = peek(w, wb + " + q + " + c) * nin;");
+        if (A.inSize === 1) B.push("  s = peek(w, wb + " + q + " + c) * xin;");
         else B.push("  for (i = 0; i < " + A.inSize + "; i += 1) { s += peek(w, wb + " + q + " + c * " + A.inSize + " + i) * peek(va, i); }");
         B.push("  poke(vt, s, c);");
         B.push("}");
@@ -482,11 +500,11 @@ function ampGenNamRaw(m) {
             B.push("// array " + a + " layer " + l2 + " d " + L.d);
             // No bitwise & in GenExpr (it kills the compile): pow2 modulo by floor, then one wrap per tap.
             B.push("pos = tp - " + Lr + " * floor(tp * " + (1 / Lr) + ");");
-            B.push("for (i = 0; i < " + ch + "; i += 1) { poke(st, peek(va, i), " + rb + " + i * " + Lr + " + pos); }");
+            B.push("for (i = 0; i < " + ch + "; i += 1) { poke(st, peek(va, i), so + " + rb + " + i * " + Lr + " + pos); }");
             // Gather the ch * k taps once (tv), then each output channel is one contiguous dot product.
             var nt = ch * L.k;
             B.push("for (i = 0; i < " + ch + "; i += 1) {");
-            B.push("  rr = " + rb + " + i * " + Lr + ";");
+            B.push("  rr = so + " + rb + " + i * " + Lr + ";");
             for (var k = 0; k < L.k; k++) {
                 var back = (L.k - 1 - k) * L.d;
                 if (back === 0) {
@@ -498,7 +516,7 @@ function ampGenNamRaw(m) {
             }
             B.push("}");
             B.push("for (o = 0; o < " + cz + "; o += 1) {");
-            B.push("  s = peek(w, wb + " + convB + " + o) + peek(w, wb + " + mix + " + o) * nin;");
+            B.push("  s = peek(w, wb + " + convB + " + o) + peek(w, wb + " + mix + " + o) * xin;");
             B.push("  wo = wb + " + conv + " + o * " + nt + ";");
             B.push("  for (j = 0; j < " + nt + "; j += 1) { s += peek(w, wo + j) * peek(tv, j); }");
             B.push("  poke(vz, s, o);");
@@ -535,8 +553,8 @@ function ampGenNamRaw(m) {
         B.push("for (h = 0; h < " + A.head + "; h += 1) { poke(vh, peek(vt, h), h); }");
     }
     B.push("nout = peek(w, wb + " + q + ") * peek(vh, 0);");
-    D[ringDecl] = "Data st(" + Math.max(1, ring) + ");";
-    return { decl: D.join("\n"), body: B.join("\n"), layers: nl };
+    D[ringDecl] = "Data st(" + Math.max(1, 2 * ring) + ");";
+    return { decl: D.join("\n"), init: "", body: B.join("\n"), state: Math.max(1, ring), layers: nl };
 }
 
 /**
@@ -657,12 +675,6 @@ function ampResponseDb(bqs, f, sr) {
     return 20 * Math.log(Math.max(1e-12, mag)) / Math.LN10;
 }
 
-/** Normalize gain in dB for a model (NAM: loudness -> -18 dB). @param {any} m */
-function ampNormDb(m) {
-    if (!m || m.loudness == null || !isFinite(m.loudness)) return 0;
-    return Math.max(-36, Math.min(36, AMP_NORM_TARGET_DB - m.loudness));
-}
-
 var ampNodeModule = (typeof module !== "undefined") ? module : undefined;
 if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     AMP_VERSION: AMP_VERSION, AMP_WBANK: AMP_WBANK, AMP_SCOPE: AMP_SCOPE, AMP_PARAMS: AMP_PARAMS, AMP_PARAM_KEYS: AMP_PARAM_KEYS,
@@ -670,5 +682,5 @@ if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     ampParseNam: ampParseNam, ampForward: ampForward, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampGendsp: ampGendsp,
     ampArchKey: ampArchKey, ampArchLabel: ampArchLabel, ampRingSize: ampRingSize, ampLayerCount: ampLayerCount,
     ampHash: ampHash, ampBiquad: ampBiquad, ampToneBiquads: ampToneBiquads, ampResponseDb: ampResponseDb,
-    ampNormDb: ampNormDb, ampGenValue: ampGenValue, ampAct: ampAct
+    ampGenValue: ampGenValue, ampAct: ampAct
 };

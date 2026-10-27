@@ -1,6 +1,7 @@
 // Amp audio probe. rec ch1 = device out 1, ch2 = raw model output (tapraw 1) or out 2.
 // jsarguments: [ref buffer name] [settle samples]. Reports the error of ch2 against the reference
-// buffer (offset by the settle period, which the scaffold drops from rec) and simple levels.
+// buffer (offset by the settle period, which the scaffold drops from rec) and simple levels; maxerr1 is
+// ch1 against the same reference (stereo cases: ch1 = raw left model output), span2 = max - min of ch2.
 inlets = 1;
 outlets = 1;
 var resultPath = "/tmp/amp_audio.txt";
@@ -40,7 +41,7 @@ function analyze(durMs) {
     var refName = jsarguments.length > 1 ? String(jsarguments[1]) : "";
     var settle = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
     var a = rd(rec, 1, 0, frames), b = rd(rec, 2, 0, frames);
-    var err = 0, peakRef = 0, peakB = 0, peakA = 0, nans = 0, rmsA = 0, sumsq = 0;
+    var err = 0, err1 = 0, mn2 = 1e9, mx2 = -1e9, peakRef = 0, peakB = 0, peakA = 0, nans = 0, rmsA = 0, sumsq = 0;
     var ref = null;
     if (refName) {
         var rb = new Buffer(refName);
@@ -54,9 +55,12 @@ function analyze(durMs) {
         peakA = Math.max(peakA, Math.abs(va));
         peakB = Math.max(peakB, Math.abs(vb));
         rmsA += va * va;
+        mn2 = Math.min(mn2, vb); mx2 = Math.max(mx2, vb);
         if (ref && i < ref.length) {
             var d = Math.abs(vb - ref[i]);
             if (d > err) err = d;
+            var d1 = Math.abs(va - ref[i]);
+            if (d1 > err1) err1 = d1;
             peakRef = Math.max(peakRef, Math.abs(ref[i]));
             sumsq += (vb - ref[i]) * (vb - ref[i]);
         }
@@ -66,6 +70,8 @@ function analyze(durMs) {
     f.writeline("frames " + frames);
     f.writeline("settle " + settle);
     f.writeline("maxerr " + err);
+    f.writeline("maxerr1 " + err1);
+    f.writeline("span2 " + (mx2 - mn2));
     f.writeline("rmserr " + (ref && ref.length ? Math.sqrt(sumsq / ref.length) : -1));
     f.writeline("peakref " + peakRef);
     f.writeline("peakraw " + peakB);

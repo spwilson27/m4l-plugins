@@ -46,7 +46,7 @@ var amp = {
     dsp: { ready: 0, error: "", createdAt: 0, alive0: -1, retries: 0, fastUntil: 0 },
     model: { name: "", label: "", arch: "", kind: "", layers: 0, rf: 1, error: "", file: "", arrays: /** @type {any[]} */ ([]), dilations: /** @type {number[]} */ ([]), weights: 0 },
     names: { scope: "", w: "", cf: "" },
-    bank: 1, genPath: "", genArch: "", sr: 48000, loudDb: 0, filePath: "", fileModel: null,
+    bank: 1, genPath: "", genArch: "", sr: 48000, filePath: "", fileModel: null,
     frame: -1, idle: 0, poll: null, resend: null, confirm: null, started: 0,
     initTask: /** @type {any} */ (null), waitTask: /** @type {any} */ (null), claimTask: /** @type {any} */ (null)
 };
@@ -92,7 +92,6 @@ function ampOnParam(key, v) {
     var spec = AMP_PARAMS[key];
     if (spec[7]) ampGen(spec[7], ampGenValue(key, v));
     if (key === "bass" || key === "mid" || key === "treble" || key === "presence" || key === "cab") ampWriteTone();
-    if (key === "normalize") ampGen("normdb", v > 0.5 ? amp.loudDb : 0);
     if (key === "model" && amp.started) ampSelectModel(Math.round(v));
     if (typeof ampFaceChanged === "function") ampFaceChanged(key);
     mgraphics.redraw();
@@ -269,7 +268,6 @@ function ampLoadModel(doc, label, file) {
         wbuf.poke(1, off + i, m.weights.slice(i, Math.min(m.weights.length, i + 2048)));
     }
     amp.bank = bank;
-    amp.loudDb = ampNormDb(m);
     amp.model = ampModelInfo(m, label || m.name, arch, file);
     ampLayerVals = [];
     var g = ampHost ? ampHost.getnamed("amp_gen") : null;
@@ -380,7 +378,6 @@ function ampSendGen() {
     for (var k in AMP_PARAMS) {
         if (AMP_PARAMS[k][7]) outlet(1, AMP_PARAMS[k][7], ampGenValue(k, ampP[k]));
     }
-    outlet(1, "normdb", ampP.normalize > 0.5 ? amp.loudDb : 0);
     if (amp.model.arch) {
         outlet(1, "wbase", amp.bank * AMP_WBANK);
         outlet(1, "mok", 1);

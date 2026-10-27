@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Live end-to-end test for the Amp devices (every face built by scripts/build_amp.py), driven through
+ * Live end-to-end test for the Neural Amp (scripts/build_amp.py), driven through
  * the Ableton MCP Bridge (`ableton_eval_lom_js`). Live runs only in the tart VM (AGENTS.md 1a):
- * `scripts/vm_amp.sh live` opens the bridge set in the VM's Live and loads every Amp device on its own
+ * `scripts/vm_amp.sh livetest` opens the bridge set in the VM's Live and loads the device on its own
  * audio track; this script runs on the host through an ssh tunnel (`--port`).
  *
  * Uses the engine's test hook (`receive #0-amptest`; `#0` is literal in a top-level device):
@@ -12,8 +12,8 @@
  * Checks, per device: the deferred gen~ runs, the built-in model is loaded, the tone comes out (engine
  * telemetry and the track's output meter). On the first device: Model Crunch -> Lead through the LOM
  * (same architecture: weight bank switch, no hot-load), a Standard WaveNet file (new architecture:
- * hot-load), an LSTM file, a broken file (error, previous model keeps playing), tone / cab / normalize
- * changes through the LOM.
+ * hot-load), an LSTM file, a broken file (error, previous model keeps playing), tone / cab / dry-wet
+ * changes and the Mono / Stereo output mode through the LOM.
  *
  *   node scripts/test_amp_live.js --port <tunnelled port> --vmdir /Users/admin/ableton-amp
  */
@@ -29,13 +29,21 @@ let fails = 0;
 const check = (ok, msg) => { console.log((ok ? "PASS " : "FAIL ") + msg); if (!ok) fails++; };
 const sleep = (ms) => execFileSync("sleep", [String(ms / 1000)]);
 
-function evalLom(code) {
+function evalLom(code, tries = 1) {
     const args = [SERVER];
     if (PORT) args.push("--port", String(PORT));
     args.push("--call", "ableton_eval_lom_js", JSON.stringify({ code }));
-    const out = JSON.parse(execFileSync("node", args, { encoding: "utf8" }));
-    if (out.error) throw new Error(out.error);
-    return out.result;
+    for (let t = 1; ; t++) {
+        try {
+            const out = JSON.parse(execFileSync("node", args, { encoding: "utf8" }));
+            if (out.error) throw new Error(out.error);
+            return out.result;
+        } catch (e) {
+            // Right after the set opens Live can be busy (devices loading, gen compiles): retry the first calls.
+            if (t >= tries) throw e;
+            sleep(2000);
+        }
+    }
 }
 
 function hook(...a) {
@@ -57,14 +65,14 @@ const devices = evalLom(`
         var tp = "live_set tracks " + t, tr = new LiveAPI(tp);
         for (var i = 0; i < tr.getcount("devices"); i++) {
             var d = new LiveAPI(tp + " devices " + i), n = String(d.get("name"));
-            if (n.indexOf("Amp ") === 0) found.push({ name: n, path: tp + " devices " + i, track: tp, id: String(d.id) });
+            if (n.indexOf("Neural Amp") === 0) found.push({ name: n, path: tp + " devices " + i, track: tp, id: String(d.id) });
         }
     }
     return found;
-`);
-check(devices.length > 0, `found ${devices.length} Amp device(s): ${devices.map((d) => d.name).join(", ")}`);
+`, 10);
+check(devices.length > 0, `found ${devices.length} Neural Amp device(s): ${devices.map((d) => d.name).join(", ")}`);
 if (!devices.length) process.exit(1);
-const faceOf = (name) => name.replace(/^Amp /, "").toLowerCase();
+const faceOf = () => "neural";
 
 function setParam(dev, pname, value) {
     return evalLom(`
@@ -78,6 +86,9 @@ function setParam(dev, pname, value) {
 
 function meter(dev) {
     return evalLom(`var t = new LiveAPI("${dev.track}"); return Math.max(Number(t.get("output_meter_left")), Number(t.get("output_meter_right")));`);
+}
+function meterLR(dev) {
+    return evalLom(`var t = new LiveAPI("${dev.track}"); return [Number(t.get("output_meter_left")), Number(t.get("output_meter_right"))];`);
 }
 
 function waitReady(face, ms) {
@@ -149,16 +160,34 @@ sleep(1000);
 r = report(face);
 check(!!r.model.error && r.model.kind === "LSTM", `broken file rejected: "${r.model.error}"`);
 check(maxOut(face, 1500).rms > 0.0005, "previous model keeps playing");
-// Back to a built-in, tone controls, cab, normalize.
+// Back to a built-in, tone controls, cab, dry/wet.
 setParam(dev, "Model", 0);
 sleep(4000);
-for (const [n, v] of [["Bass", 9], ["Treble", 1], ["Cab", 0], ["Norm", 0], ["Gate", -60], ["Mix", 50]]) setParam(dev, n, v);
+for (const [n, v] of [["Bass", 9], ["Treble", 1], ["Cabinet", 0], ["Gate", -60], ["Dry/Wet", 50], ["Volume", -6], ["Gain", 6]]) setParam(dev, n, v);
 sleep(800);
 r = report(face);
-check(r.model.name === "Clean" && r.p.bass === 9 && r.p.cab === 0 && r.p.mix === 50, `Clean + tone/cab/normalize/mix through the LOM (bass ${r.p.bass}, cab ${r.p.cab}, mix ${r.p.mix})`);
+check(r.model.name === "Clean" && r.p.bass === 9 && r.p.cab === 0 && r.p.mix === 50 && r.p.volume === -6 && r.p.gain === 6, `Clean + tone/cab/dry-wet/volume/gain through the LOM (bass ${r.p.bass}, cab ${r.p.cab}, mix ${r.p.mix}, volume ${r.p.volume}, gain ${r.p.gain})`);
 o = maxOut(face, 2000);
 check(o.rms > 0.002 && isFinite(o.rms), `still playing after the changes (out rms ${o.rms.toFixed(4)})`);
-for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cab", 2], ["Norm", 1], ["Gate", -100], ["Mix", 100], ["Model", 1]]) setParam(dev, n, v);
+// Output mode: Stereo runs a model per channel. The test tone feeds both channels, so L and R both play.
+setParam(dev, "Output", 1);
+sleep(1500);
+r = report(face);
+check(r.p.stereo === 1, `Output -> Stereo through the LOM (stereo ${r.p.stereo})`);
+o = maxOut(face, 2000);
+let lr = [0, 0];
+for (let i = 0; i < 8; i++) { const v = meterLR(dev); lr = [Math.max(lr[0], v[0]), Math.max(lr[1], v[1])]; sleep(150); }
+check(o.rms > 0.002 && lr[0] > 0.05 && lr[1] > 0.05, `Stereo plays on both channels (out rms ${o.rms.toFixed(4)}, meters L ${lr[0].toFixed(3)} R ${lr[1].toFixed(3)})`);
+hook("test_load", face, `${VMDIR}/tests/amp_ref/lstm.nam`);
+sleep(4000);
+o = maxOut(face, 2000);
+check(o.rms > 0.0005 && o.r.model.kind === "LSTM", `Stereo with an LSTM file (out rms ${o.rms.toFixed(4)})`);
+setParam(dev, "Model", 0);
+sleep(1500);
+setParam(dev, "Output", 0);
+sleep(1500);
+check(maxOut(face, 1500).rms > 0.002 && report(face).p.stereo === 0, "back to Mono, still playing");
+for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Model", 1]]) setParam(dev, n, v);
 // --shots <dir>: a host screenshot of the VM (scripts/vm_shot.sh) with each device's track selected, tone playing.
 const SHOTS = arg("--shots", "");
 if (SHOTS) {
