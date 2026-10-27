@@ -18,6 +18,7 @@ Usage: run_cepstrum_lib_audio_tests.py [case-prefix ...]   (e.g. ident cpu)
 """
 
 import concurrent.futures
+import json
 import math
 import os
 import subprocess
@@ -40,6 +41,19 @@ CPU_INSTANCES = 8
 CPU_DUR_MS = 9000
 PASSTHROUGH = "out1 = in1;\nout2 = 0;\nout3 = 0;\n"
 WORKERS = 4
+
+
+def expected_level(kind, n, sr):
+    """Reference level change (dB). The VM has no node: use the host-generated tests/cepstrum_lib_expect.json
+    (`node tests/cepstrum_lib_expect.js --all`); fall back to running node when it is available."""
+    key = f"{kind}_{n}_{int(sr)}"
+    path = os.path.join(ROOT, "tests", "cepstrum_lib_expect.json")
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            table = json.load(f)
+        if key in table:
+            return float(table[key])
+    return float(subprocess.check_output(["node", EXPECT_JS, kind, str(n), str(int(sr))], text=True))
 
 
 def cep_gen(obj_id, code, x, y):
@@ -213,8 +227,7 @@ def check_audio(case, meta, errors):
     elif kind in ("minphase", "maxphase"):
         # The reference runs the same math, so the level must agree within 2 dB.
         level = 20 * math.log10(max(meta["outrms"], 1e-12) / max(meta["dryrms"], 1e-12))
-        want = float(subprocess.check_output(
-            ["node", EXPECT_JS, "min" if kind == "minphase" else "max", str(n), str(meta["sr"])], text=True))
+        want = expected_level("min" if kind == "minphase" else "max", n, meta["sr"])
         if abs(level - want) > 2.0:
             errors.append(f"{name}: level {level:.2f} dB, reference {want:.2f} dB")
         if meta["outpeak"] > 3.0:
