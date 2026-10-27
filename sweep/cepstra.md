@@ -38,3 +38,9 @@ Stage C (independent). Re-ran `node tests/test_cepstra_sweep2.js`: 4/4 red, each
 - CEP-S2-03 FIXED (minimal): face sets midi_inputs 0 routing No Input -> All Ins at init/MIDI mode. No MIDI From chooser (DEFERRED as enhancement; user cannot pick a specific track).
 - S4 items untouched.
 Gate: typecheck, build, test_cepstra, sweep2 (4/4 pass), bugsweep, test_cepstrum_lib, test_glitch, test_device_static (Cepstra 0 violations; others pre-existing), face_fuzz 0 failures, preview + smoke screenshots read OK, vm_cepstra.sh Live all PASS, vm_smoke PASS.
+
+## Review
+- Diff reviewed: latency pad (dry 4608, wet padded by 4608-ltot, rings 8192 OK), scope 265 sample rate, MIDI routing, tests (sweep2 tests assert real behaviour: sandboxed face at 48k, static latency), vm_cepstra.sh is a new lane script (no frozen file edited).
+- Found and fixed: AGENTS.md edit had un-nested the "Quality switch" bullet (indent changed); restored to the original nesting.
+- Fresh rebuild equals committed devices/Cepstra.amxd (no diff). Gates re-run: typecheck, build, test_cepstra (1627), sweep2 (4), test_cepstrum_lib, test_glitch all pass.
+- Deferred: MIDI From chooser (enhancement); S4 items; shared: none beyond the cepstrum_lib runner already fixed host-side.
