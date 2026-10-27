@@ -21,10 +21,10 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/vm_common.sh"; vm_dir_rel Software/ableton-mmnames "${MM_VM_DIR:-}"; VMREL="$VMREL"   # the VM checkout (relative to the VM home); MM_VM_DIR lets a second run use its own
 VMDIR="\$HOME/$VMREL"
 export SSHPASS=admin
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
