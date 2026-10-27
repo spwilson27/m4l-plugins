@@ -1,0 +1,12 @@
+devices/Ableton MCP Bridge.amxd (audio) PASS  11 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Ableton MCP Bridge(1)
+ready after 419 ms (meter A 0.839, B 0.839)
+baseline meters A 0.858 B 0.858
+shot /tmp/sweep2/ableton_mcp/tests/out/smoke/ableton_mcp_bridge/default.png (device area), /tmp/sweep2/ableton_mcp/tests/out/smoke/ableton_mcp_bridge/default_full.png
+sweep: 0/0 parameters, 0 sets in 0 s
+after sweep meters A 0.854 B 0.854
+shot /tmp/sweep2/ableton_mcp/tests/out/smoke/ableton_mcp_bridge/after_sweep.png (device area), /tmp/sweep2/ableton_mcp/tests/out/smoke/ableton_mcp_bridge/after_sweep_full.png
+TIMING ableton_mcp_bridge 18 s (rc 0)
