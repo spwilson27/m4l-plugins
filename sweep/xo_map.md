@@ -29,4 +29,6 @@ Red tests: `node tests/test_xo_sweep2.js` (7 checks, all currently FAIL for the 
 - XO-S4-07 UNVERIFIED RISK (needs real Live keyboard): hotkeys come from the patcher `key` object (AGENTS: "hears every keystroke in Live") gated only on "this device is selected". If it hears keys typed into the Filters search box / Searches terms field, typing `s` saves the selected sample, `r` fires Random and Backspace deletes the selected Saved row. Not filed as a finding because it could not be checked here (no real keyboard path to a focused textedit in the VM run).
 
 ## VM runs
-- `vm_xo.sh max`: FAIL (XO-S2-04). `vm_smoke.sh` (Live): see below.
+- `vm_xo.sh max`: FAIL (XO-S2-04; passes with `test_selected 1` added).
+- `vm_smoke.sh`: PASS (11/11 sweepable parameters, 50 sets, meters stable, screenshot of default and after-sweep clean, device 414 px).
+- `vm_xo.sh run` (Live, scripts/test_xo_live.js): all checks passed (layout x themes, mirrors, arrows, zoom, render modes, playhead, Esc, Re-Seed, Map Samples, dot groups).
