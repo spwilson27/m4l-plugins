@@ -30,3 +30,7 @@ Not checked: multi-instance scope isolation in Live (smoke only loads two instan
 - RC-02: fixed (AGENTS.md buffer name now ---recipscope).
 - RC-03..RC-07: S4, left as notes (no change).
 Gate: typecheck, build, test_reciprocator, sweep2 test, preview (read), test_face_fuzz (0 failures), test_device_static (remaining violations belong to other devices), vm_smoke PASS. DSP unchanged, so no VM audio/Live rerun.
+
+## Review
+Verdict: READY. Reviewed `git diff main...HEAD`: the textcolor fix is minimal and the sweep2 test is deterministic and red-before/green-after (checks the saved device, not a tautology). The `extremes` and `mix0_dry` audio cases are regression coverage with sound bounds. The AGENTS.md edits are exact, limited to the Reciprocator buffer name (`---recipscope`) in two places. No frozen or shared files touched. A fresh rebuild reproduces the committed `devices/Reciprocator.amxd` (git status clean). Gates re-run: typecheck, build, test_reciprocator, test_reciprocator_sweep2 all pass. DSP unchanged, so no VM re-run needed.
+Deferred shared items: none (RC-04..RC-07 are S4 design notes).
