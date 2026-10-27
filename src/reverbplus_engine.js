@@ -244,6 +244,7 @@ function ir_loaded() {
         rpIr.src = { chans: chans, sr: sr };
         rpIr.channels = chans.length;
         if (rpIr.loadTask) rpIr.loadTask.cancel();
+        rpIr.status = "processing";
         rpIrReprocess();
     } catch (err) {
         rpIr.status = "error";
@@ -253,7 +254,7 @@ function ir_loaded() {
 }
 
 function rpIrReprocessSoon() {
-    if (!rpIr.src) return;
+    if (!rpIr.src || rpIr.status === "loading") return;
     if (!rpIr.reproTask) rpIr.reproTask = new Task(rpIrReprocess, this);
     rpIr.reproTask.schedule(200);
 }
@@ -262,6 +263,8 @@ function rpIrReprocessSoon() {
 // (a handful of partitions per Task tick) so the UI stays responsive.
 function rpIrReprocess() {
     if (!rpIr.src) return;
+    // a new file is loading: ir_loaded reprocesses with the current controls (RP-S2-01)
+    if (rpIr.status === "loading") return;
     var devSr = rpDevSr();
     if (!devSr) {
         // the gen has not reported its rate yet (DSP still loading): try again shortly
