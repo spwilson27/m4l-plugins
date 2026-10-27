@@ -1079,7 +1079,8 @@ function set_f1(v) {
     curF1 = s[0];
     curF2 = s[1];
     curF3 = s[2];
-    emitDspState(neighChanged);
+    var selfClamped = Math.abs(s[0] - Number(v)) > 1e-4;
+    emitDspState(neighChanged || selfClamped);
     broadcastLinkedState();
     mgraphics.redraw();
 }
@@ -1090,7 +1091,8 @@ function set_f2(v) {
     curF1 = s[0];
     curF2 = s[1];
     curF3 = s[2];
-    emitDspState(neighChanged);
+    var selfClamped = Math.abs(s[1] - Number(v)) > 1e-4;
+    emitDspState(neighChanged || selfClamped);
     broadcastLinkedState();
     mgraphics.redraw();
 }
@@ -1101,7 +1103,8 @@ function set_f3(v) {
     curF1 = s[0];
     curF2 = s[1];
     curF3 = s[2];
-    emitDspState(neighChanged);
+    var selfClamped = Math.abs(s[2] - Number(v)) > 1e-4;
+    emitDspState(neighChanged || selfClamped);
     broadcastLinkedState();
     mgraphics.redraw();
 }
