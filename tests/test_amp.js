@@ -150,8 +150,18 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
 }
 
 // 4. built-in captures
-const BUILTINS = ["clean", "chime", "bass", "drive", "crunch", "lead", "metal", "fuzz"];
-check(A.AMP_PARAMS.model[8].length === BUILTINS.length + 1 && A.AMP_PARAMS.model[8][A.AMP_FILE_INDEX] === "File", "Model enum = 8 captures + File");
+const BUILTINS = ["clean", "chime", "bass", "drive", "crunch", "lead", "metal", "fuzz", "magna", "ds1", "splawn", "markiv"];
+const GPL_BUILTINS = ["magna", "ds1", "splawn", "markiv"];
+check(A.AMP_PARAMS.model[8].length === BUILTINS.length + 1 && A.AMP_PARAMS.model[8][A.AMP_FILE_INDEX] === "File", "Model enum = 12 captures + File");
+// GPL-3.0 students: license, credit and teacher in the metadata, the teacher and the license text next to them
+for (const name of GPL_BUILTINS) {
+    const md = JSON.parse(read(`src/amp_models/${name}.nam`)).metadata || {};
+    check(/GPL-3\.0/.test(A.ampParseNam(JSON.parse(read(`src/amp_models/${name}.nam`))).credit), `${name}: the parsed model carries the credit the display shows`);
+    check(md.license === "GPL-3.0-or-later" && /GPL-3\.0/.test(md.credit || "") && /pelennor2170\/NAM_models/.test(md.modeled_by || "")
+        && fs.existsSync(path.join(ROOT, "third_party", "nam_gpl", md.teacher || "-")), `${name}: GPL metadata (${md.credit})`);
+}
+check(/GNU GENERAL PUBLIC LICENSE\s+Version 3/.test(read("third_party/nam_gpl/COPYING")) && /Roman A/.test(read("third_party/nam_gpl/README.md")), "third_party/nam_gpl: GPL text and attribution README");
+check(/GPL-3\.0/.test(A.AMP_PARAMS.model[9]), "the Model parameter info names the GPL captures");
 for (const name of BUILTINS) {
     const d = JSON.parse(read(`src/amp_models/${name}.nam`));
     const m = A.ampParseNam(d);

@@ -141,19 +141,20 @@ check(r.model.name === "Lead" && r.genArch === arch0, `Model -> Lead through the
 check(!/hot-load/.test(trace().slice(tr0)), "same architecture: no gen hot-load");
 check(maxOut(face, 1500).rms > 0.005, "Lead plays");
 // Every built-in capture loads and plays (all Feather: bank switches, no hot-load).
-const NAMES = ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz"];
+const NAMES = ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz", "Magna", "DS-1", "Splawn", "Mark IV"];
 for (let i = 0; i < NAMES.length; i++) {
     setParam(dev, "Model", i);
     sleep(900);
     const ri = report(face), oi = maxOut(face, 900);
     check(ri.model.name === NAMES[i] && oi.rms > 0.002, `built-in ${NAMES[i]}: loaded and plays (out rms ${oi.rms.toFixed(4)})`);
+    if (i >= 8) check(/GPL-3\.0/.test(ri.model.credit || ""), `built-in ${NAMES[i]}: GPL credit on the display ("${ri.model.credit}")`);
 }
-check(!/hot-load/.test(trace().slice(tr0)), "eight built-ins: no gen hot-load");
+check(!/hot-load/.test(trace().slice(tr0)), "every built-in: no gen hot-load");
 // A Standard WaveNet file: new architecture -> hot-load.
 hook("test_load", face, `${VMDIR}/tests/amp_ref/standard.nam`);
 sleep(5000);
 r = report(face);
-check(/Standard/.test(r.model.label) && r.genArch !== arch0 && r.p.model === 8, `Standard file loaded: ${r.model.label}, Model = ${r.p.model}`);
+check(/Standard/.test(r.model.label) && r.genArch !== arch0 && r.p.model === 12, `Standard file loaded: ${r.model.label}, Model = ${r.p.model}`);
 check(/hot-load/.test(trace().slice(tr0)), "new architecture hot-loaded");
 let o = maxOut(face, 4000);
 check(o.rms > 0.0005 && o.r.tel.model_ok > 0, `Standard plays (out rms ${o.rms.toFixed(4)})`);

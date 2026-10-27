@@ -319,7 +319,7 @@ function ampModelInfo(m, name, arch, file) {
         for (var l = 0; l < m.lstm.layers; l++) arrays.push({ ch: m.lstm.hidden, head: 1, gated: false, dilations: [1] });
     }
     return { name: name, label: ampArchLabel(m), arch: arch, kind: m.kind, layers: ampLayerCount(m), rf: m.receptiveField,
-        error: "", file: file, arrays: arrays, dilations: dil, weights: m.nWeights };
+        error: "", file: file, arrays: arrays, dilations: dil, weights: m.nWeights, credit: m.credit || "" };
 }
 
 /** @param {string} path @param {string} text */

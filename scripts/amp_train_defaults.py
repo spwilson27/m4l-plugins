@@ -34,8 +34,50 @@ AMPS = list(CIRCUITS)
 STEPS_MIN = {"lead": 5000, "metal": 8000, "fuzz": 6000}
 
 
+# Students of real-gear captures (GPL-3.0, third_party/nam_gpl, see its README): the Feather model is trained
+# on the capture's own output for the same training signal (teacher -> student).
+TEACHERS = {
+    "markiv": ("mesa_markiv.nam", "Mesa Boogie Mark IV", "Roman A"),
+    "magna": ("magnatone_ch1.nam", "Magnatone Super 59 MkII Ch1", "Tim R"),
+    "ds1": ("ds1.nam", "Boss DS-1 (gain 6, tone 5)", "Keith B"),
+    "splawn": ("splawn_g10_g3.nam", "Splawn Pro Mod (gear 3)", "Tim R"),
+}
+AMPS += list(TEACHERS)
+STEPS_MIN.update({k: 5000 for k in TEACHERS})
+_teacher_cache = {}
+
+
+def teacher_model(name):
+    if name not in _teacher_cache:
+        with open(os.path.join(ROOT, "third_party", "nam_gpl", TEACHERS[name][0])) as f:
+            doc = json.load(f)
+        m = init_from_nam(legacy_to_current(doc))
+        m.eval()
+        _teacher_cache[name] = m
+    return _teacher_cache[name]
+
+
 def amp(name, x):
+    if name in TEACHERS:
+        m = teacher_model(name)
+        out = []
+        with torch.no_grad():
+            for i in range(0, len(x), 480000):   # chunks with receptive-field overlap
+                lo = max(0, i - m.receptive_field)
+                y = m(torch.from_numpy(x[lo:i + 480000].astype(np.float32))[None], pad_start=(lo == 0))[0].numpy()
+                out.append(y[len(y) - (min(len(x), i + 480000) - i):])
+        return np.concatenate(out).astype(np.float32)
     return fitted_circuit(CIRCUITS[name], x.astype(np.float64)).astype(np.float32)
+
+
+def metadata(name):
+    if name in TEACHERS:
+        f, gear, author = TEACHERS[name]
+        return {"modeled_by": f"Feather student of the NAM capture '{gear}' by {author} "
+                              "(github.com/pelennor2170/NAM_models, GPL-3.0)", "license": "GPL-3.0-or-later",
+                "credit": f"{gear} capture by {author}, GPL-3.0",
+                "teacher": f}
+    return {"modeled_by": "Amp (synthetic circuit after " + CIRCUITS[name]["source"] + ")"}
 
 
 def training_signal(seconds, seed):
@@ -107,8 +149,8 @@ def train(name, steps):
     # loudness like NAM: rms of the output for a reference signal, in dB
     loud = 20 * math.log10(float(np.sqrt(np.mean(pv ** 2))) + 1e-9)
     out = {"version": "0.5.4", "architecture": "WaveNet", "config": cfg, "weights": [round(v, 7) for v in weights],
-           "sample_rate": SR, "metadata": {"name": "Amp " + name.title(), "modeled_by": "Amp (synthetic circuit after " + CIRCUITS[name]["source"] + ")",
-           "gear_type": "amp", "tone_type": name, "loudness": round(loud, 2), "validation_esr": round(esr, 5)}}
+           "sample_rate": SR, "metadata": dict({"name": "Amp " + name.title(), "gear_type": "amp", "tone_type": name,
+                                          "loudness": round(loud, 2), "validation_esr": round(esr, 5)}, **metadata(name))}
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, name + ".nam"), "w") as f:
         json.dump(out, f)

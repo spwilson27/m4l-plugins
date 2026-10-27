@@ -23,7 +23,7 @@ var AMP_MAX_CH = 32;
 var AMP_MAX_LAYERS = 48;
 var AMP_MAX_RING = 2000000;         // doubles of WaveNet history per architecture
 var AMP_NORM_TARGET_DB = -18;       // NAM plugin's "Normalize" target
-var AMP_FILE_INDEX = 8;             // Model enum: 8 built-in captures, then File
+var AMP_FILE_INDEX = 12;            // Model enum: 12 built-in captures, then File
 var AMP_NBQ = 10;                   // biquads in ---ampcf: 0..3 tone stack, 4..9 cab
 var AMP_CF_SAMPS = AMP_NBQ * 5 + 6;
 
@@ -44,7 +44,7 @@ var AMP_ACTS = ["Tanh", "Fasttanh", "ReLU", "LeakyReLU", "Sigmoid", "Hardtanh", 
 // unitstyle, gen message (null = engine only), enum, help]
 /** @type {Object<string, [string, string, number, number, number, number, number, (string|null), (string[]|null), string]>} */
 var AMP_PARAMS = {
-    model: ["Model", "Model", 0, 8, 4, 2, 0, null, ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz", "File"], "Built-in capture or the .nam file you loaded."],
+    model: ["Model", "Model", 0, 12, 4, 2, 0, null, ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz", "Magna", "DS-1", "Splawn", "Mark IV", "File"], "Built-in capture or the .nam file you loaded. Magna, DS-1, Splawn and Mark IV are trained from community NAM captures licensed GPL-3.0 (github.com/pelennor2170/NAM_models)."],
     gain: ["Gain", "Gain", -24, 24, 0, 0, 4, "indb", null, "Level into the model, in decibels. Captures react to level like the real amp: more gain, more drive."],
     gate: ["Gate", "Gate", -100, -20, -100, 0, 4, "gatedb", null, "Noise gate threshold. -100 dB is off."],
     bass: ["Bass", "Bass", 0, 10, 5, 0, 1, null, null, "Low shelf at 150 Hz (NAM tone stack)."],
@@ -100,7 +100,7 @@ function ampParseNam(doc) {
         kind: "", name: String(meta.name || meta.modeled_by || ""), loudness: (typeof meta.loudness === "number") ? meta.loudness : null,
         sampleRate: Number(d.sample_rate || 48000), layers: /** @type {any[]} */ ([]), lstm: /** @type {any} */ (null),
         headScale: 1, weights: /** @type {number[]} */ ([]), nWeights: 0, receptiveField: 1, gear: String(meta.gear_type || ""),
-        tone: String(meta.tone_type || "")
+        tone: String(meta.tone_type || ""), credit: String(meta.credit || ""), license: String(meta.license || "")
     };
     var weights = [];
     for (var i = 0; i < w.length; i++) weights.push(Number(w[i]));
