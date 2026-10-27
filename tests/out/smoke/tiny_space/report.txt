@@ -1,0 +1,12 @@
+devices/Tiny Space.amxd (audio) PASS  17 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Tiny Space(13)
+ready after 445 ms (meter A 0.845, B 0.850)
+baseline meters A 0.863 B 0.862
+shot /tmp/sweep2/tinyspace/tests/out/smoke/tiny_space/default.png (device area), /tmp/sweep2/tinyspace/tests/out/smoke/tiny_space/default_full.png
+sweep: 12/12 parameters, 59 sets in 6 s
+after sweep meters A 0.860 B 0.865
+shot /tmp/sweep2/tinyspace/tests/out/smoke/tiny_space/after_sweep.png (device area), /tmp/sweep2/tinyspace/tests/out/smoke/tiny_space/after_sweep_full.png
+TIMING tiny_space 24 s (rc 0)

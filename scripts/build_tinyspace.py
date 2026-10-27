@@ -111,6 +111,7 @@ def make_dial(key, x, y, w=44.0, h=48.0, color=COL_CYAN):
             "presentation": 1,
             "presentation_rect": [float(x), float(y), float(w), float(h)],
             "saved_attribute_attributes": {"valueof": valueof_for(key)},
+            "textcolor": [0.88, 0.92, 0.95, 1.0],
             "varname": long_name,
         }
     }
