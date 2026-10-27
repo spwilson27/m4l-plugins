@@ -24,3 +24,11 @@ Stage A+B (audit + red tests). Red tests: `tests/test_spectral_sweep2.js` (node)
 ## Notes for the fixer
 - F3 audio failures are partly a test-setup artefact: `rack_mix_*` compare the follower (role 2, kShare 1/K) with a SELF reference (role 0, kShare 1). Fix the template (kShare must not depend on role; an in-rack role-0 instance before election / fb 1 / fallback must still take dry/K; decide the standalone explicit Ch n case in docs) and the SELF reference then matches.
 - Runner env vars do not reach the VM (vm_spectral.sh does not forward env): `SS_MINIFY=0` only works when exported inside the VM shell.
+
+## Verify
+- F2 KEEP (S1): reproduced in VM (`vm_spectral.sh audio transplit latency_1024` on the minified gen: out 0, peak 0.0000); test is deterministic on the embedded text and passes for Harmonic/Freq.
+- F9a KEEP (S3): smoke screenshot shows "-30.0 d", "-85.0 d", "-12.0 d", "-36.0 d" truncated in 38 px boxes. Caveat: the Knee boxes ("24.0 dB", 7 chars) are borderline in the width model; the threshold boxes are certain. Fixer should widen all six.
+- F9b KEEP (S3): screenshot shows Transient Size tab cell reading "51".
+- F3 REJECT (test deleted): the source-text check forbids roleH in kShare, but AGENTS 24 says K=1 outside a rack, and 7508337 (iteration-1 fix) deliberately gated on role for that. The in-rack role-0 case (pre-election, fb 1) outputting full dry may be real, but the right fix (e.g. an explicit in-rack flag message) is a design decision, and the audio mix_* cases (role 0 + outsel 1..3 expecting dry/K) contradict AGENTS. Needs a design call, not this test. Fixer: decide semantics and update either the runners or the template.
+- F1/F1b REJECT (test deleted): lane brief says note only (shared .adg path item); build output is path-dependent so the committed-file test can never be stable. Kept as a note.
+- T1 KEEP (infra change: runners now test the minified gen; SS_MINIFY=0 reaches the VM only if exported there).

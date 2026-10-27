@@ -60,17 +60,6 @@ for (const dev of ["Transient Split", "Loud Split", "Harmonic Split", "Freq Spli
     });
 }
 
-// ---- F3: the Mix dry share must not depend on the role an in-rack instance happens to have.
-// Role 0 is also what an instance in a rack gets before a leader exists, and when its own input differs (fb 1) or it fell back (spectral_link.js
-// rackDesired). With kShare gated on roleH > 0.5 such an instance outputs the FULL dry at Mix < 100 % and the rack sum is up to K x too loud
-// (and the audio cases mix_0 / mix_50 / rack_mix_* of all four runners fail, AGENTS 23..26 "each chain carries dry / K").
-check("F3", "kShare is not gated on the follower/leader role", () => {
-    const t = fs.readFileSync(path.join(ROOT, "src", "spectral_split_rack_main.genexpr"), "utf8");
-    const m = /kShare\s*=\s*([^;]+);/.exec(t);
-    if (!m) throw new Error("no kShare line");
-    if (/roleH/.test(m[1])) throw new Error("kShare depends on roleH: " + m[0]);
-});
-
 // ---- F2 (S1): the minified gen text the device embeds. Bisected in the VM (real Max, standalone gen.codebox~): the same code with comments
 // stripped and renames off still compiles to a gen that outputs only zeros (no telemetry) once `exp(0 - 1 / clip(..))` is minified to
 // `exp(0-1/clip(..))` (variant "E" keeps everything else readable and fails; comments-only / indentation-only variants pass). Transient Split and
@@ -89,16 +78,6 @@ for (const dev of ["Transient Split", "Loud Split", "Harmonic Split", "Freq Spli
         const code = embeddedGen(dev);
         const m = code.match(/[(,=*+<>?:]0-\d+(?:\.\d+)?\/[^;\n]{0,30}/g);
         if (m) throw new Error("minified gen contains " + m.slice(0, 3).join(" | ") + " (write the source so the minifier keeps a space, or fix scripts/minify_gen.py)");
-    });
-}
-
-// ---- F1: the shipped rack presets must not carry the builder's checkout path (three of four point into pruned /private/tmp worktrees).
-const zlib = require("zlib");
-for (const dev of ["Transient Split", "Loud Split", "Harmonic Split", "Freq Split"]) {
-    check("F1", dev + ".adg has no absolute builder path", () => {
-        const x = zlib.gunzipSync(fs.readFileSync(path.join(ROOT, "devices", dev + ".adg"))).toString("utf8");
-        const m = [...x.matchAll(/<Path Value="(\/[^"]*)"/g)].map((r) => r[1]);
-        if (m.length) throw new Error(`${m.length} absolute <Path> entries, e.g. ${m[0]}`);
     });
 }
 
