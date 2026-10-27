@@ -3739,7 +3739,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         for (const big of [false, true]) {
             nr(`ubSetExpanded(${big ? 1 : -1})`);
             const R = rectsOf(1), pd = R.pad;
-            const px = (fx, fy) => [pd[0] + fx * pd[2], pd[1] + fy * pd[3]];
+            const px = (fx, fy) => [pd[0] + 2 + fx * (pd[2] - 4), pd[1] + 2 + fy * (pd[3] - 4)]; // the puck is painted with a 2 px inset (AGENTS 21)
             eq(nr("ubHit(" + ctr(pd).join(",") + ").kind"), "pad", `${big ? "expanded" : "collapsed"}: the pad is a hit target`);
             click(...px(0.25, 0.75));
             near(nr("MM.state.mods[1].p.x"), 0.25, 1e-9, "click sets X"); near(nr("MM.state.mods[1].p.y"), 0.25, 1e-9, "click sets Y (top = 1)");
