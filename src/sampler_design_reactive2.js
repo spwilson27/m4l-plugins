@@ -588,7 +588,7 @@ function isPanGesture(option, ev, cmd) {
 }
 
 // Osc 2 keeps its own sample. Osc 1 stays on #0-bsamp. The user wavetable of each oscillator reads that oscillator's file.
-var OSC2_BUF = "#0-bsamp2";
+var OSC2_BUF = "";
 var osc2FilePath = "";
 var osc2FileName = "";
 var osc2Loaded = 0;
@@ -933,7 +933,7 @@ function wtDisplaySample(ph, pos01) {
     var i = oscTab === 1 ? 1 : 0;
     var user = wtSel[i].cat === WT_USER;
     var frames = user ? wtUserFrames() : wtFrames[i];
-    var bufName = user ? (i ? OSC2_BUF : sampBufName) : (i ? "#0-bswt2" : "#0-bswt1");
+    var bufName = user ? (i ? OSC2_BUF : sampBufName) : (i ? wt2BufName : wt1BufName);
     if (frames >= 1 && bufName) {
         var s = wtPeekCycle(bufName, ph, pos01, frames);
         if (s !== null && isFinite(s)) return s * (user ? wtNorm[i] : 1);
@@ -1022,7 +1022,7 @@ function wtMaybeSend() {
 }
 
 function wtPoll(i, n) {
-    var name = i ? "#0-bswt2" : "#0-bswt1";
+    var name = i ? wt2BufName : wt1BufName;
     var frames = 0;
     try { frames = Math.floor((new Buffer(name).framecount() || 0) / WT_FRAME); } catch (ePo) { frames = 0; }
     if (frames > 0 && wtLoadedPath[i]) {
@@ -2475,9 +2475,9 @@ function modWritesDsp() {
 
 // The patcher sends these. A literal "#0-…" can name a different buffer than the
 // buffer~ object once Max substitutes #0, which is how the voice buffer is addressed.
-var modBufName = "#0-bsmod";
-var msegBufName = "#0-bsmseg";
-var slotBufName = "#0-bsslot";
+var modBufName = "";
+var msegBufName = "";
+var slotBufName = "";
 
 function setmodbufs(modN, msegN, slotN) {
     if (modN) modBufName = String(modN);
@@ -5118,13 +5118,14 @@ browsed = function () {
 };
 
 var sharedSetbuffersR2 = setbuffers;
-setbuffers = function (sName, vName, scName, pName) {
-    sharedSetbuffersR2(sName, vName, scName, pName);
+setbuffers = function (sName, vName, scName, pName, dbgName, mpeName, wt1Name, wt2Name, osc2Name) {
+    sharedSetbuffersR2.apply(null, arguments);
+    OSC2_BUF = String(osc2Name || "");
     if (osc2FilePath) replaceOsc2Buffer(osc2FilePath);
 };
 
 // Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources & Mod Matrix views:
-//   messnamed("#0-bsdebug", "dbg_r2_view", matTab, envPage, envTab, openLoopMenu, foldMask)
+//   messnamed("<---bsdebug>", "dbg_r2_view", matTab, envPage, envTab, openLoopMenu, foldMask)
 function dbg_section_order(s0, s1, s2, s3, s4) {
     setSectionOrder([s0, s1, s2, s3, s4]);
 }

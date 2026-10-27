@@ -119,12 +119,12 @@ def show_osc(tab):
         'var path = %s; var dev = new LiveAPI(path); var pc = dev.getcount("parameters"); var i;'
         'for (i = 0; i < pc; i++) { var p = new LiveAPI(path + " parameters " + i); var nm = one(p.get("name"));'
         '  if (nm === "%s" || nm === "%s") p.set("value", 1); }'
-        'messnamed("#0-bsdebug", "dbg_r2_osc", %d, 1); return 1;'
+        'var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "dbg_r2_osc", %d, 1); return 1;'
         % (json.dumps(DEVICE["path"]), type_name, on_name, tab)
     )
     time.sleep(0.6)
     text = rpc(
-        'messnamed("#0-bsdebug", "dbg_r2_faces");'
+        'var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "dbg_r2_faces");'
         'var g = new Global("bs_r2_faces");'
         'return String(g.text || "");'
     )
@@ -164,7 +164,7 @@ def show_device(info):
 
 
 def read_ptr():
-    rpc('messnamed("#0-bsdebug", "dbg_r2_ptr"); return 1;')
+    rpc('var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "dbg_r2_ptr"); return 1;')
     time.sleep(0.08)
     text = rpc('var g = new Global("bs_r2_ptr"); return String(g.text || "");')
     parts = str(text or "").split(",")

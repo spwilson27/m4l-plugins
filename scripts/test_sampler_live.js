@@ -46,7 +46,11 @@ function evalLom(code) {
 }
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const trace = () => String(evalLom('return new Global("better_sampler_trace").text;') || "");
-const debug = (...m) => evalLom(`messnamed("#0-bsdebug", ${m.map((x) => JSON.stringify(x)).join(", ")}); return 1;`);
+// ---bs* names are expanded per instance by Live; the face publishes the expanded debug name in
+// Global("better_sampler_hooks").map[LOM id]. Other buffers = the same name with "bsdebug" replaced.
+const HOOKJS = 'var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";';
+const bsName = (what) => `(function(){ ${HOOKJS} return dbg.replace("bsdebug", "${what}"); })()`;
+const debug = (...m) => evalLom(`${HOOKJS} messnamed(dbg, ${m.map((x) => JSON.stringify(x)).join(", ")}); return 1;`);
 
 let failures = 0;
 function check(ok, msg) {
@@ -273,7 +277,7 @@ setParam("root_dyn", 1);
 let curveOk = false;
 for (let i = 0; i < 40; i++) { sleep(250); if (/pitch-curve voiced=/.test(trace().split("root_dyn").pop() || trace())) { curveOk = true; break; } }
 check(curveOk, "Analyzed Root Key: pitch curve tracked after ROOT is switched to Dynamic");
-const curve = evalLom(`var b = new Buffer("#0-bspitch"); var n = b.framecount(); var a = b.peek(1, 0, n); var lo = 1e9, hi = -1e9, sum = 0; for (var i = 0; i < n; i++) { lo = Math.min(lo, a[i]); hi = Math.max(hi, a[i]); sum += a[i]; } return { n: n, lo: lo, hi: hi, mean: sum / n };`);
+const curve = evalLom(`var b = new Buffer(${bsName("bspitch")}); var n = b.framecount(); var a = b.peek(1, 0, n); var lo = 1e9, hi = -1e9, sum = 0; for (var i = 0; i < n; i++) { lo = Math.min(lo, a[i]); hi = Math.max(hi, a[i]); sum += a[i]; } return { n: n, lo: lo, hi: hi, mean: sum / n };`);
 check(curve && curve.n === 4096 && Math.abs(curve.mean - 57) < 0.3 && curve.hi - curve.lo < 1.0,
     `Analyzed Root Key: #0-bspitch holds the 220 Hz sample's pitch (n ${curve && curve.n}, mean ${curve && curve.mean.toFixed(2)}, range ${curve && curve.lo.toFixed(2)}..${curve && curve.hi.toFixed(2)}; want 57)`);
 const dynFlag = () => Number(evalLom(`var v = new Buffer(${JSON.stringify(scope)}).peek(1, 49, 1); return (typeof v === "number") ? v : v[0];`));
@@ -318,7 +322,7 @@ setParam("mode", 1); setParam("freeze", 0); setParam("loop_mode", 0); setParam("
 setParam("grain_motion", 100);
 waitGen("mode", 1); waitGen("loop_mode", 0);
 {
-    const frames = Number(evalLom('return new Buffer("#0-bsamp").framecount();'));
+    const frames = Number(evalLom(`return new Buffer(${bsName("bsamp")}).framecount();`));
     const fileSec = frames / 44100;   // the WAV made by scripts/vm_sampler.sh is 44.1 kHz
     const slopeFor = (key) => {
         const recMs = 1300;
