@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.node.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/deviate_config.js",
+    "src/deviate_ir.js"
+  ]
+}

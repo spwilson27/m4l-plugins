@@ -1,0 +1,4 @@
+// Deviate convolver: filled by the DSP lane (a fork of reverbplus_conv.genexpr: two-stage partitioned convolver with a
+// per-input-slot IR tag, head 128 / FFT 256 / 32 slots, tail 2048 / FFT 4096 / 48 slots).
+// The build concatenates cepstrum_lib + deviate_conv + deviate_core, so every function here sits before the core's
+// Buffer / Param / History / Data / Delay declarations. This stub is intentionally empty (comments only).

@@ -3,3 +3,5 @@ node_modules
 tests/out/xo_runtime/
 /delayplus_test.als
 /reverbplus_test.als
+/deviate_test.als
+/build_cache/

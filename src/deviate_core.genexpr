@@ -1,0 +1,766 @@
+// Deviate gen core (STUB: detector + draw + windows + Ring envelope + telemetry + delayed dry; no effects yet).
+// The DSP lane extends this file with the effect chains. Keep it clean: ONE call site per helper (dv_draw, dv_hidden).
+//
+// Built as  cepstrum_lib.genexpr + deviate_conv.genexpr + deviate_core.genexpr  with the line `//@hidden` below replaced by the
+// generated function dv_hidden(mE, mT, hv) (dvHiddenGen() in src/deviate_config.js). Contract: src/deviate_config.js
+// (DV_SCOPE, DV_ECHO, DV_CTL, DV_PARAMS gen messages, dvStep, dvRingEnv, dvWindows, dvHiddenFromMetas).
+//
+// Signal flow of this stub:
+//   in1/in2 -> mono -> DETECT (envelope trigger model: fast env 15 ms release, slow 60 ms baseline, onset when
+//                      armed && fast > thr && fast > slow * ratio; a MIDI counter change (dvmtrig) is the second source;
+//                      one shared lockout so an audio onset next to a MIDI hit is deduped)
+//           t0 -> DRAW (dv_draw, mirrors dvStep) -> page E/T; the page is APPLIED at t0 + LAT - 96 (dv_hidden -> hidden values,
+//                 Ring envelope and windows restart); a Reroll applies its page at once.
+//   out = soft_limit(delayed dry + Mix * effect residue)  -- the residues are exact zeros in this stub, so out == the dry
+//         delayed by LAT (256 Envelope / 1279 Spectral) for every Mix.
+//
+// Timing of a hit: t0 is the sample of the (undelayed) input at which the detector fires. Draw at t0. Page applied at
+// t0 + LAT - 96 (age 0 of the Ring envelope). The hit reaches the output at t0 + LAT (ONSET_AGE counts from there).
+// Windows: gT / gB / gR from the applied page, time measured from the arrival of the hit at the output (age - 96 samples).
+//
+// Split mode change (dvsplit): the output fades to 0 over 256 samples, the delay tap moves 256 <-> 1279 at gain 0, then the
+// output fades back in over 256 samples (no click, no NaN). The first dvsplit value after load is taken as is (no fade).
+//
+// Baselines: dvreroll, dvmtrig and dvplay start at -1 / -1 / 0. The FIRST value received of dvreroll / dvmtrig only sets the
+// baseline (a message resent by the engine after the gen compiled is not an event); afterwards a rising edge 0 -> 1 of dvreroll
+// is one forced re-roll, every CHANGE of dvmtrig is one MIDI hit, a rising edge of dvplay resets the draw hit counter.
+//
+// Sleep: input below 1e-5 for 16384 samples and nothing pending (no lockout, no page waiting, Ring envelope finished) skips
+// the effect work and the telemetry except FRAMES / ALIVE / ASLEEP; the output is exact zeros; any input or hit wakes it.
+//
+// Telemetry (buffer scope, slots in DV_SCOPE): written every 64 samples. HITS, HIT_GATE, HIT_SRC, DRAW_SERIAL, METAS / DRAWS,
+// REROLL and PAGE_APPLIED are ALSO written on the sample of the event (sample-accurate for the tests). HITS is a monotonic
+// counter (mod 100000), not the draw hit counter (which restarts on transport start and on a restore).
+//
+// GenExpr rules (AGENTS 8 and the gotcha lists): helpers before declarations before statements, one return at function level,
+// no user call inside poke() / if conditions, no identifier e<digit>, never name a Param mix / noise / hold / rise / fall / bias,
+// variables first assigned inside an `if` are invisible after it, x - floor(x) never fract(), bare calls for work functions.
+
+// Soft output limiter: the identity up to |x| = 2, a tanh knee above (max 6).
+dv_soft(x) {
+	a = abs(x);
+	return a <= 2 ? x : (x < 0 ? -1 : 1) * (2 + 4 * tanh((a - 2) * 0.25));
+}
+
+// One draw event; mirrors dvStep of src/deviate_config.js exactly (exact integer hash: seed mix + four squarings mod 67108859).
+//   pv / pr / lk = Values, Ranges, Lock flags (Data 8), st = state (0 valid, 1 hits, 2 reroll counter, 3 serial, 4 gate, 5 drew),
+//   tT / tE = target draw T and drifted draw E (Data 8, 0..100), ev = 0 hit, 1 reroll.
+// Returns drew (1 when a draw happened). The same values are in st[5].
+dv_draw(pv, pr, lk, st, tT, tE, seedIn, chanceIn, driftIn, ev) {
+	k = floor(seedIn + 0.5);
+	valid = peek(st, 0);
+	hits = peek(st, 1);
+	rerl = peek(st, 2);
+	serial = peek(st, 3);
+	oldGate = peek(st, 4);
+	if (valid < 0.5) {
+		for (i = 0; i < 8; i += 1) {
+			pvi = peek(pv, i);
+			v0 = clip(pvi, 0, 100);
+			poke(tT, v0, i);
+			poke(tE, v0, i);
+		}
+	}
+	rerl = rerl + ev;
+	rmod = rerl - 4096 * floor(rerl / 4096);
+	idx = hits * 4096 + rmod;
+	cx = idx * 7919 + k * 104729 + 8 * 3571 + 12345;
+	cx = cx - 67108859 * floor(cx / 67108859);
+	cx = cx * cx + 40503;
+	cx = cx - 67108859 * floor(cx / 67108859);
+	cx = cx * cx + 40503;
+	cx = cx - 67108859 * floor(cx / 67108859);
+	cx = cx * cx + 40503;
+	cx = cx - 67108859 * floor(cx / 67108859);
+	cx = cx * cx + 40503;
+	cx = cx - 67108859 * floor(cx / 67108859);
+	cc = cx / 67108859;
+	gateV = (valid < 0.5) ? 1 : ((cc * 100 < chanceIn) ? 1 : 0);
+	gateV = (ev > 0.5) ? 1 : gateV;
+	hits = hits + (1 - ev);
+	newGate = (ev > 0.5) ? oldGate : gateV;
+	if (gateV > 0.5) {
+		for (i = 0; i < 8; i += 1) {
+			lkv = peek(lk, i);
+			pvi = peek(pv, i);
+			pri = peek(pr, i);
+			told = peek(tT, i);
+			hx = idx * 7919 + k * 104729 + i * 3571 + 12345;
+			hx = hx - 67108859 * floor(hx / 67108859);
+			hx = hx * hx + 40503;
+			hx = hx - 67108859 * floor(hx / 67108859);
+			hx = hx * hx + 40503;
+			hx = hx - 67108859 * floor(hx / 67108859);
+			hx = hx * hx + 40503;
+			hx = hx - 67108859 * floor(hx / 67108859);
+			hx = hx * hx + 40503;
+			hx = hx - 67108859 * floor(hx / 67108859);
+			hh = hx / 67108859;
+			tn = clip(pvi + (2 * hh - 1) * pri, 0, 100);
+			keep = (valid > 0.5 && lkv > 0.5) ? 1 : 0;
+			poke(tT, keep > 0.5 ? told : tn, i);
+		}
+		serial = serial + 1;
+	}
+	valid = max(valid, gateV);
+	kd = 1 - 0.56 * clip(driftIn, 0, 100) / 100;
+	for (i = 0; i < 8; i += 1) {
+		te = peek(tE, i);
+		tt = peek(tT, i);
+		poke(tE, te + kd * (tt - te), i);
+	}
+	poke(st, valid, 0);
+	poke(st, hits, 1);
+	poke(st, rerl, 2);
+	poke(st, serial, 3);
+	poke(st, newGate, 4);
+	poke(st, gateV, 5);
+	return gateV;
+}
+
+//@hidden
+
+Buffer scope("deviatescope");
+Buffer ctl("deviatectl");
+Buffer ir("deviateir");
+Buffer spec("deviatespec");
+
+// Values 0..100, Ranges 0..100, Locks 0 / 1 (one Param each: a Param cannot be indexed).
+Param dvv0(30);
+Param dvv1(50);
+Param dvv2(30);
+Param dvv3(20);
+Param dvv4(30);
+Param dvv5(20);
+Param dvv6(20);
+Param dvv7(10);
+Param dvr0(50);
+Param dvr1(50);
+Param dvr2(50);
+Param dvr3(50);
+Param dvr4(50);
+Param dvr5(50);
+Param dvr6(50);
+Param dvr7(50);
+Param dvl0(0);
+Param dvl1(0);
+Param dvl2(0);
+Param dvl3(0);
+Param dvl4(0);
+Param dvl5(0);
+Param dvl6(0);
+Param dvl7(0);
+Param dvsens(0.5);
+Param dvthr(-36);
+Param dvchance(100);
+Param dvwet(1);
+Param dvseed(0);
+Param dvdrift(0);
+Param dvreroll(-1);
+Param dvsplit(0);
+Param dvmtrig(-1);
+Param dvplay(0);
+
+Data dvPV(8);
+Data dvPR(8);
+Data dvLK(8);
+Data dvST(8);
+Data dvT(8);
+Data dvE(8);
+Data dvAT(8);
+Data dvAE(8);
+Data dvHV(64);
+
+Delay dlyL(2048);
+Delay dlyR(2048);
+
+History inited(0);
+History cacheSr(0);
+History cacheThr(1000000000);
+History cacheSens(-1);
+History thrLin(0.0158);
+History ratio(2);
+History relC(0);
+History slowC(0);
+History lockAud(1440);
+History holdS(7200);
+History fadeS(960);
+History fast(0);
+History slow(0);
+History armed(1);
+History lock(0);
+History mtLast(-1);
+History rrLast(-1);
+History playLast(0);
+History rrq(0);
+History hitSrc(0);
+History lastCtlGen(0);
+History preKey(-1);
+History modeCur(0);
+History latCur(256);
+History swState(0);
+History swGain(1);
+History wsm(1);
+History pendApply(0);
+History outWait(0);
+History outAge(-1);
+History age(1000000000);
+History envRec(1);
+History decayK(1);
+History endS(0);
+History winT(10);
+History winR(150);
+History trS(0.05);
+History irTag(0);
+History hitCount(0);
+History pageCnt(0);
+History quietCnt(0);
+History tickC(0);
+History alive(0);
+History frames(0);
+History pkIn(0);
+History pkT(0);
+History pkB(0);
+History pkL(0);
+History pkOut(0);
+History pkDry(0);
+History pkFast(0);
+History blkC(0);
+History blkInMin(0);
+History blkInMax(0);
+History blkOutMin(0);
+History blkOutMax(0);
+History blkFlag(0);
+History waveHead(0);
+History specHead(0);
+History specOn(0);
+History hidC(0);
+
+// History discipline: a History read after a write in the same sample returns the OLD value (AGENTS 16 / 21), so every History
+// is read into a local, computed on, and written back exactly once per sample (never read again after its write).
+sr = max(samplerate, 1);
+first = (inited < 0.5) ? 1 : 0;
+inited = 1;
+if (first > 0.5) {
+	poke(dvST, 1, 4);
+}
+
+// ---- cached coefficients (pow / exp only when an input moved) ----
+thrN = thrLin;
+ratN = ratio;
+relN = relC;
+slwN = slowC;
+lkaN = lockAud;
+hldN = holdS;
+fdN = fadeS;
+if (dvthr != cacheThr) {
+	cacheThr = dvthr;
+	thrN = pow(10, clip(dvthr, -60, 0) / 20);
+	thrLin = thrN;
+}
+if (dvsens != cacheSens) {
+	cacheSens = dvsens;
+	ratN = pow(10, (1 - clip(dvsens, 0, 1)) * 12 / 20);
+	ratio = ratN;
+}
+if (sr != cacheSr) {
+	cacheSr = sr;
+	relN = exp(-1000 / (15 * sr));
+	relC = relN;
+	slwN = exp(-1000 / (60 * sr));
+	slowC = slwN;
+	lkaN = floor(30 * sr / 1000);
+	lockAud = lkaN;
+	hldN = 0.15 * sr;
+	holdS = hldN;
+	fdN = 0.02 * sr;
+	fadeS = fdN;
+}
+
+// ---- Split Mode: the first value is taken as is; a change fades out, moves the tap at gain 0, fades in ----
+wantMode = (dvsplit > 0.5) ? 1 : 0;
+modeN = modeCur;
+latN = latCur;
+ssN = swState;
+sgN = swGain;
+if (first > 0.5) {
+	modeN = wantMode;
+	latN = (modeN > 0.5) ? 1279 : 256;
+	ssN = 0;
+	sgN = 1;
+}
+if (ssN < 0.5 && wantMode != modeN) {
+	ssN = 1;
+}
+if (ssN > 0.5 && ssN < 1.5) {
+	sgN = max(sgN - 0.00390625, 0);
+	if (sgN <= 0) {
+		modeN = wantMode;
+		latN = (modeN > 0.5) ? 1279 : 256;
+		ssN = 2;
+	}
+} else if (ssN > 1.5) {
+	sgN = min(sgN + 0.00390625, 1);
+	if (sgN >= 1) {
+		ssN = 0;
+	}
+}
+modeCur = modeN;
+latCur = latN;
+swState = ssN;
+swGain = sgN;
+
+// ---- detector on the mono sum of the UNDELAYED input ----
+inPk = max(abs(in1), abs(in2));
+inMono = (in1 + in2) * 0.5;
+ax = abs(inMono);
+nf = (ax > fast) ? ax : fast * relN;
+fastN = (nf < 0.000000000001) ? 0 : nf;
+ns = fastN + (slow - fastN) * slwN;
+slowN = (ns < 0.000000000001) ? 0 : ns;
+fast = fastN;
+slow = slowN;
+lockN = max(lock - 1, 0);
+
+// MIDI source: every change of dvmtrig after the first value is one hit (only outside the lockout).
+midiFire = 0;
+mtN = mtLast;
+if (dvmtrig != mtLast) {
+	if (mtLast > -0.5 && lockN <= 0) {
+		midiFire = 1;
+	}
+	mtN = dvmtrig;
+}
+mtLast = mtN;
+// Audio source. An onset inside the lockout is swallowed (disarmed), so it is not re-fired when the lockout ends.
+audioFire = 0;
+armedN = armed;
+if (armed > 0.5 && fastN > thrN && fastN > slowN * ratN) {
+	armedN = 0;
+	if (lockN <= 0 && midiFire < 0.5) {
+		audioFire = 1;
+	}
+} else if (armed < 0.5 && (fastN < thrN * 0.7 || fastN < slowN * 1.12)) {
+	armedN = 1;
+}
+armed = armedN;
+hitNow = max(midiFire, audioFire);
+
+// Reroll: rising edge 0 -> 1 after the baseline; transport start resets the draw hit counter.
+rq = rrq;
+if (dvreroll != rrLast) {
+	if (rrLast > -0.5 && rrLast < 0.5 && dvreroll > 0.5) {
+		rq = rq + 1;
+	}
+	rrLast = dvreroll;
+}
+if (dvplay > 0.5 && playLast < 0.5) {
+	poke(dvST, 0, 1);
+}
+playLast = (dvplay > 0.5) ? 1 : 0;
+
+// ---- page timing (locals; written back after the event block) ----
+applyNow = 0;
+applyCount = 0;
+ageReset = 0;
+wake = 0;
+pa = pendApply;
+ow = outWait;
+oa = outAge;
+if (pa > 0) {
+	pa = pa - 1;
+	if (pa < 0.5) {
+		applyNow = 1;
+		applyCount = 1;
+		ageReset = 1;
+	}
+}
+if (ow > 0) {
+	ow = ow - 1;
+	if (ow < 0.5) {
+		oa = 0;
+	}
+} else if (oa >= 0) {
+	oa = oa + 1;
+	if (oa > 2.5 * sr) {
+		oa = -1;
+	}
+}
+
+// ---- control tick (every 64 samples): restore from ctl, pre-draw page from the Values ----
+lcN = lastCtlGen;
+if (tickC < 0.5) {
+	pkey = preKey;
+	cg = peek(ctl, 0, 0);
+	if (cg != lastCtlGen) {
+		lcN = cg;
+		if (cg > 0.5) {
+			fl = peek(ctl, 1, 0);
+			vflag = fl - 2 * floor(fl / 2);
+			rrv = peek(ctl, 2, 0);
+			poke(dvST, (vflag > 0.5) ? 1 : 0, 0);
+			poke(dvST, 0, 1);
+			poke(dvST, rrv, 2);
+			for (i = 0; i < 8; i += 1) {
+				ct = peek(ctl, 4 + i, 0);
+				ce = peek(ctl, 12 + i, 0);
+				poke(dvT, ct, i);
+				poke(dvE, ce, i);
+			}
+			pkey = -1;
+			applyNow = 1;
+			wake = 1;
+		}
+	}
+	vld = peek(dvST, 0);
+	if (vld < 0.5 && pa < 0.5) {
+		key = dvv0 + dvv1 * 3 + dvv2 * 5 + dvv3 * 7 + dvv4 * 11 + dvv5 * 13 + dvv6 * 17 + dvv7 * 19;
+		if (key != pkey) {
+			pkey = key;
+			poke(dvT, clip(dvv0, 0, 100), 0);
+			poke(dvT, clip(dvv1, 0, 100), 1);
+			poke(dvT, clip(dvv2, 0, 100), 2);
+			poke(dvT, clip(dvv3, 0, 100), 3);
+			poke(dvT, clip(dvv4, 0, 100), 4);
+			poke(dvT, clip(dvv5, 0, 100), 5);
+			poke(dvT, clip(dvv6, 0, 100), 6);
+			poke(dvT, clip(dvv7, 0, 100), 7);
+			for (i = 0; i < 8; i += 1) {
+				tv = peek(dvT, i);
+				poke(dvE, tv, i);
+			}
+			applyNow = 1;
+		}
+	}
+	preKey = pkey;
+}
+lastCtlGen = lcN;
+
+// ---- the draw event: a hit (0) or a reroll (1); a reroll that meets a hit waits one sample ----
+evNow = -1;
+if (hitNow > 0.5) {
+	evNow = 0;
+} else if (rq > 0.5) {
+	evNow = 1;
+	rq = rq - 1;
+}
+rrq = rq;
+hcN = hitCount;
+hsN = hitSrc;
+bfl = blkFlag;
+if (evNow > -0.5) {
+	poke(dvPV, dvv0, 0);
+	poke(dvPV, dvv1, 1);
+	poke(dvPV, dvv2, 2);
+	poke(dvPV, dvv3, 3);
+	poke(dvPV, dvv4, 4);
+	poke(dvPV, dvv5, 5);
+	poke(dvPV, dvv6, 6);
+	poke(dvPV, dvv7, 7);
+	poke(dvPR, dvr0, 0);
+	poke(dvPR, dvr1, 1);
+	poke(dvPR, dvr2, 2);
+	poke(dvPR, dvr3, 3);
+	poke(dvPR, dvr4, 4);
+	poke(dvPR, dvr5, 5);
+	poke(dvPR, dvr6, 6);
+	poke(dvPR, dvr7, 7);
+	poke(dvLK, dvl0 > 0.5 ? 1 : 0, 0);
+	poke(dvLK, dvl1 > 0.5 ? 1 : 0, 1);
+	poke(dvLK, dvl2 > 0.5 ? 1 : 0, 2);
+	poke(dvLK, dvl3 > 0.5 ? 1 : 0, 3);
+	poke(dvLK, dvl4 > 0.5 ? 1 : 0, 4);
+	poke(dvLK, dvl5 > 0.5 ? 1 : 0, 5);
+	poke(dvLK, dvl6 > 0.5 ? 1 : 0, 6);
+	poke(dvLK, dvl7 > 0.5 ? 1 : 0, 7);
+	dv_draw(dvPV, dvPR, dvLK, dvST, dvT, dvE, dvseed, dvchance, dvdrift, evNow);
+	gateV = peek(dvST, 4);
+	serV = peek(dvST, 3);
+	rerV = peek(dvST, 2);
+	poke(scope, serV, 3, 0);
+	for (i = 0; i < 8; i += 1) {
+		me = peek(dvE, i);
+		mt = peek(dvT, i);
+		poke(scope, me, 16 + i, 0);
+		poke(scope, mt, 24 + i, 0);
+	}
+	if (evNow < 0.5) {
+		hsN = (midiFire > 0.5) ? 1 : 0;
+		hcN = wrap(hcN + 1, 0, 100000);
+		poke(scope, hcN, 2, 0);
+		poke(scope, gateV, 39, 0);
+		poke(scope, hsN, 40, 0);
+		pa = latN - 96;
+		ow = latN;
+		oa = -1;
+		lockN = max(lkaN, latN + 96);
+		bfl = 1;
+	} else {
+		poke(scope, rerV, 8, 0);
+		applyNow = 1;
+		applyCount = 1;
+	}
+	wake = 1;
+}
+hitCount = hcN;
+hitSrc = hsN;
+pendApply = pa;
+outWait = ow;
+outAge = oa;
+lock = lockN;
+
+// ---- apply the page: hidden values, windows and Ring envelope parameters ----
+wtN = winT;
+wrN = winR;
+trN = trS;
+irN = irTag;
+dkN = decayK;
+esN = endS;
+pcN = pageCnt;
+if (applyNow > 0.5) {
+	for (i = 0; i < 8; i += 1) {
+		te = peek(dvE, i);
+		tt = peek(dvT, i);
+		poke(dvAE, te, i);
+		poke(dvAT, tt, i);
+	}
+	dv_hidden(dvAE, dvAT, dvHV);
+	wtN = peek(dvHV, 4);
+	wrN = peek(dvHV, 15);
+	trN = peek(dvHV, 35);
+	irN = peek(dvHV, 22);
+	dkN = pow(10, -3.3 / (max(trN, 0.001) * sr));
+	esN = hldN + trN * sr;
+	for (i = 0; i < 64; i += 1) {
+		hvv = peek(dvHV, i);
+		poke(scope, hvv, 64 + i, 0);
+	}
+	poke(scope, irN, 11, 0);
+	if (applyCount > 0.5) {
+		pcN = wrap(pcN + 1, 0, 100000);
+		poke(scope, pcN, 38, 0);
+	}
+	wake = 1;
+}
+winT = wtN;
+winR = wrN;
+trS = trN;
+irTag = irN;
+decayK = dkN;
+endS = esN;
+pageCnt = pcN;
+
+// ---- sleep decision ----
+qc = (inPk < 0.00001 && wake < 0.5) ? min(quietCnt + 1, 1000000) : 0;
+quietCnt = qc;
+agN = age;
+erN = envRec;
+if (ageReset > 0.5) {
+	agN = 0;
+	erN = 1;
+}
+busy = (pa > 0 || lockN > 0 || ow > 0 || ssN > 0.5 || agN < esN + fdN + 64) ? 1 : 0;
+asleep = (qc >= 16384 && busy < 0.5) ? 1 : 0;
+
+// ---- delayed dry (always written, so a wake-up is seamless) ----
+dlyL.write(in1);
+dlyR.write(in2);
+xdL = dlyL.read(latN);
+xdR = dlyR.read(latN);
+
+// ---- Ring envelope and windows (restart at the apply sample; measured from the arrival of the hit at the output) ----
+envV = 0;
+gT = 0;
+gB = 0;
+gR = 1;
+xdPk = max(abs(xdL), abs(xdR));
+xdM = (xdL + xdR) * 0.5;
+if (asleep < 0.5) {
+	if (agN <= hldN) {
+		envV = 1;
+		erN = 1;
+	} else if (agN <= esN) {
+		erN = erN * dkN;
+		envV = erN;
+	} else if (agN <= esN + fdN) {
+		envV = 0.0005011872336272725 * (1 - (agN - esN) / fdN);
+	}
+	tw = max(agN - 96, 0) * 1000 / sr;
+	uT = clip(tw / max(wtN, 1), 0, 1);
+	uR = clip(tw / max(wrN, 1), 0, 1);
+	gT = 1 - uT * uT * (3 - 2 * uT);
+	gR = uR * uR * (3 - 2 * uR);
+	gB = max(0, 1 - gT - gR);
+}
+age = min(agN + 1, 1000000000);
+envRec = erN;
+
+// ---- effects (STUB): the DSP lane puts the chains here; residues are  fx(in) - in  =  0 for now ----
+resL = 0;
+resR = 0;
+wsmO = (first > 0.5) ? clip(dvwet, 0, 1) : wsm;
+wsmN = wsmO + (clip(dvwet, 0, 1) - wsmO) * 0.002;
+wsm = wsmN;
+sumL = xdL + wsmN * resL;
+sumR = xdR + wsmN * resR;
+limL = dv_soft(sumL);
+limR = dv_soft(sumR);
+outScale = (asleep > 0.5) ? 0 : sgN;
+o1 = fixnan(limL * outScale);
+o2 = fixnan(limR * outScale);
+
+// ---- per-sample telemetry work (awake only) ----
+pkInN = pkIn;
+pkFastN = pkFast;
+pkTN = pkT;
+pkBN = pkB;
+pkLN = pkL;
+pkOutN = pkOut;
+pkDryN = pkDry;
+whN = waveHead;
+shN = specHead;
+if (asleep < 0.5) {
+	pkInN = max(pkIn, inPk);
+	pkFastN = max(pkFast, fastN);
+	pkTN = max(pkT, gT * xdPk);
+	pkBN = max(pkB, gB * xdPk);
+	pkLN = max(pkL, gR * xdPk * envV);
+	pkOutN = max(pkOut, max(abs(o1), abs(o2)));
+	pkDryN = max(pkDry, xdPk);
+	outM = (o1 + o2) * 0.5;
+	bc0 = blkC;
+	bimin = (bc0 < 0.5) ? inMono : min(blkInMin, inMono);
+	bimax = (bc0 < 0.5) ? inMono : max(blkInMax, inMono);
+	bomin = (bc0 < 0.5) ? outM : min(blkOutMin, outM);
+	bomax = (bc0 < 0.5) ? outM : max(blkOutMax, outM);
+	bcN = bc0 + 1;
+	if (bcN >= 512) {
+		bcN = 0;
+		wb = 256 + whN * 5;
+		poke(scope, clip(bimin, -1.5, 1.5), wb + 0, 0);
+		poke(scope, clip(bimax, -1.5, 1.5), wb + 1, 0);
+		poke(scope, clip(bomin, -1.5, 1.5), wb + 2, 0);
+		poke(scope, clip(bomax, -1.5, 1.5), wb + 3, 0);
+		poke(scope, bfl, wb + 4, 0);
+		bfl = 0;
+		whN = wrap(whN + 1, 0, 256);
+		poke(scope, whN, 41, 0);
+	}
+	blkC = bcN;
+	blkInMin = bimin;
+	blkInMax = bimax;
+	blkOutMin = bomin;
+	blkOutMax = bomax;
+	if (specOn > 0.5) {
+		poke(spec, inMono, shN, 0);
+		poke(spec, gT * xdM, shN, 1);
+		poke(spec, gB * xdM, shN, 2);
+		poke(spec, gR * xdM * envV, shN, 3);
+		poke(spec, outM, shN, 4);
+		shN = wrap(shN + 1, 0, 2048);
+	}
+}
+blkFlag = bfl;
+waveHead = whN;
+specHead = shN;
+
+// ---- telemetry tick (every 64 samples; ALIVE / FRAMES / ASLEEP also when asleep) ----
+tcN = wrap(tickC + 1, 0, 64);
+tickC = tcN;
+tickKeep = 1;
+if (tcN < 0.5) {
+	alN = wrap(alive + 1, 0, 100000);
+	frN = wrap(frames + 1, 0, 100000);
+	alive = alN;
+	frames = frN;
+	poke(scope, frN, 0, 0);
+	poke(scope, alN, 48, 0);
+	poke(scope, asleep, 7, 0);
+	if (asleep < 0.5) {
+		tickKeep = 0;
+		specOn = (dim(spec) >= 2048) ? 1 : 0;
+		stSer = peek(dvST, 3);
+		stRer = peek(dvST, 2);
+		stGate = peek(dvST, 4);
+		onsetMs = (oa < 0) ? -1 : oa * 1000 / sr;
+		poke(scope, sr, 1, 0);
+		poke(scope, hcN, 2, 0);
+		poke(scope, stSer, 3, 0);
+		poke(scope, onsetMs, 4, 0);
+		poke(scope, modeN, 5, 0);
+		poke(scope, latN, 6, 0);
+		poke(scope, stRer, 8, 0);
+		poke(scope, trN, 9, 0);
+		poke(scope, envV, 10, 0);
+		poke(scope, irN, 11, 0);
+		poke(scope, pkFastN, 12, 0);
+		poke(scope, slowN, 13, 0);
+		poke(scope, thrN, 14, 0);
+		poke(scope, mtN, 15, 0);
+		for (i = 0; i < 8; i += 1) {
+			me = peek(dvE, i);
+			mt = peek(dvT, i);
+			poke(scope, me, 16 + i, 0);
+			poke(scope, mt, 24 + i, 0);
+		}
+		poke(scope, pkInN, 32, 0);
+		poke(scope, pkTN, 33, 0);
+		poke(scope, pkBN, 34, 0);
+		poke(scope, pkLN, 35, 0);
+		poke(scope, pkOutN, 36, 0);
+		poke(scope, pkDryN, 37, 0);
+		poke(scope, pcN, 38, 0);
+		poke(scope, stGate, 39, 0);
+		poke(scope, hsN, 40, 0);
+		poke(scope, whN, 41, 0);
+		poke(scope, shN, 42, 0);
+		// ECHO block (128..159): what this gen runs with
+		poke(scope, dvv0, 128, 0);
+		poke(scope, dvv1, 129, 0);
+		poke(scope, dvv2, 130, 0);
+		poke(scope, dvv3, 131, 0);
+		poke(scope, dvv4, 132, 0);
+		poke(scope, dvv5, 133, 0);
+		poke(scope, dvv6, 134, 0);
+		poke(scope, dvv7, 135, 0);
+		poke(scope, dvr0, 136, 0);
+		poke(scope, dvr1, 137, 0);
+		poke(scope, dvr2, 138, 0);
+		poke(scope, dvr3, 139, 0);
+		poke(scope, dvr4, 140, 0);
+		poke(scope, dvr5, 141, 0);
+		poke(scope, dvr6, 142, 0);
+		poke(scope, dvr7, 143, 0);
+		lockMask = (dvl0 > 0.5 ? 1 : 0) + (dvl1 > 0.5 ? 2 : 0) + (dvl2 > 0.5 ? 4 : 0) + (dvl3 > 0.5 ? 8 : 0) + (dvl4 > 0.5 ? 16 : 0) + (dvl5 > 0.5 ? 32 : 0) + (dvl6 > 0.5 ? 64 : 0) + (dvl7 > 0.5 ? 128 : 0);
+		poke(scope, lockMask, 144, 0);
+		poke(scope, dvsens, 145, 0);
+		poke(scope, dvthr, 146, 0);
+		poke(scope, dvchance, 147, 0);
+		poke(scope, dvwet, 148, 0);
+		poke(scope, dvseed, 149, 0);
+		poke(scope, dvdrift, 150, 0);
+		poke(scope, dvsplit, 151, 0);
+		poke(scope, dvreroll, 152, 0);
+		poke(scope, lcN, 153, 0);
+		// the hidden values and the IR tag are repeated every 16th tick (a scope buffer bound after the page was applied)
+		hdN = wrap(hidC + 1, 0, 16);
+		hidC = hdN;
+		if (hdN < 0.5) {
+			for (i = 0; i < 64; i += 1) {
+				hvr = peek(dvHV, i);
+				poke(scope, hvr, 64 + i, 0);
+			}
+		}
+	}
+}
+// peaks restart after a write (a tick that wrote them), otherwise they keep accumulating
+pkIn = (tickKeep > 0.5) ? pkInN : 0;
+pkFast = (tickKeep > 0.5) ? pkFastN : 0;
+pkT = (tickKeep > 0.5) ? pkTN : 0;
+pkB = (tickKeep > 0.5) ? pkBN : 0;
+pkL = (tickKeep > 0.5) ? pkLN : 0;
+pkOut = (tickKeep > 0.5) ? pkOutN : 0;
+pkDry = (tickKeep > 0.5) ? pkDryN : 0;
+
+out1 = o1;
+out2 = o2;
