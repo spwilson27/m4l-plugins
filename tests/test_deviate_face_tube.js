@@ -57,6 +57,18 @@ R.ok(stream({ kind: "hit" }, null) !== stream({ kind: "hit", gate: 0 }), "gate 0
 R.ok(stream({ kind: "hit" }) !== stream({ kind: "hit", spectral: true }), "ENV vs SPEC differ");
 const lampOnly = (k) => stream({ kind: "ring" }, (s) => { s[k] = 0.9; }) !== stream({ kind: "ring" }, (s) => { s[k] = 0.05; });
 R.ok(lampOnly(S.PK_T) && lampOnly(S.PK_B) && lampOnly(S.PK_L), "T, B and L lamps each move pixels");
+{
+    // regression: a click flash must fade on the clock even when no telemetry frame arrives (sleeping / frozen gen)
+    const f = boot(); frame(f, { kind: "idle" });
+    F.call(f, "onclick", [10, 10]);
+    const lit = f.sandbox.tbFlashNow();
+    R.ok(lit >= 0.5, "click lights the flash (" + lit.toFixed(2) + ")");
+    f.state.clock += 150;
+    const mid = f.sandbox.tbFlashNow();
+    R.ok(mid > 0 && mid < lit, "flash is fading at 150 ms with no onFrame");
+    f.state.clock += 200;
+    R.ok(f.sandbox.tbFlashNow() < 0.01, "flash is gone 350 ms after the click with no onFrame");
+}
 R.ok(/DRAW/.test(hit) && /ENV|SPEC/.test(hit), "DRAW and ENV labels painted");
 const calls = hit.split("|").length;
 console.log("hit paint calls", calls);

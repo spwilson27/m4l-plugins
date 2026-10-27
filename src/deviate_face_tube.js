@@ -15,7 +15,10 @@ var TB_BAR = { x: 207, pitch: 4.4, w: 3.4, y: 20, h: 90 };
 var PAINT_REGIONS = [[0, 0, 246, 161]];
 var hitZones = [[0, 0, 246, 161]];
 
-var tbFlash = 0;
+var tbFlash = 0; // flash level set at tbFlashAt (ms); read through tbFlashNow(), which decays on the clock, not on telemetry frames
+var tbFlashAt = 0;
+var tbClock = null; // pinned clock (ms) for previews and tests; null = Date.now()
+var TB_FLASH_MS = 300;
 var tbHist = []; // previous frames' points (flat [x, y, ...], normalized -1..1), oldest first, at most 5
 var TB_PERSIST = 5;
 
@@ -52,15 +55,28 @@ function tbPush() {
     if (tbHist.length > TB_PERSIST) tbHist.shift();
 }
 
+function tbNow() {
+    return tbClock === null ? Date.now() : tbClock;
+}
+
+function tbSetFlash(v) {
+    tbFlash = v; tbFlashAt = tbNow();
+}
+
+/** the flash level now: linear fade to 0 over TB_FLASH_MS, whatever the telemetry does */
+function tbFlashNow() {
+    return Math.max(0, tbFlash * (1 - (tbNow() - tbFlashAt) / TB_FLASH_MS));
+}
+
 function onFrame(t) {
-    if (t.hitNew) tbFlash = 1;
-    else tbFlash = Math.max(0, tbFlash - 0.18);
+    if (t.hitNew) tbSetFlash(1);
     tbPush();
     return true;
 }
 
 function onclick() {
-    tbFlash = Math.max(tbFlash, 0.6);
+    tbSetFlash(Math.max(tbFlashNow(), 0.6));
+    dvAnimate(TB_FLASH_MS + 40);
     dvManualHit();
     mgraphics.redraw();
 }
@@ -68,9 +84,18 @@ function onclick() {
 function preview() {
     var st = dvPreviewBase();
     tbHist = [];
-    var head = Math.round(dvNum(dvTel.waveHead)), n = tbBlocks();
-    for (var j = TB_PERSIST; j >= 1; j--) tbHist.push(tbPoints(n, head - 2 * j));
-    tbFlash = st.kind === "hit" || st.kind === "extreme" ? 1 : 0;
+    var n = tbBlocks(), amp = st.kind === "idle" ? 0.05 : st.kind === "extreme" ? 0.95 : 0.7;
+    tbClock = 1000; // pinned: previews never read Date.now
+    // varied synthetic portraits (a drifting Lissajous per frame, smaller and phase-shifted for older frames) so the trails separate
+    for (var j = TB_PERSIST; j >= 1; j--) {
+        var pts = [], ph = 0.55 * j, k;
+        for (k = 0; k < 2 * n; k++) {
+            var u = k / (2 * n) * 6.283 * 1.5 + ph;
+            pts.push(amp * Math.sin(u) * (1 - 0.08 * j), amp * 0.9 * Math.sin(2 * u + 0.8 + 0.25 * ph) * (1 - 0.05 * j));
+        }
+        tbHist.push(pts);
+    }
+    tbFlash = st.kind === "hit" || st.kind === "extreme" ? 1 : 0; tbFlashAt = 1000;
 }
 
 // ---- drawing ----------------------------------------------------------------------------------------------------------------------
@@ -105,7 +130,7 @@ function paint() {
     var P = TB_PORT, cx = P[0] + P[2] / 2, cy = P[1] + P[3] / 2;
     var sx = P[2] / 2 - 3, sy = P[3] / 2 - 3;
     var age = dvTel.ageMs >= 0 ? Math.exp(-dvTel.ageMs / 110) : 0;
-    var bloom = dvClamp(Math.max(tbFlash, age), 0, 1);
+    var bloom = dvClamp(Math.max(tbFlashNow(), age), 0, 1);
     var ringEnv = dvClamp(dvTel.ringEnv, 0, 1), ring = dvClamp(dvTel.ring, 0, 1);
 
     // glass
