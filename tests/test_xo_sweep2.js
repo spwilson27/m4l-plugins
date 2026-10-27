@@ -146,5 +146,57 @@ check("XO-S2-04 Max runtime harness selects the instance before sending the 's' 
   assert(sends.length > 0, "runtime harness never sends test_selected, so hotkeyAllowed() is false and the 's' hotkey is ignored");
 });
 
+// ---------------------------------------------------------------------------
+// helpers for the render tests
+// ---------------------------------------------------------------------------
+function writeWav16(file, sr, chans, frames, fn) {
+  const n = frames * chans;
+  const b = Buffer.alloc(44 + n * 2);
+  b.write("RIFF", 0); b.writeUInt32LE(36 + n * 2, 4); b.write("WAVEfmt ", 8); b.writeUInt32LE(16, 16);
+  b.writeUInt16LE(1, 20); b.writeUInt16LE(chans, 22); b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * chans * 2, 28);
+  b.writeUInt16LE(chans * 2, 32); b.writeUInt16LE(16, 34); b.write("data", 36); b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < frames; i++) for (let c = 0; c < chans; c++) b.writeInt16LE(Math.round(fn(i, c) * 32767), 44 + (i * chans + c) * 2);
+  fs.writeFileSync(file, b);
+}
+function peakOf(file) {
+  const d = engine.parseWavBuffer(fs.readFileSync(file), fs.statSync(file).size, 5.0, true);
+  let pk = 0;
+  for (const v of d.samples) pk = Math.max(pk, Math.abs(v));
+  return pk;
+}
+
+// ---------------------------------------------------------------------------
+// XO-S2-05: the offline render (Edited export, and every audition with Pitch / Speed / Reverse / Texture) decodes ONE channel
+// (parseAudioBuffer(..., peakChannels false) = channel 0) and writes it to both outputs. A stereo sample loses its image, and
+// a sample whose content is only on the right channel renders as silence.
+// ---------------------------------------------------------------------------
+check("XO-S2-05 edited render keeps right-channel-only content", () => {
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "xo-s205-"));
+  const f = path.join(dir, "rightonly.wav");
+  writeWav16(f, 44100, 2, 22050, (i, c) => (c === 1 ? 0.7 * Math.sin(2 * Math.PI * 220 * i / 44100) : 0));
+  const out = engine.renderEditedSampleWav(f, { pitchSt: 0, decayMs: 20000, gainDb: 0, reverse: 1, speedPct: 100, grainMs: 45, stretchMode: 1 }, path.join(dir, "out"));
+  assert(out && fs.existsSync(out), "setup: render produced a file");
+  const pk = peakOf(out);
+  assert(pk > 0.1, "the right-only sample renders with peak " + pk.toFixed(4) + " (silence)");
+});
+
+// ---------------------------------------------------------------------------
+// XO-S2-06: rendered file names are built from the source BASENAME + settings only. Two different samples with the same file name
+// (Kick.wav in two folders) rendered with the same settings write the SAME path, so the second render overwrites the first one while
+// the first one's cache entry / Saved row still points at it: the [E] drag of the first sample delivers the second sample's audio.
+// ---------------------------------------------------------------------------
+check("XO-S2-06 same-named samples from two folders render to different edited files", () => {
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "xo-s206-"));
+  fs.mkdirSync(path.join(dir, "a")); fs.mkdirSync(path.join(dir, "b"));
+  const fa = path.join(dir, "a", "Kick.wav"), fb = path.join(dir, "b", "Kick.wav");
+  writeWav16(fa, 44100, 1, 8000, (i) => 0.8 * Math.sin(2 * Math.PI * 100 * i / 44100));
+  writeWav16(fb, 44100, 1, 8000, (i) => 0.8 * Math.sin(2 * Math.PI * 900 * i / 44100));
+  const settings = { pitchSt: 0, decayMs: 2500, gainDb: 0, reverse: 0, speedPct: 100, grainMs: 45, stretchMode: 1 };
+  const outDir = path.join(dir, "out");
+  const pa = engine.renderEditedSampleWav(fa, settings, outDir);
+  const pb = engine.renderEditedSampleWav(fb, settings, outDir);
+  assert.notStrictEqual(pa, pb, "both samples render to " + pa + " (the second overwrites the first)");
+});
+
 console.log(failures ? failures + " FAILED" : "all passed");
 process.exit(failures ? 1 : 0);
