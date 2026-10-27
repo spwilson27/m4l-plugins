@@ -13,6 +13,9 @@ Design module contract (all names required unless marked optional):
   FACE_FILES   face scripts in src/, concatenated after the engine into the main v8ui
   VIZ          [x, y, w, h] of the main v8ui (interactive; no live.* widget may overlap it)
   DROP         optional [x, y, w, h] of the visible "Model File" live.drop (None = hidden)
+  DROP_INVISIBLE optional: the drop zone draws nothing and ignores clicks (it may then sit over an ignoreclick v8ui)
+  LOAD         optional [x, y, w, h] of a native "Load" button (live.text, not a parameter) -> file dialog
+  VIZ_IGNORECLICK optional: the main v8ui only draws (required when DROP_INVISIBLE overlaps it)
   WIDGETS      optional {param key: {"kind": dial|numbox|tab|menu|toggle|slider, "rect": [...], ...box attrs}}
                ("theme": {attr: live colour name} binds colours to Live's theme; "saved_attribute_attributes" merges)
                on-face live.* widgets; every other parameter's live.* object is off the face
@@ -38,7 +41,7 @@ import spectral_common as sc
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 DESIGNS = os.path.join(ROOT, "scripts", "amp_designs")
-BUILTIN = ["clean", "crunch", "lead"]
+BUILTIN = ["clean", "jazz", "twang", "blues", "crunch", "drive", "lead", "metal"]   # Model enum order
 
 
 def amp_params():
@@ -143,7 +146,7 @@ def widget(key, spec, w=None, patch_y=0.0):
     return {"box": box}
 
 
-def drop_box(rect):
+def drop_box(rect, invisible=False):
     box = {
         "annotation": "A .nam model file (Tone 3000 / Neural Amp Modeler). Drop it here or use Load.",
         "annotation_name": "Model File", "fontsize": 8.0, "id": "obj-ctrl-file", "legend": "Drop .nam",
@@ -158,7 +161,19 @@ def drop_box(rect):
     if rect:
         box["presentation"] = 1
         box["presentation_rect"] = [float(v) for v in rect]
+    if invisible:
+        # Over the display: draws nothing, ignores clicks, still receives drops (Better Sampler's waveform drop)
+        box.update({"legend": "", "ignoreclick": 1, "bordercolor": [0.0, 0.0, 0.0, 0.0], "textcolor": [0.0, 0.0, 0.0, 0.0],
+                    "focusbordercolor": [1.0, 0.6, 0.2, 1.0]})
     return {"box": box}
+
+
+def load_button(rect):
+    """A native Button-mode live.text (no parameter): its bang opens the file dialog."""
+    return {"box": {"id": "obj-load-btn", "maxclass": "live.text", "mode": 0, "text": "Load", "texton": "Load",
+                    "numinlets": 1, "numoutlets": 2, "outlettype": ["", ""], "parameter_enable": 0,
+                    "annotation": "Load a .nam file (Tone 3000 / Neural Amp Modeler)", "patching_rect": [1300.0, 120.0, 44.0, 15.0],
+                    "presentation": 1, "presentation_rect": [float(v) for v in rect], "varname": "amp_load"}}
 
 
 def panel(oid, rect, rgba, rounded=0, theme_name=None):
@@ -188,13 +203,18 @@ def build(design, meta, header):
     keys = meta["k"]
     widgets = getattr(design, "WIDGETS", {}) or {}
     boxes = [sc.v8ui("obj-viz", face_code(design, header), design.VIZ, (20, 60), 2, varname="amp_face")]
+    if getattr(design, "VIZ_IGNORECLICK", False):
+        boxes[0]["box"]["ignoreclick"] = 1
     lines = []
     for i, key in enumerate(keys):
         boxes.append(widget(key, P[key], widgets.get(key), i))
         boxes.append(sc.newobj(f"obj-ui-{key}", f"prepend set_{key}", 640, 40 + 22 * i, 120))
         lines.append(sc.line(f"obj-ctrl-{key}", 0, f"obj-ui-{key}"))
         lines.append(sc.line(f"obj-ui-{key}", 0, "obj-viz"))
-    boxes.append(drop_box(getattr(design, "DROP", None)))
+    boxes.append(drop_box(getattr(design, "DROP", None), getattr(design, "DROP_INVISIBLE", False)))
+    if getattr(design, "LOAD", None):
+        boxes.append(load_button(design.LOAD))
+        lines.append(sc.line("obj-load-btn", 0, "obj-opendialog"))
     for lb in getattr(design, "LABELS", []) or []:
         boxes.append(label(lb[0], lb[1], lb[2], lb[3] if len(lb) > 3 else 9.0, lb[4] if len(lb) > 4 else None,
                            lb[5] if len(lb) > 5 else 0))

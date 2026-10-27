@@ -4,7 +4,7 @@
 // tone stack / cab biquads into ---ampcf (slot 50 = 1 once valid) and reads ---ampscope.
 //
 // Signal: Mono = (in1 + in2) / 2, Stereo = in1 and in2 -> Gain -> gate (linked) -> model (once per
-// channel) -> DC block -> 10 biquads -> Volume -> Dry/Wet with the dry stereo input. Model or mode
+// channel) -> Normalize -> DC block -> 10 biquads -> Volume -> Dry/Wet with the dry stereo input. Model or mode
 // switch: fade out 128 samples, take the new bank / mode, stay muted for the receptive field (so the
 // history is the new model's) and fade in.
 
@@ -13,6 +13,7 @@ Param gatedb(-100);
 Param outdb(0);
 Param mixamt(1);
 Param stmode(0);
+Param normdb(0);
 Param wbase(-1);
 Param mok(0);
 Param tapraw(0);
@@ -35,6 +36,7 @@ History dcy2(0);
 History quiet(0);
 History inG(1);
 History outG(1);
+History nG(1);
 History blk(0);
 History frames(0);
 History alive(0);
@@ -124,12 +126,15 @@ if (run) {
 nout = clip(fixnan(peek(nob, 0)), -8, 8);
 noutR = scur > 0.5 ? clip(fixnan(peek(nob, 1)), -8, 8) : nout;
 yn = nout;
+nG = nG + (dbtoa(normdb) - nG) * 0.002;
+nzL = nout * nG;
+nzR = noutR * nG;
 
 // DC block (about 4 Hz) per channel, then tone stack + cab (biquad state per channel).
-dcy = fixdenorm(nout - dcx + 0.9995 * dcy);
-dcx = nout;
-dcy2 = fixdenorm(noutR - dcx2 + 0.9995 * dcy2);
-dcx2 = noutR;
+dcy = fixdenorm(nzL - dcx + 0.9995 * dcy);
+dcx = nzL;
+dcy2 = fixdenorm(nzR - dcx2 + 0.9995 * dcy2);
+dcx2 = nzR;
 poke(yb, dcy, 0);
 poke(yb, dcy2, 1);
 cfok = peek(cf, 50, 0);

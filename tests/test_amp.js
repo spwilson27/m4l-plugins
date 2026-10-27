@@ -142,8 +142,17 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
     }
 }
 
+// 3c. no hard-coded Model index in the engine (File moved from 3 to AMP_FILE_INDEX when the captures grew to 8:
+// a leftover ampSelectModel(3) loaded Blues instead of the file)
+{
+    const eng = read("src/amp_engine.js");
+    check(!/ampSelectModel\(\d/.test(eng) && !/ampP\.model\)\s*[!=]==\s*\d/.test(eng) && !/"model",\s*\d/.test(eng), "engine: Model indices only through AMP_FILE_INDEX");
+}
+
 // 4. built-in captures
-for (const name of ["clean", "crunch", "lead"]) {
+const BUILTINS = ["clean", "jazz", "twang", "blues", "crunch", "drive", "lead", "metal"];
+check(A.AMP_PARAMS.model[8].length === BUILTINS.length + 1 && A.AMP_PARAMS.model[8][A.AMP_FILE_INDEX] === "File", "Model enum = 8 captures + File");
+for (const name of BUILTINS) {
     const d = JSON.parse(read(`src/amp_models/${name}.nam`));
     const m = A.ampParseNam(d);
     check(A.ampArchLabel(m).startsWith("Feather") && typeof m.loudness === "number", `${name}: Feather capture with loudness (${m.loudness} dB)`);
@@ -163,6 +172,7 @@ for (const name of ["clean", "crunch", "lead"]) {
     const up = A.ampToneBiquads(Object.assign({}, flat, { bass: 10 }), 48000);
     check(Math.abs(A.ampResponseDb(up, 40, 48000) - 20) < 1, "bass 10 = +20 dB low shelf");
     const cab = A.ampToneBiquads(Object.assign({}, flat, { cab: 2 }), 48000);
+    check(A.ampNormDb({ loudness: -12 }) === -6 && A.ampNormDb({ loudness: null }) === 0, "normalize gain");
     check(A.ampResponseDb(cab, 12000, 48000) < -20 && A.ampResponseDb(cab, 30, 48000) < -6, "4x12 rolls off highs and lows");
 }
 

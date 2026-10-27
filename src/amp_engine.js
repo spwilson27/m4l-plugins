@@ -46,7 +46,7 @@ var amp = {
     dsp: { ready: 0, error: "", createdAt: 0, alive0: -1, retries: 0, fastUntil: 0 },
     model: { name: "", label: "", arch: "", kind: "", layers: 0, rf: 1, error: "", file: "", arrays: /** @type {any[]} */ ([]), dilations: /** @type {number[]} */ ([]), weights: 0 },
     names: { scope: "", w: "", cf: "" },
-    bank: 1, genPath: "", genArch: "", sr: 48000, filePath: "", fileModel: null,
+    bank: 1, genPath: "", genArch: "", sr: 48000, loudDb: 0, filePath: "", fileModel: null,
     frame: -1, idle: 0, poll: null, resend: null, confirm: null, started: 0,
     initTask: /** @type {any} */ (null), waitTask: /** @type {any} */ (null), claimTask: /** @type {any} */ (null)
 };
@@ -92,7 +92,14 @@ function ampOnParam(key, v) {
     var spec = AMP_PARAMS[key];
     if (spec[7]) ampGen(spec[7], ampGenValue(key, v));
     if (key === "bass" || key === "mid" || key === "treble" || key === "presence" || key === "cab") ampWriteTone();
-    if (key === "model" && amp.started) ampSelectModel(Math.round(v));
+    if (key === "normalize") ampGen("normdb", v > 0.5 ? amp.loudDb : 0);
+    if (key === "model" && amp.started) {
+        // Next tick: a model load (parse, weights, maybe a gen hot-load) must not run inside Live's parameter
+        // notification (the LOM set that caused it waits for it, and so does the bridge's eval).
+        var mi = Math.round(v);
+        amp.modelTask = new Task(function () { ampSelectModel(mi); }, this);
+        amp.modelTask.schedule(5);
+    }
     if (typeof ampFaceChanged === "function") ampFaceChanged(key);
     mgraphics.redraw();
 }
@@ -105,6 +112,13 @@ function init_dsp() {
     // (seen in Live: some instances never loaded a model).
     amp.initTask = new Task(function () { ampSelectModel(Math.round(ampP.model)); }, this);
     amp.initTask.schedule(30);
+    // Live draws v8ui canvases in front of live.* boxes (Deviate): bring a drop zone that lies over the display
+    // forward so it gets the drag. Retried, the patcher can still be loading.
+    amp.frontTask = new Task(function () {
+        var d = ampHost ? ampHost.getnamed("Model File") : null;
+        if (d) ampHost.bringtofront(d);
+    }, this);
+    amp.frontTask.schedule(400);
     if (!amp.poll) { amp.poll = new Task(ampPoll, this); amp.poll.interval = 33; amp.poll.repeat(); }
     if (!amp.resend) { amp.resend = new Task(ampResendTick, this); amp.resend.interval = 150; amp.resend.repeat(); }
 }
@@ -119,7 +133,7 @@ function dropfile() {
     var p = ampJoin(arguments);
     if (!p || p === "none" || p === "0") return;
     if (p === amp.filePath && amp.fileModel) return;     // Live replaying the loaded path
-    ampLoadFile(p, Math.round(ampP.model) === 3 || !amp.started);
+    ampLoadFile(p, Math.round(ampP.model) === AMP_FILE_INDEX || !amp.started);
 }
 
 function browsed() {
@@ -140,7 +154,11 @@ function test_tone(face, a) { if (ampTestMine(face)) ampGen("testamp", Number(a)
 
 function test_load() {
     var a = Array.prototype.slice.call(arguments);
-    if (ampTestMine(a.shift())) ampLoadFile(ampJoin(a), true);
+    if (!ampTestMine(a.shift())) return;
+    // Deferred: the bridge's eval waits for this call, and a parse + gen hot-load can outlast its timeout.
+    var path = ampJoin(a);
+    amp.testLoadTask = new Task(function () { ampLoadFile(path, true); }, this);
+    amp.testLoadTask.schedule(10);
 }
 
 /** @param {string} face */
@@ -176,7 +194,7 @@ function ampBrowse() { outlet(0, "browse"); }
 
 function ampModelNames() {
     var e = AMP_PARAMS.model[8].slice();
-    if (amp.fileModel) e[3] = amp.fileModel.name || ampBaseName(amp.filePath);
+    if (amp.fileModel) e[AMP_FILE_INDEX] = amp.fileModel.name || ampBaseName(amp.filePath);
     return e;
 }
 
@@ -229,8 +247,8 @@ function ampLoadFile(path, activate) {
     var meta = doc.metadata || {};
     amp.fileModel = { doc: doc, name: String(meta.name || ampBaseName(path)) };
     if (activate) {
-        if (Math.round(ampP.model) !== 3) ampSet("model", 3);   // its echo loads it
-        else if (amp.started) ampSelectModel(3);
+        if (Math.round(ampP.model) !== AMP_FILE_INDEX) ampSet("model", AMP_FILE_INDEX);   // its echo loads it
+        else if (amp.started) ampSelectModel(AMP_FILE_INDEX);
     }
     if (typeof ampFaceChanged === "function") ampFaceChanged("file");
     mgraphics.redraw();
@@ -268,6 +286,7 @@ function ampLoadModel(doc, label, file) {
         wbuf.poke(1, off + i, m.weights.slice(i, Math.min(m.weights.length, i + 2048)));
     }
     amp.bank = bank;
+    amp.loudDb = ampNormDb(m);
     amp.model = ampModelInfo(m, label || m.name, arch, file);
     ampLayerVals = [];
     var g = ampHost ? ampHost.getnamed("amp_gen") : null;
@@ -378,6 +397,7 @@ function ampSendGen() {
     for (var k in AMP_PARAMS) {
         if (AMP_PARAMS[k][7]) outlet(1, AMP_PARAMS[k][7], ampGenValue(k, ampP[k]));
     }
+    outlet(1, "normdb", ampP.normalize > 0.5 ? amp.loudDb : 0);
     if (amp.model.arch) {
         outlet(1, "wbase", amp.bank * AMP_WBANK);
         outlet(1, "mok", 1);

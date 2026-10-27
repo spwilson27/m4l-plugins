@@ -4,19 +4,18 @@
 // column of nodes per layer, dilated taps between columns (the spread grows with the dilation), dilation
 // arcs, node size and brightness from the per-layer activity, and signal pulses that sweep left to right
 // faster and brighter with the output level. The input waveform enters at the left, the output waveform
-// leaves at the right. Load .nam sits in the display's top-right corner. Colours come from the Live theme.
+// leaves at the right. The canvas only draws (ignoreclick): an invisible live.drop over it takes .nam files,
+// the native Load button sits in the tab row. Colours come from the Live theme.
 
 var NRL = {
     W: 380, H: 89,
     lcd: { x: 0, y: 0, w: 380, h: 89 },
-    px0: 52, px1: 328, py0: 26, py1: 55, rows: 7,
-    phase: 0, hover: "", act: [], tick: 0
+    px0: 52, px1: 328, py0: 15, py1: 55, rows: 8,
+    phase: 0, act: [], tick: 0
 };
 
 sptThemeWatch();
 
-function nrlLoadRect() { return { x: 310, y: 2, w: 67, h: 14 }; }
-function nrlIn(x, y, r) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
 
 /** @param {string} s @param {number} maxW @param {number} size */
 function nrlFit(s, maxW, size) {
@@ -60,26 +59,6 @@ function nrlArrays() {
 function nrlColX(i, n) { return NRL.px0 + (n > 1 ? i * (NRL.px1 - NRL.px0) / (n - 1) : 0.5 * (NRL.px1 - NRL.px0)); }
 function nrlRowY(r) { return NRL.py0 + r * (NRL.py1 - NRL.py0) / (NRL.rows - 1); }
 
-function nrlLoadButton() {
-    var l = nrlLoadRect(), hv = NRL.hover === "load";
-    sptRgba(sptColor(hv ? "live_control_selection" : "live_control_bg"));
-    mgraphics.rectangle(l.x, l.y, l.w, l.h);
-    mgraphics.fill();
-    var fg = sptColor(hv ? "live_lcd_bg" : "live_control_fg");
-    // folder glyph
-    sptRgba(fg);
-    mgraphics.set_line_width(1);
-    mgraphics.move_to(l.x + 5.5, l.y + 11);
-    mgraphics.line_to(l.x + 5.5, l.y + 3.5);
-    mgraphics.line_to(l.x + 9, l.y + 3.5);
-    mgraphics.line_to(l.x + 10.5, l.y + 5);
-    mgraphics.line_to(l.x + 15.5, l.y + 5);
-    mgraphics.line_to(l.x + 15.5, l.y + 11);
-    mgraphics.line_to(l.x + 5.5, l.y + 11);
-    mgraphics.stroke();
-    sptText("Load .nam", l.x + 19, l.y + 10.5, fg, SPT_SIZE_SMALL, 0);
-}
-
 /** Smoothed activity per column, resampled when the layer count differs from what the engine reports. */
 function nrlActivity(n) {
     var src = ampLayers(), out = [], k = ampTel.out_rms || 0;
@@ -115,7 +94,7 @@ function nrlWaveOut() {
 
 function nrlNetwork() {
     var L = NRL.lcd;
-    sptLcd(L.x, L.y, L.w, L.h, { xs: [], ys: [L.y + 42] });
+    sptLcd(L.x, L.y, L.w, L.h, { xs: [], ys: [L.y + 36] });
     var cyan = sptColor("live_display_line_two"), orange = sptColor("live_display_line_one");
     var kind = amp.model.kind, n = nrlLayerCount();
     var lvl = Math.min(1, (ampTel.out_rms || 0) * 5 + (ampTel.sat || 0) * 0.3);
@@ -184,7 +163,7 @@ function nrlNetwork() {
             var xa = nrlColX(i, n), xb = nrlColX(i + span, n), ar = [];
             for (var q = 0; q <= 14; q++) {
                 var u = q / 14;
-                ar.push([xa + (xb - xa) * u, NRL.lcd.y + 23 - Math.sin(Math.PI * u) * (1.5 + lg * 0.9)]);
+                ar.push([xa + (xb - xa) * u, NRL.lcd.y + 11 - Math.sin(Math.PI * u) * (1.5 + lg * 0.9)]);
             }
             sptCurve(ar, orange, 0.18 + 0.5 * Math.min(1, act[i] * 1.3));
         }
@@ -194,7 +173,7 @@ function nrlNetwork() {
             var A0 = arrs[ai], xs = nrlColX(A0.start, n), xe = nrlColX(Math.min(n - 1, A0.start + A0.count - 1), n);
             if (ai > 0) {
                 var bx = (nrlColX(A0.start - 1, n) + xs) / 2;
-                sptCurve([[bx, NRL.lcd.y + 20], [bx, NRL.lcd.y + 60]], sptColor("live_lcd_title"), 0.7);
+                sptCurve([[bx, NRL.lcd.y + 8], [bx, NRL.lcd.y + 60]], sptColor("live_lcd_title"), 0.7);
             }
             var by = NRL.lcd.y + 63;
             sptCurve([[xs - 3, by - 3], [xs - 3, by], [xe + 3, by], [xe + 3, by - 3]], sptColor("live_display_scale_text"), 0.9);
@@ -216,22 +195,16 @@ function nrlNetwork() {
     }
     NRL.tick++;
     // waveforms at both ends
-    var wc = L.y + 42;
-    nrlWave(nrlWaveIn(), 4, NRL.px0 - 8, wc, 20, orange, 0.9);
-    nrlWave(nrlWaveOut(), NRL.px1 + 8, L.w - 4, wc, 20, cyan, 0.95);
+    var wc = L.y + 36;
+    nrlWave(nrlWaveIn(), 4, NRL.px0 - 8, wc, 26, orange, 0.9);
+    nrlWave(nrlWaveOut(), NRL.px1 + 8, L.w - 4, wc, 26, cyan, 0.95);
     // entry / exit gates
-    sptCurve([[NRL.px0 - 5, L.y + 19], [NRL.px0 - 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
-    sptCurve([[NRL.px1 + 5, L.y + 19], [NRL.px1 + 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
+    sptCurve([[NRL.px0 - 5, L.y + 6], [NRL.px0 - 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
+    sptCurve([[NRL.px1 + 5, L.y + 6], [NRL.px1 + 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
     sptText("in", 4, L.y + 72, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
     sptText("out", L.w - 4, L.y + 72, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
-    var dls = nrlDils(), dmin = Math.min.apply(null, dls), dmax = Math.max.apply(null, dls);
-    var arrN = nrlArrays().length;
-    var cap = kind === "LSTM" ? arrN + " LSTM layers · " + (arrN ? amp.model.arrays[0].ch : 0) + " hidden"
-        : arrN + (arrN === 1 ? " array · " : " arrays · ") + dls.length + " layers · d " + dmin + (dmax > dmin ? "–" + dmax : "");
-    if (ampP.stereo > 0.5) cap += " · stereo ×2";
-    sptText(nrlFit(cap, 230, SPT_SIZE_SMALL), 188, L.y + 11, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 1);
     // gate reduction pill
-    if ((ampTel.gate || 1) < 0.5) sptText("gated", nrlLoadRect().x - 5, L.y + 11, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
+    if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w - 6, L.y + 10, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
 }
 
 function nrlLstmX(i, n) { return n === 1 ? (NRL.px0 + NRL.px1) / 2 : NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / (n - 1); }
@@ -243,40 +216,20 @@ function nrlInfo() {
     else if (!amp.dsp.ready) { txt = "DSP loading…"; col = sptColor("live_control_selection"); }
     else {
         var rf = (Number(m.rf) || 0) / 48;
-        txt = (m.name || "no model") + "  " + (m.label || "") + "  ·  " + (m.kind || "") + "  ·  receptive field " + rf.toFixed(rf < 10 ? 1 : 0) + " ms";
+        txt = (m.name || "no model") + "  " + (m.label || "") + "  ·  " + (m.kind || "") + "  ·  receptive field " + rf.toFixed(rf < 10 ? 1 : 0) + " ms" + (ampP.stereo > 0.5 ? "  ·  stereo ×2" : "");
     }
     sptText(nrlFit(txt, NRL.W - 12, SPT_SIZE_SMALL), 6, y, col, SPT_SIZE_SMALL, 0);
 }
 
 function paint() {
     nrlNetwork();
-    nrlLoadButton();
     nrlInfo();
 }
 
 function ampFaceFrame() { return true; }
 function ampFaceChanged(what) { }
 
-function nrlHit(x, y) {
-    if (nrlIn(x, y, nrlLoadRect())) return "load";
-    return "";
-}
-
-function onclick(x, y) {
-    var h = nrlHit(x, y);
-    if (!h) return;
-    if (h === "load") ampBrowse();
-    mgraphics.redraw();
-}
-
-function ondrag() { }
-function ondblclick() { }
-
-function onidle(x, y) {
-    var h = nrlHit(x, y);
-    if (h !== NRL.hover) { NRL.hover = h; mgraphics.redraw(); }
-}
-function onidleout() { NRL.hover = ""; mgraphics.redraw(); }
+// The canvas is ignoreclick (the .nam drop zone lies over it): no mouse handlers.
 
 function preview() {
     ampPreviewSetup(0.75);

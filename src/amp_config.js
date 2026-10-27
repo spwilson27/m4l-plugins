@@ -22,6 +22,8 @@ var AMP_WMAX = AMP_WBANK - 16;
 var AMP_MAX_CH = 32;
 var AMP_MAX_LAYERS = 48;
 var AMP_MAX_RING = 2000000;         // doubles of WaveNet history per architecture
+var AMP_NORM_TARGET_DB = -18;       // NAM plugin's "Normalize" target
+var AMP_FILE_INDEX = 8;             // Model enum: 8 built-in captures, then File
 var AMP_NBQ = 10;                   // biquads in ---ampcf: 0..3 tone stack, 4..9 cab
 var AMP_CF_SAMPS = AMP_NBQ * 5 + 6;
 
@@ -42,7 +44,7 @@ var AMP_ACTS = ["Tanh", "Fasttanh", "ReLU", "LeakyReLU", "Sigmoid", "Hardtanh", 
 // unitstyle, gen message (null = engine only), enum, help]
 /** @type {Object<string, [string, string, number, number, number, number, number, (string|null), (string[]|null), string]>} */
 var AMP_PARAMS = {
-    model: ["Model", "Model", 0, 3, 1, 2, 0, null, ["Clean", "Crunch", "Lead", "File"], "Built-in capture or the .nam file you loaded."],
+    model: ["Model", "Model", 0, 8, 4, 2, 0, null, ["Clean", "Jazz", "Twang", "Blues", "Crunch", "Drive", "Lead", "Metal", "File"], "Built-in capture or the .nam file you loaded."],
     gain: ["Gain", "Gain", -24, 24, 0, 0, 4, "indb", null, "Level into the model, in decibels. Captures react to level like the real amp: more gain, more drive."],
     gate: ["Gate", "Gate", -100, -20, -100, 0, 4, "gatedb", null, "Noise gate threshold. -100 dB is off."],
     bass: ["Bass", "Bass", 0, 10, 5, 0, 1, null, null, "Low shelf at 150 Hz (NAM tone stack)."],
@@ -51,10 +53,11 @@ var AMP_PARAMS = {
     presence: ["Presence", "Presence", 0, 10, 5, 0, 1, null, null, "High shelf at 4.5 kHz."],
     cab: ["Cabinet", "Cabinet", 0, 3, 2, 2, 0, null, ["Off", "1x12", "4x12", "2x12"], "Speaker voicing after the amp. Off for a capture that already includes a cab."],
     stereo: ["Output Mode", "Output", 0, 1, 0, 2, 0, "stmode", ["Mono", "Stereo"], "Mono runs one model on the summed input. Stereo runs a model per channel (twice the CPU)."],
+    normalize: ["Normalize", "Normalize", 0, 1, 1, 2, 0, null, ["Off", "On"], "Level-match captures to -18 dB using the file's loudness metadata."],
     volume: ["Volume", "Volume", -40, 12, 0, 0, 4, "outdb", null, "Output level after the amp and cab."],
     mix: ["Dry/Wet", "Dry/Wet", 0, 100, 100, 0, 5, "mixamt", null, "Dry / amp blend."]
 };
-var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "volume", "mix"];
+var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "volume", "mix"];
 
 /** @param {string} key @param {number} v */
 function ampGenValue(key, v) {
@@ -675,6 +678,12 @@ function ampResponseDb(bqs, f, sr) {
     return 20 * Math.log(Math.max(1e-12, mag)) / Math.LN10;
 }
 
+/** Normalize gain in dB for a model (NAM: loudness -> -18 dB). @param {any} m */
+function ampNormDb(m) {
+    if (!m || m.loudness == null || !isFinite(m.loudness)) return 0;
+    return Math.max(-36, Math.min(36, AMP_NORM_TARGET_DB - m.loudness));
+}
+
 var ampNodeModule = (typeof module !== "undefined") ? module : undefined;
 if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     AMP_VERSION: AMP_VERSION, AMP_WBANK: AMP_WBANK, AMP_SCOPE: AMP_SCOPE, AMP_PARAMS: AMP_PARAMS, AMP_PARAM_KEYS: AMP_PARAM_KEYS,
@@ -682,5 +691,5 @@ if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     ampParseNam: ampParseNam, ampForward: ampForward, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampGendsp: ampGendsp,
     ampArchKey: ampArchKey, ampArchLabel: ampArchLabel, ampRingSize: ampRingSize, ampLayerCount: ampLayerCount,
     ampHash: ampHash, ampBiquad: ampBiquad, ampToneBiquads: ampToneBiquads, ampResponseDb: ampResponseDb,
-    ampGenValue: ampGenValue, ampAct: ampAct
+    ampNormDb: ampNormDb, AMP_FILE_INDEX: AMP_FILE_INDEX, ampGenValue: ampGenValue, ampAct: ampAct
 };

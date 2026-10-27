@@ -12,7 +12,7 @@ code per reference model, its weights, a stimulus and the reference output of am
                  equal the reference (feather, lstm)
   stereo_iso     Stereo with a silent right input: the left channel still equals the reference and the
                  right one stays at the model's constant (no state shared between the channels)
-  chain          the full chain (gate, DC block, biquads, volume, dry/wet) stays finite and
+  chain          the full chain (gate, normalize, DC block, biquads, volume, dry/wet) stays finite and
                  audible with a model running, mono and stereo
   sleep          silent input puts the model to sleep (telemetry) and outputs exact zeros
 
@@ -142,7 +142,7 @@ def main():
             r = run(case, m, extra, 3000, ref="cpu", mode="audio_device", src_params="loop 1")
             print(f"INFO {case}: adstatus cpu avg {r['cpuavg']:.1f} %, max {r['cpumax']:.0f} % ({int(r['cpucount'])} readings)", flush=True)
         elif case == "chain":
-            r = run(case, "feather", "tapraw 0, gatedb -60, outdb -3", 1300, ref=False)
+            r = run(case, "feather", "tapraw 0, gatedb -60, outdb -3, normdb 6", 1300, ref=False)
             bad += not check(r["nans"] == 0 and 0.001 < r["peakout"] < 4, f"chain: peak out {r['peakout']:.3g}, rms {r['rmsout']:.3g}")
         elif case == "sleep":
             r = run(case, "feather", "tapraw 1", 1300, ref=False, src_params="silent 1")
