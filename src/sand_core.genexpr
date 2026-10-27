@@ -18,7 +18,7 @@
 // 3. Keep p1..p15 and q1..q15 unrolled inside channel() so each derivative stage
 //    gets its own independent History state per channel() call site (L/R), and
 //    q1..q15 suppress the sample-0 startup impulse.
-// 4. Buffer wave("sandwave") memory map (2 channels, bound via `wave #0-sandwave`):
+// 4. Buffer wave("sandwave") memory map (2 channels, bound via `wave ---sandwave`):
 //    - frames 0..127:   ch 0 = out1 (L), ch 1 = out2 (R) circular ring buffer
 //    - frames 128..255: ch 0 = mono dry input, ch 1 = mono wet grit
 //    - frames 256..259: ch 0 = [pkIn, pkWet, pkOut, wpos] telemetry for v8ui scope
@@ -96,9 +96,10 @@ channel(x, ord, stg, maxG, soft01, brick01, coef, coefI, ftype, fpos) {
 	History p14(0); History q14(0);
 	History p15(0); History q15(0);
 	preOn = (fpos < 0.5) ? 1 : 0;
-	src = x;
+	xs = fixnan(x);
+	src = xs;
 	if (preOn > 0.5) {
-		src = filt(x, coef, ftype);
+		src = filt(xs, coef, ftype);
 	}
 	d0 = src;
 	nrm = 0.5;
@@ -203,7 +204,7 @@ Param debrick(0);
 Param ftype(0);
 Param ffreq(14000);
 Param fpos(2);
-Param mix(50);
+Param wetamt(50);
 Param outmode(0);
 
 History hop(0);
@@ -231,7 +232,7 @@ amountS = slew(amount, 0.999);
 softS = slew(soft, 0.999);
 brickS = slew(debrick, 0.999);
 freqS = slew(ffreq, 0.9992);
-mixS = slew(mix, 0.999);
+mixS = slew(wetamt, 0.999);
 
 amt01 = clip(amountS, 0, 140) / 140;
 soft01 = clip(softS, 0, 100) / 100;
@@ -271,11 +272,13 @@ integC = refresh > 0.5 ? exp(-6.28318530718 * 8 / samplerate) : cInteg;
 dryG = refresh > 0.5 ? cos(clip(mixS, 0, 100) / 100 * 1.57079632679) : cDry;
 wetG = refresh > 0.5 ? sin(clip(mixS, 0, 100) / 100 * 1.57079632679) : cWet;
 
-wetL = channel(in1, ordN, stgN, maxG, soft01, brick01, filtC, integC, typeN, posN);
-wetR = channel(in2, ordN, stgN, maxG, soft01, brick01, filtC, integC, typeN, posN);
+sin1 = fixnan(in1);
+sin2 = fixnan(in2);
+wetL = channel(sin1, ordN, stgN, maxG, soft01, brick01, filtC, integC, typeN, posN);
+wetR = channel(sin2, ordN, stgN, maxG, soft01, brick01, filtC, integC, typeN, posN);
 
-mixL = in1 * dryG + wetL * wetG;
-mixR = in2 * dryG + wetR * wetG;
+mixL = sin1 * dryG + wetL * wetG;
+mixR = sin2 * dryG + wetR * wetG;
 
 limL = limit(mixL);
 limR = limit(mixR);

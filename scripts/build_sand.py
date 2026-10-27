@@ -42,7 +42,7 @@ SLATE = (0.76, 0.82, 0.90)
 # name: (long_name, short_name, lo, hi, initial, unitstyle, exponent, gen_param, help_text)
 DIAL_SPECS = {
     "mix": (
-        "Mix", "Mix", 0.0, 100.0, 50.0, 5, 1.0, "mix",
+        "Mix", "Mix", 0.0, 100.0, 50.0, 5, 1.0, "wetamt",
         "Equal-power dry/wet crossfade.",
     ),
 }
@@ -563,7 +563,7 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [560.0, 240.0, 180.0, 20.0],
-                "text": "buffer~ #0-sandwave 100 2",
+                "text": "buffer~ ---sandwave 100 2",
             }
         },
         {
@@ -589,7 +589,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [640.0, 180.0, 180.0, 20.0],
-                "text": "wave #0-sandwave",
+                "text": "wave ---sandwave",
             }
         },
         {
@@ -602,7 +602,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [640.0, 210.0, 180.0, 20.0],
-                "text": "setbuffer #0-sandwave",
+                "text": "setbuffer ---sandwave",
             }
         },
         newobj("obj-prep-order", "prepend dorder", 346.0, 80.0, 90.0),

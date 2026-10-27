@@ -2,7 +2,7 @@
 """Render Sand through the Ableton-bundled Max and check the wet path.
 
 Cases:
-  dry      — mix 0, output matches the 0.25 tone
+  dry      — wetamt 0, output matches the 0.25 tone
   thru     — order 0, amount 0, full wet matches the tone
   deriv    — order 1 at 220 Hz is much quieter than the tone
   lift     — a high amount brings that derivative back up
@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import max_harness as mh
+from minify_gen import minify_gen
 
 ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "sand_core.genexpr")
@@ -27,7 +28,7 @@ PROBE_JS = os.path.join(ROOT, "tests", "sand_probe.js")
 
 BASE = (
     "amount 0, stages 1, dorder 0, soft 0, debrick 0, ftype 0, ffreq 18000, "
-    "fpos 2, mix 100, outmode 0"
+    "fpos 2, wetamt 100, outmode 0"
 )
 
 
@@ -76,21 +77,25 @@ def params(extra):
 
 def cases():
     return (
-        {"name": "dry", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 0, dorder 0, amount 0")},
-        {"name": "thru", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 0, amount 0, outmode 0")},
-        {"name": "deriv", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 1, amount 0, outmode 0")},
-        {"name": "lift", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 1, amount 80, outmode 0")},
-        {"name": "integ", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder -1, amount 0, outmode 0")},
-        {"name": "left", "mode": "left", "arm": 200, "dur": 250, "params": params("mix 100, dorder 0, amount 0, outmode 0")},
-        {"name": "lp", "mode": "sine2k", "arm": 200, "dur": 250, "params": params("mix 100, dorder 0, amount 0, ftype 0, ffreq 400, fpos 2, outmode 0")},
-        {"name": "lp_diff", "mode": "sine2k", "arm": 200, "dur": 250, "params": params("mix 100, dorder 0, amount 0, ftype 0, ffreq 400, fpos 1, outmode 0")},
-        {"name": "hp", "mode": "sine2k", "arm": 200, "dur": 250, "params": params("mix 100, dorder 0, amount 0, ftype 2, ffreq 400, fpos 2, outmode 0")},
-        {"name": "hard", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 1, amount 140, outmode 1")},
-        {"name": "limit", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 1, amount 140, outmode 2")},
-        {"name": "order5", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 5, amount 0, outmode 0")},
-        {"name": "order8", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 8, amount 0, outmode 0")},
-        {"name": "order15", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 15, amount 40, outmode 0")},
-        {"name": "debrick", "mode": "sine", "arm": 200, "dur": 250, "params": params("mix 100, dorder 1, amount 80, debrick 100, outmode 0")},
+        {"name": "dry", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 0, dorder 0, amount 0")},
+        {"name": "thru", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 0, amount 0, outmode 0")},
+        {"name": "deriv", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 1, amount 0, outmode 0")},
+        {"name": "lift", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 1, amount 80, outmode 0")},
+        {"name": "integ", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder -1, amount 0, outmode 0")},
+        {"name": "left", "mode": "left", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 0, amount 0, outmode 0")},
+        {"name": "lp", "mode": "sine2k", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 0, amount 0, ftype 0, ffreq 400, fpos 2, outmode 0")},
+        {"name": "lp_diff", "mode": "sine2k", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 0, amount 0, ftype 0, ffreq 400, fpos 1, outmode 0")},
+        {"name": "hp", "mode": "sine2k", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 0, amount 0, ftype 2, ffreq 400, fpos 2, outmode 0")},
+        {"name": "hard", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 1, amount 140, outmode 1")},
+        {"name": "limit", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 1, amount 140, outmode 2")},
+        {"name": "order5", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 5, amount 0, outmode 0")},
+        {"name": "order8", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 8, amount 0, outmode 0")},
+        {"name": "order15", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 15, amount 40, outmode 0")},
+        {"name": "ext_off", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 15, amount 140, stages 4, outmode 0")},
+        {"name": "ext_lim", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 15, amount 140, stages 4, outmode 2")},
+        {"name": "ext_int", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder -1, amount 140, stages 4, soft 100, outmode 0")},
+        {"name": "mix50", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 50, dorder 0, amount 0, outmode 0")},
+        {"name": "debrick", "mode": "sine", "arm": 200, "dur": 250, "params": params("wetamt 100, dorder 1, amount 80, debrick 100, outmode 0")},
     )
 
 
@@ -168,6 +173,16 @@ def check(name, meta, errors):
     elif name in ("order5", "order8", "order15"):
         if peak > 0.02:
             errors.append(f"{name}: a high order on a low sine should stay quiet ({peak})")
+    elif name in ("ext_off", "ext_int"):
+        if peak > 1.7:
+            errors.append(f"{name}: extreme settings ran away ({peak})")
+    elif name == "ext_lim":
+        if peak > 0.95:
+            errors.append(f"{name}: limiter exceeded its ceiling at extremes ({peak})")
+    elif name == "mix50":
+        # equal power: 0.25 * (cos 45 + sin 45) = 0.3536
+        if not (0.33 <= peak <= 0.375):
+            errors.append(f"{name}: equal-power mix of identical dry/wet should be 0.354 ({peak})")
     elif name == "debrick":
         if peak > 0.85:
             errors.append(f"{name}: debrick did not ease the slammed derivative ({peak})")
@@ -177,6 +192,10 @@ def main():
     gen_path = sys.argv[1] if len(sys.argv) > 1 else GEN_PATH
     with open(gen_path, encoding="utf-8") as f:
         gen_code = f.read()
+    # The device embeds minify_gen output (build_sand.py), so test that, not the readable source.
+    # SAND_MINIFY=0 runs the readable source (bisecting only).
+    if os.environ.get("SAND_MINIFY", "1") != "0":
+        gen_code = minify_gen(gen_code)
     errors = []
     results = {}
     only = set(sys.argv[2:])
