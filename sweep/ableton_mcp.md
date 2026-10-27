@@ -37,3 +37,7 @@ Rejected: none.
 - MCP-03: fixed. 403 for any request with an Origin header or a non-loopback Host; Node clients and ssh tunnels unaffected.
 - MCP-04..10 (S4): not fixed, left as log items.
 Gate: typecheck, build, test_ableton_mcp, bugsweep, stdio_http, sweep2 red tests all pass; face_fuzz 0 failures; static for the MCP bridge 0 violations (Better Shaper has 2 violations unrelated to this lane); preview rendered; vm_smoke PASS with the bridge answering through the new origin check (screenshot checked). AGENTS.md s13 updated.
+
+## Review
+Stage E independent review of main...HEAD. Rebuild of Ableton MCP Bridge.amxd equals the committed file (no diff in devices/). typecheck, test_ableton_mcp and test_ableton_mcp_sweep2 pass. Diff touches only src/ableton_mcp_*, the sweep2 test, the lane report, the smoke outputs and one AGENTS.md line in section 13 (exact, own section); no frozen files. Changes are additive: all action names and success shapes are kept (get_device_parameters adds total_parameters/truncated); only the missing-path case and Origin/foreign-Host requests change, and the tests assert plain clients still work. Red tests exercise the real handlers and a spawned bridge, not tautologies.
+Verdict: READY. Deferred shared items: none. S4 items MCP-04..10 stay logged.
