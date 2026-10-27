@@ -330,7 +330,7 @@ step("audio", () => {
 });
 
 // ---- 10 midi (opt-in) -------------------------------------------------------------------------------------------------------------------
-if (flag("--midi")) step("midi", () => {
+if (!flag("--no-midi")) step("midi", () => {
     if (!check(found.midi >= 0, "MIDI source track \"Deviate MIDI Src\" present")) return;
     const d = run[0], mt = `live_set tracks ${found.midi}`;
     const made = evalLom(`
