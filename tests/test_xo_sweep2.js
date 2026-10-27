@@ -137,7 +137,7 @@ check("XO-S2-03 extractAudioFeatures returns finite features for very short / la
 // ---------------------------------------------------------------------------
 check("XO-S2-04 Max runtime harness selects the instance before sending the 's' hotkey", () => {
   const hp = path.join(__dirname, "out", "xo_runtime", "xo_m4l_runtime_harness.maxpat");
-  if (!fs.existsSync(hp)) {
+  { // always regenerate: a stale tests/out harness from an older build hides the fix
     const r = require("child_process").spawnSync(process.execPath, [path.join(__dirname, "test_xo_map.js")], { env: Object.assign({}, process.env, { XO_RUN_MAX_RUNTIME: "1" }), encoding: "utf8" });
     assert.strictEqual(r.status, 0, "could not generate the harness patch");
   }
