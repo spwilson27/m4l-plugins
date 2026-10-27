@@ -26,3 +26,11 @@ Open: Reactive 2 smoke and remaining audio groups (queued behind other lanes' Li
 - S-4 rejected in verify.
 - Gate: typecheck, build, test_sampler / slicing / pitch / designs / reactive2 / theme / modmatrix / bugsweep / sweep2, test_face_fuzz (0 failures), test_device_static (both devices ok), previews rendered and read: all green.
 - Smoke (Live, VM): Better Sampler PASS 91/91 params, Reactive 2 PASS (139/219 within the 240 s budget), two-load DSP ready in both, no crash. Screenshots read: faces render; a Max Console window overlaps the capture (harness artefact). Not run: scripts/test_sampler_live.js after the hook change (needs the Live lock; the lookup code is untested in Live) -> recommend one batch run before merge.
+
+## Review
+- Rebuilt devices equal committed .amxd (git status clean after build_sampler.py); typecheck and test_sampler / slicing / pitch / designs / reactive2 / theme / sweep2 pass.
+- No frozen/shared files touched; AGENTS.md edit is one exact line in section 14.
+- Found: three Live helper scripts (run_sampler_title_drag_test.py, run_sampler_wt_vis_test.py, run_sampler_mseg_live.py) still addressed literal `#0-bsdebug`; switched to the Global hooks map lookup like the others.
+- Weakness: hook lookup takes the last registered instance, fine for single-instance tests.
+- Theme golden hashes were refreshed (stale before lane; justified in Fix section).
+- Deferred: scripts/test_sampler_live.js and wt face tests not run in Live after the hook change (needs Live lock); recommend one batch run. Audio harness runners keep literal #0- names (standalone patcher). S-3 doc drift.

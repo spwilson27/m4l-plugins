@@ -254,7 +254,7 @@ def setup():
     face.show_device(info)
     faces = face.show_osc(0)
     print("osc faces", faces.get("play_pos"))
-    face.rpc('messnamed("#0-bsdebug", "dbg_r2_wtvis", 0.82); return 1;')
+    face.rpc('var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "dbg_r2_wtvis", 0.82); return 1;')
     marks = ""
     for _ in range(30):
         time.sleep(0.1)
@@ -265,7 +265,7 @@ def setup():
     parts = str(marks or "").split(",")
     if len(parts) < 3 or parts[2] != "1":
         fail("the device did not split the knob and the modulated frame (%s)" % marks)
-    face.rpc('messnamed("#0-bsdebug", "dbg_r2_labels"); return 1;')
+    face.rpc('var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "dbg_r2_labels"); return 1;')
     time.sleep(0.5)
     labels = face.rpc('var g = new Global("bs_r2_labels"); return String(g.text || "");')
     print("labels", labels)
