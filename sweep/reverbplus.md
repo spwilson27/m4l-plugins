@@ -31,3 +31,10 @@ Counts: S1 0, S2 1, S3 0, S4 4.
 - RP-S4-01, RP-S4-02: not fixed (S4, deliberate / log only). RP-S4-03/04 rejected at verify.
 - Gate (host): typecheck, build, test_reverbplus (31), test_reverbplus_face, bugsweep, previews, test_device_static (no Reverb+ violations), test_face_fuzz: green. Engine-only JS change (no DSP, face, LOM or routing change), so VM Max audio / Live / smoke not re-run. No AGENTS.md change needed.
 - Commit: fix(reverbplus) RP-S2-01. Generated devices/*.amxd/.adg rebuilt but left unstaged (build artifacts differ only by embedded script).
+
+## Review
+- Diff main...HEAD: engine guard (src/reverbplus_engine.js, 5 lines), red test tests/test_reverbplus_sweep2.js, rebuilt devices, report. No frozen/shared files, no AGENTS.md edits.
+- Fix correct: rpIrReprocess/Soon bail while status is "loading"; ir_loaded sets "processing" then reprocesses with current controls, so a control edit during a load is applied to the new file. Test drives the real engine slices and asserts the new file (9600) is processed; would fail before the fix (got 4800 per audit).
+- Rebuild check: rebuilt .amxd/.adg differ from committed by 1-2 bytes, but two consecutive rebuilds also differ from each other (build is byte-nondeterministic); content is equivalent. Committed devices kept.
+- Gates re-run on host: typecheck, test_reverbplus (31), sweep2 (1), face (20) green.
+- Deferred shared: none new (RP-S4-03 shared /tmp/rpdrop clobbering between lanes is infra).
