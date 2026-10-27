@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
+    "src/types/deviate.d.ts",
+    "src/deviate_config.js",
+    "src/deviate_face_common.js",
+    "src/deviate_face_matrix.js"
+  ]
+}

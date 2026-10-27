@@ -4,3 +4,5 @@ tests/out/xo_runtime/
 /delayplus_test.als
 /reverbplus_test.als
 tests/out/amp/
+/deviate_test.als
+/build_cache/

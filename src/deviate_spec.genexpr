@@ -1,0 +1,114 @@
+// Deviate Spectral split stage: a mask-STFT that separates the PERCUSSIVE part T of the input; the main gen takes B = (input delayed by 1279) - T,
+// so T + B is the delayed input exactly. Built as  fft_init fft_run stft_win  (src/cepstrum_lib.genexpr)  +  ss_in ss_frame ss_mid ss_apply ss_ola ss_out
+// (src/spectral_split_lib.genexpr)  +  this file, and loaded into a shell gen~ (hot-loaded with `setattr gen`, AGENTS 1d.5) when Split Mode first
+// becomes Spectral. Inputs in1 / in2 = the audio; outputs out1 / out2 = T left / right, delayed so that it is aligned with the main gen's
+// dry (STFT N = 1024: 1023 samples, plus 256 = 1279 in all). The Percussive rule is Transient Split's (src/transplit_core.genexpr ts_masks, Bias 0,
+// Transients Decay 8 blocks, Tones Smoothing 1.5 blocks, Tilt 0, Blend 50 %); tests/test_deviate_spec.js checks it equals tsMasks (src/transplit_config.js).
+//
+// Per hop (n / 4 = 256 samples) and bin the Mid amplitude A[k] (rms over +-2 bins) is compared with a history H (rise 14 ms, fall 40 ms): an
+// onset of 4.5 .. 10 dB gives evidence ev in 0..1. tx = max(ev, tx_prev * exp(-1 / 8)) keeps a transient bin for a few hops; the tone part is
+// qx = max(1 - tx, qx_prev * exp(-1 / 1.5) * A_prev / A) (a fading tone does not flicker into the transients). Mask(T) = 1 - qx.
+// One real mask multiplies the packed L + jR spectrum, so the stereo image is kept.
+//
+// Telemetry: the alive counter goes to scope slot 49 (DV_SCOPE.SPEC_ALIVE) every 64 samples, also in silence: the engine waits for it to move before
+// it switches the main gen to Spectral. Silence sleep: input below 1e-5 for n samples skips the transforms (the output is exact zeros).
+// GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements; no identifier e<digit>.
+
+sp_sm(x) {
+	c = clip(x, 0, 1);
+	return c * c * (3 - 2 * c);
+}
+
+// One analysis frame: ms (Mid amplitude / phase from ss_mid) -> the T mask in spd channel 5.
+// spd channels: 0 A, 1 H, 2 A_prev, 3 tx, 4 qx, 5 mask T. age = frames since the state was (re)started: 0 resets it.
+sp_masks(ms, spd, n, sr, age) {
+	half = n * 0.5;
+	hop = n * 0.25;
+	for (k = 0; k <= half; k += 1) {
+		sq = 0;
+		for (j = -2; j <= 2; j += 1) {
+			kk = clip(k + j, 0, half);
+			mg = ms.peek(kk, 0);
+			sq += mg * mg;
+		}
+		spd.poke(sqrt(sq * 0.2), k, 0);
+	}
+	rsK = 1 - exp(0 - hop / (sr * 0.014));
+	flK = 1 - exp(0 - hop / (sr * 0.04));
+	dk = exp(-0.125);
+	dtn = exp(-0.6666666666666666);
+	invD = 1 / 5.5;
+	for (k = 0; k <= half; k += 1) {
+		a = spd.peek(k, 0);
+		hh = age < 0.5 ? a : spd.peek(k, 1);
+		db = 8.685889638065035 * log((a + 1e-9) / (hh + 1e-9));
+		ev = age < 0.5 ? 0 : sp_sm((db - 4.5) * invD);
+		spd.poke(hh + (a - hh) * (a > hh ? rsK : flK), k, 1);
+		txp = age < 0.5 ? 0 : spd.peek(k, 3);
+		qxp = age < 0.5 ? 1 : spd.peek(k, 4);
+		app = age < 0.5 ? a : spd.peek(k, 2);
+		txn = max(ev, txp * dk);
+		leak = min(1, qxp * dtn * app / (a + 1e-9));
+		qxn = max(1 - txn, leak);
+		spd.poke(txn, k, 3);
+		spd.poke(qxn, k, 4);
+		spd.poke(a, k, 2);
+		spd.poke(1 - qxn, k, 5);
+	}
+	return half;
+}
+
+Buffer scope("deviatescope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data ringL(4096);
+Data ringR(4096);
+Data accL(4096);
+Data accR(4096);
+Data stt(8);
+Data ms(2049, 2);
+Data spd(2049, 6);
+
+Delay padL(512);
+Delay padR(512);
+
+History quietCnt(0);
+History sAge(0);
+History tickC(0);
+History alive(0);
+
+fft_init(tab);
+stft_win(win, 1024);
+inPk = max(abs(in1), abs(in2));
+qc = (inPk < 0.00001) ? min(quietCnt + 1, 100000000) : 0;
+quietCnt = qc;
+awake = (qc < 1024) ? 1 : 0;
+ageNow = (awake > 0.5) ? sAge : 0;
+rdy = ss_in(ringL, ringR, stt, in1, in2, 1024);
+ageNext = ageNow;
+if (rdy > 0.5 && awake > 0.5) {
+	ss_frame(fx, ringL, ringR, stt, win, 1024);
+	fft_run(fx, tab, 1024, 0);
+	ss_mid(fx, ms, 1024);
+	sp_masks(ms, spd, 1024, samplerate, ageNow);
+	ss_apply(fx, spd, 5, 1024);
+	fft_run(fx, tab, 1024, 1);
+	ss_ola(accL, accR, stt, fx, win, 1024);
+	ageNext = min(ageNow + 1, 3);
+}
+sAge = ageNext;
+yL = ss_out(accL, stt, 1024, 3);
+yR = ss_out(accR, stt, 1024, 4);
+padL.write(yL);
+padR.write(yR);
+tcN = wrap(tickC + 1, 0, 64);
+tickC = tcN;
+if (tcN < 0.5) {
+	alN = wrap(alive + 1, 0, 100000);
+	alive = alN;
+	poke(scope, alN, 49, 0);
+}
+out1 = padL.read(256);
+out2 = padR.read(256);

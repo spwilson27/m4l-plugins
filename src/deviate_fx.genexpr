@@ -1,0 +1,745 @@
+// Deviate effect helpers (GenExpr functions; Data and plain arguments only). Built as  fft_init + deviate_conv + deviate_fx + deviate_core.
+// Part 1 (gl_*) is copied from src/glitch_core.genexpr (drive, filter, crush, formant, comb, slap and their helpers) (Glitch's modules; History inside keeps their coefficient caches, so each is called from
+// exactly ONE call site of the core). Part 2 (dv_*) are forks with smaller rings / direct units and the new Deviate modules.
+// All modules work in place on a 2-slot Data `io` (left, right) and blend with a wet value w, so  io_out - io_in  is the residue the core sums.
+// Param vector layout (pv, `dvQ` in the core) is documented in dv_page* below.
+// GenExpr rules (AGENTS 8 / 16 / 19): single return at function level, no user call inside if() / poke(), no identifiers e<digit>.
+
+gl_hash(x, a) {
+	v = sin(x * 12.9898 + a) * 43758.5453;
+	return v - floor(v);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Drive (A and B). Node twin: saturate() in src/glitch_ref.js.
+// ---------------------------------------------------------------------------------------------------------------
+gl_sat(u, mode) {
+	return mode < 0.5 ? tanh(u) : (mode < 1.5 ? sin(u) : (mode < 2.5 ? clip(u, -1, 1) : tanh(u + 0.4) - tanh(0.4)));
+}
+
+// Mode may be fractional while it glides between two shapes (click-free switching).
+gl_sat_m(u, m) {
+	i0 = floor(m);
+	fr = m - i0;
+	a = gl_sat(u, i0);
+	b = gl_sat(u, min(i0 + 1, 3));
+	return a + (b - a) * fr;
+}
+
+// params at b: wet, mode, drive dB, tone Hz. st: 0 mode (smoothed), then per channel (dcx, dcy, lowpass).
+// Gain, tone coefficient and compensation come only from the ctl-ring params (constant for a 32-sample tick) and sr.
+gl_drive(io, pv, b, w, st, sr) {
+	History dDbH(-999);
+	History dTnH(-999);
+	History dSrH(-1);
+	History dGH(1);
+	History dCfH(0);
+	History dCpH(1);
+	m = st.peek(0);
+	m = m + (pv.peek(b + 1) - m) * 0.002;
+	st.poke(m, 0);
+	drvDb = pv.peek(b + 2);
+	drvTn = pv.peek(b + 3);
+	g = dGH;
+	cf = dCfH;
+	comp = dCpH;
+	if (drvDb != dDbH || drvTn != dTnH || sr != dSrH) {
+		g = pow(10, drvDb * 0.05);
+		cf = 1 - exp(-6.283185307179586 * drvTn / sr);
+		comp = 1 / pow(g, 0.25);
+		dGH = g;
+		dCfH = cf;
+		dCpH = comp;
+		dDbH = drvDb;
+		dTnH = drvTn;
+		dSrH = sr;
+	}
+	for (c = 0; c < 2; c += 1) {
+		o = 1 + c * 3;
+		x = io.peek(c);
+		y = gl_sat_m(x * g, m);
+		hp = y - st.peek(o) + 0.995 * st.peek(o + 1);
+		st.poke(y, o);
+		st.poke(hp, o + 1);
+		lp = st.peek(o + 2);
+		lp = lp + (hp - lp) * cf;
+		st.poke(lp, o + 2);
+		io.poke(x + (lp * comp - x) * w, c);
+	}
+	return m;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Filter: TPT state variable filter, output morphs LP -> BP -> HP -> Notch with a fractional type.
+// Node twin: svfProcess() in src/glitch_ref.js.
+// ---------------------------------------------------------------------------------------------------------------
+gl_svf(st, o, x, g, k, ty) {
+	a1 = 1 / (1 + g * (g + k));
+	a2 = g * a1;
+	a3 = g * a2;
+	ic1 = st.peek(o);
+	ic2 = st.peek(o + 1);
+	v3 = x - ic2;
+	v1 = a1 * ic1 + a2 * v3;
+	v2 = ic2 + a2 * ic1 + a3 * v3;
+	st.poke(2 * v1 - ic1, o);
+	st.poke(2 * v2 - ic2, o + 1);
+	lpv = v2;
+	bpv = k * v1;
+	hpv = x - k * v1 - v2;
+	ntv = x - k * v1;
+	i0 = floor(ty);
+	fr = ty - i0;
+	sa = i0 < 0.5 ? lpv : (i0 < 1.5 ? bpv : (i0 < 2.5 ? hpv : ntv));
+	sb = i0 < 0.5 ? bpv : (i0 < 1.5 ? hpv : ntv);
+	return sa + (sb - sa) * fr;
+}
+
+// params at b: wet, type, cutoff Hz, resonance 0..1. st: 0 type (smoothed), 1..2 channel 0, 3..4 channel 1.
+// The tan coefficient is constant while cutoff and sr are (the ctl ring updates every 32 samples).
+gl_filter(io, pv, b, w, st, sr) {
+	History fFcH(-1);
+	History fSrH(-1);
+	History fGH(1);
+	ty = st.peek(0);
+	ty = ty + (pv.peek(b + 1) - ty) * 0.002;
+	st.poke(ty, 0);
+	fc = clip(pv.peek(b + 2), 20, sr * 0.45);
+	g = fGH;
+	k = 2 - 1.96 * clip(pv.peek(b + 3), 0, 1);
+	if (fc != fFcH || sr != fSrH) {
+		g = tan(3.141592653589793 * fc / sr);
+		fGH = g;
+		fFcH = fc;
+		fSrH = sr;
+	}
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		y = gl_svf(st, 1 + c * 2, x, g, k, ty);
+		io.poke(x + (y - x) * w, c);
+	}
+	return ty;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Crush: mid-tread quantizer (continuous bits) + sample-and-hold with jittered period. Node twin: quantize().
+// ---------------------------------------------------------------------------------------------------------------
+gl_q(x, bits) {
+	step = pow(2, 1 - bits);
+	return round(x / step) * step;
+}
+
+// params at b: wet, bits, downsample factor, jitter. st: 0 phase, 1 period, 2 counter, 3..4 held L/R.
+// The quantizer step is pow(2, 1 - bits); bits comes from the ctl ring, so the step is constant for the tick.
+gl_crush(io, pv, b, w, st, sr) {
+	History cBtH(-1);
+	History cStH(1);
+	bits = clip(pv.peek(b + 1), 1, 16);
+	fac = max(pv.peek(b + 2), 1);
+	jit = pv.peek(b + 3);
+	step = cStH;
+	if (bits != cBtH) {
+		step = pow(2, 1 - bits);
+		cStH = step;
+		cBtH = bits;
+	}
+	per = st.peek(1);
+	ph = st.peek(0) + 1;
+	if (ph >= per) {
+		ph = ph - per;
+		cnt = st.peek(2) + 1;
+		st.poke(cnt, 2);
+		hh = gl_hash(cnt, 7.7);
+		st.poke(max(1, fac * (1 + jit * 0.9 * (hh * 2 - 1))), 1);
+		st.poke(io.peek(0), 3);
+		st.poke(io.peek(1), 4);
+	}
+	st.poke(min(ph, 1000000), 0);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		held = st.peek(3 + c);
+		q = round(held / step) * step;
+		io.poke(x + (q - x) * w, c);
+	}
+	return ph;
+}
+
+
+
+// Vowel table (a e i o u), formant j (0..2) in Hz: keep in sync with GL_VOWELS.
+gl_vt(i, j) {
+	f0 = i < 0.5 ? 800 : (i < 1.5 ? 400 : (i < 2.5 ? 350 : (i < 3.5 ? 450 : 325)));
+	f1 = i < 0.5 ? 1150 : (i < 1.5 ? 1600 : (i < 2.5 ? 1700 : (i < 3.5 ? 800 : 700)));
+	f2 = i < 0.5 ? 2900 : (i < 1.5 ? 2700 : (i < 2.5 ? 2700 : (i < 3.5 ? 2830 : 2700)));
+	return j < 0.5 ? f0 : (j < 1.5 ? f1 : f2);
+}
+
+// Formant j for a vowel position 0..4 (linear between neighbouring vowels).
+gl_vf(v, j) {
+	i0 = clip(floor(v), 0, 3);
+	fr = clip(v - i0, 0, 1);
+	ia = gl_vt(i0, j);
+	ib = gl_vt(i0 + 1, j);
+	return ia + (ib - ia) * fr;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Formant: three parallel bandpass formants (a e i o u morph), shift in semitones, resonance.
+// params at b: wet, vowel, shift st, res. st: 3 filters x (L 2 states, R 2 states) = 12.
+// Shift ratio and the three formant tan coefficients depend only on the ctl-ring params and sr.
+// ---------------------------------------------------------------------------------------------------------------
+gl_form(io, pv, b, w, st, sr) {
+	History foShH(-999);
+	History foVwH(-999);
+	History foSrH(-1);
+	History foSH(1);
+	History foG0H(1);
+	History foG1H(1);
+	History foG2H(1);
+	rs = 1.6 - 1.5 * clip(pv.peek(b + 3), 0, 1);
+	shIn = pv.peek(b + 2);
+	vw = clip(pv.peek(b + 1), 0, 4);
+	sh = foSH;
+	g0 = foG0H;
+	g1 = foG1H;
+	g2 = foG2H;
+	if (shIn != foShH || vw != foVwH || sr != foSrH) {
+		sh = pow(2, shIn / 12);
+		fq0 = clip(gl_vf(vw, 0) * sh, 50, sr * 0.45);
+		fq1 = clip(gl_vf(vw, 1) * sh, 50, sr * 0.45);
+		fq2 = clip(gl_vf(vw, 2) * sh, 50, sr * 0.45);
+		g0 = tan(3.141592653589793 * fq0 / sr);
+		g1 = tan(3.141592653589793 * fq1 / sr);
+		g2 = tan(3.141592653589793 * fq2 / sr);
+		foSH = sh;
+		foG0H = g0;
+		foG1H = g1;
+		foG2H = g2;
+		foShH = shIn;
+		foVwH = vw;
+		foSrH = sr;
+	}
+	xl = io.peek(0);
+	xr = io.peek(1);
+	sl = 0;
+	sq2 = 0;
+	for (j = 0; j < 3; j += 1) {
+		g = j < 0.5 ? g0 : (j < 1.5 ? g1 : g2);
+		am = j < 0.5 ? 1 : (j < 1.5 ? 0.55 : 0.3);
+		yl = gl_svf(st, j * 4, xl, g, rs, 1);
+		yr = gl_svf(st, j * 4 + 2, xr, g, rs, 1);
+		sl += am * yl;
+		sq2 += am * yr;
+	}
+	io.poke(xl + (sl * 2.2 - xl) * w, 0);
+	io.poke(xr + (sq2 * 2.2 - xr) * w, 1);
+	return sl;
+}
+
+// Same for a ring of ln samples starting at offset off inside a larger Data (reverb lines).
+gl_rd1(rb, off, ln, pos) {
+	p = pos - ln * floor(pos / ln);
+	i0 = floor(p);
+	i0 = i0 >= ln ? 0 : i0;
+	fr = p - i0;
+	i1 = i0 + 1 >= ln ? 0 : i0 + 1;
+	return rb.peek(off + i0) * (1 - fr) + rb.peek(off + i1) * fr;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Comb: feedback comb at a frequency (delay = 1 / f), +- feedback, damped loop. Output is scaled by 1 - 0.7 |fb|.
+// params at b: wet, freq Hz, fb, damp Hz. st: 0 write pos, 1 smoothed delay, 2..3 damping. rb: Data(8192), channel c at c * 4096.
+// ---------------------------------------------------------------------------------------------------------------
+gl_comb(io, pv, b, w, st, rb, sr) {
+	History cbDpH(-999);
+	History cbSrH(-1);
+	History cbDcH(0);
+	dt = clip(sr / max(pv.peek(b + 1), 20), 2, 4000);
+	ds = st.peek(1);
+	ds = ds < 1 ? dt : ds + (dt - ds) * 0.002;
+	st.poke(ds, 1);
+	fb = clip(pv.peek(b + 2), -0.97, 0.97);
+	damp = pv.peek(b + 3);
+	dc = cbDcH;
+	if (damp != cbDpH || sr != cbSrH) {
+		dc = 1 - exp(-6.283185307179586 * damp / sr);
+		cbDcH = dc;
+		cbDpH = damp;
+		cbSrH = sr;
+	}
+	gn = 1 - 0.7 * abs(fb);
+	wp = st.peek(0);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		r = gl_rd1(rb, c * 4096, 4096, wp - ds);
+		lv = st.peek(2 + c);
+		lv = lv + (r - lv) * dc;
+		st.poke(lv, 2 + c);
+		y = x + fb * lv;
+		rb.poke(clip(y, -8, 8), c * 4096 + wp);
+		io.poke(x + (y * gn - x) * w, c);
+	}
+	wp = wp + 1;
+	wp = wp >= 4096 ? 0 : wp;
+	st.poke(wp, 0);
+	return ds;
+}
+
+
+// ---------------------------------------------------------------------------------------------------------------
+// Phaser (gl_phas without the beat sync): 4 first-order allpass stages swept by a free-running LFO, feedback.
+// params at b: wet, stages (0..3), -, rate Hz, -, depth, feedback. st: 0 free phase, 2..3 feedback state, 4..11 L stage states, 12..19 R stage states.
+// ---------------------------------------------------------------------------------------------------------------
+dv_phas(io, pv, b, w, st, sr) {
+	nst = 2 * (floor(pv.peek(b + 1) + 0.5) + 1);
+	ph = st.peek(0) + pv.peek(b + 3) / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 0);
+	lfo = 0.5 - 0.5 * cos(6.283185307179586 * ph);
+	pos = 0.5 + (lfo - 0.5) * pv.peek(b + 5);
+	fcen = min(200 * pow(25, pos), sr * 0.45);
+	tn = tan(3.141592653589793 * fcen / sr);
+	ac = (tn - 1) / (tn + 1);
+	fb = pv.peek(b + 6);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		v = x + fb * st.peek(2 + c);
+		for (s = 0; s < 8; s += 1) {
+			if (s < nst) {
+				z = st.peek(4 + c * 8 + s);
+				y = ac * v + z;
+				st.poke(v - ac * y, 4 + c * 8 + s);
+				v = y;
+			}
+		}
+		st.poke(clip(v, -4, 4), 2 + c);
+		io.poke(x + (0.5 * (x + v) - x) * w, c);
+	}
+	return ph;
+}
+
+// Ring modulator: x * sin(2 pi f t) blended by w. params at b: wet, -, Hz. st: 0 phase.
+dv_ring(io, pv, b, w, st, sr) {
+	ph = st.peek(0) + pv.peek(b + 2) / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 0);
+	sn = sin(6.283185307179586 * ph);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		io.poke(x + (x * sn - x) * w, c);
+	}
+	return ph;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slapback: one short echo (40..180 ms), tone (one-pole low-pass), stereo offset (negative delays L longer by up to 15 ms,
+// positive delays R). Send style: dry + wet * echo, no feedback.
+// params at b: wet, time ms, tone Hz, offset. st: 0 write pos, 1..2 smoothed delays, 3..4 tone states.
+// rb: Data(65536), channel c at c * 32768.
+// ---------------------------------------------------------------------------------------------------------------
+gl_slap(io, pv, b, w, st, rb, sr) {
+	History slTnH(-999);
+	History slSrH(-1);
+	History slCfH(0);
+	tm = pv.peek(b + 1) * 0.001 * sr;
+	of = pv.peek(b + 3);
+	tone = pv.peek(b + 2);
+	cf = slCfH;
+	if (tone != slTnH || sr != slSrH) {
+		cf = 1 - exp(-6.283185307179586 * tone / sr);
+		slCfH = cf;
+		slTnH = tone;
+		slSrH = sr;
+	}
+	wp = st.peek(0);
+	for (c = 0; c < 2; c += 1) {
+		tg = tm + (c < 0.5 ? max(0 - of, 0) : max(of, 0)) * 0.015 * sr;
+		ds = st.peek(1 + c);
+		ds = ds < 1 ? tg : ds + (tg - ds) * 0.001;
+		st.poke(ds, 1 + c);
+		x = io.peek(c);
+		r = gl_rd1(rb, c * 32768, 32768, wp - ds);
+		lv = st.peek(3 + c);
+		lv = lv + (r - lv) * cf;
+		st.poke(lv, 3 + c);
+		rb.poke(x, c * 32768 + wp);
+		io.poke(x + lv * w, c);
+	}
+	wp = wp + 1;
+	wp = wp >= 32768 ? 0 : wp;
+	st.poke(wp, 0);
+	return wp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Reverb: small stereo FDN (4 modulated lines, Householder feedback, damping, RT60 from Decay, Void multiplies the RT60).
+// params at b: wet, size, decay, damp Hz, void. st: 0 write pos, 1 lfo phase, 2..5 damping, 6..9 line outputs.
+// rb: Data(65536), line i at i * 16384.
+// ---------------------------------------------------------------------------------------------------------------
+dv_rev(io, pv, b, w, st, rb, sr) {
+	History rvSzH(-999);
+	History rvDcH(-999);
+	History rvDpH(-999);
+	History rvSrH(-1);
+	History rvScH(1);
+	History rvRtH(1);
+	History rvDfH(0);
+	History rvL0H(1);
+	History rvL1H(1);
+	History rvL2H(1);
+	History rvL3H(1);
+	History rvG0H(0);
+	History rvG1H(0);
+	History rvG2H(0);
+	History rvG3H(0);
+	sz = pv.peek(b + 1);
+	dec = pv.peek(b + 2);
+	damp = pv.peek(b + 3);
+	sc = rvScH;
+	rt = rvRtH;
+	dc = rvDfH;
+	ln0 = rvL0H;
+	ln1 = rvL1H;
+	ln2 = rvL2H;
+	ln3 = rvL3H;
+	g0 = rvG0H;
+	g1 = rvG1H;
+	g2 = rvG2H;
+	g3 = rvG3H;
+	if (sz != rvSzH || dec != rvDcH || damp != rvDpH || sr != rvSrH) {
+		sc = (0.4 + 1.6 * sz) * sr / 48000;
+		rt = max(dec, 0.03);
+		dc = 1 - exp(-6.283185307179586 * damp / sr);
+		ln0 = floor(1117 * sc);
+		ln1 = floor(1399 * sc);
+		ln2 = floor(1801 * sc);
+		ln3 = floor(2203 * sc);
+		g0 = min(pow(10, -3 * ln0 / sr / rt), 0.9995);
+		g1 = min(pow(10, -3 * ln1 / sr / rt), 0.9995);
+		g2 = min(pow(10, -3 * ln2 / sr / rt), 0.9995);
+		g3 = min(pow(10, -3 * ln3 / sr / rt), 0.9995);
+		rvScH = sc;
+		rvRtH = rt;
+		rvDfH = dc;
+		rvL0H = ln0;
+		rvL1H = ln1;
+		rvL2H = ln2;
+		rvL3H = ln3;
+		rvG0H = g0;
+		rvG1H = g1;
+		rvG2H = g2;
+		rvG3H = g3;
+		rvSzH = sz;
+		rvDcH = dec;
+		rvDpH = damp;
+		rvSrH = sr;
+	}
+	wp = st.peek(0);
+	lf = st.peek(1) + 0.35 / sr;
+	lf = lf - floor(lf);
+	st.poke(lf, 1);
+	sm = 0;
+	for (i = 0; i < 4; i += 1) {
+		ln = i < 0.5 ? ln0 : (i < 1.5 ? ln1 : (i < 2.5 ? ln2 : ln3));
+		gi = i < 0.5 ? g0 : (i < 1.5 ? g1 : (i < 2.5 ? g2 : g3));
+		y = gl_rd1(rb, i * 16384, 16384, wp - ln - 6 - 5 * sin(6.283185307179586 * (lf + i * 0.25)));
+		d = st.peek(2 + i);
+		d = d + (y - d) * dc;
+		st.poke(d, 2 + i);
+		yd = d * gi;
+		st.poke(yd, 6 + i);
+		sm += yd;
+	}
+	xl = io.peek(0);
+	xr = io.peek(1);
+	for (i = 0; i < 4; i += 1) {
+		yd = st.peek(6 + i);
+		inj = (i < 0.5 || (i > 1.5 && i < 2.5)) ? xl : xr;
+		rb.poke(clip(yd - 0.5 * sm + inj * 0.4, -8, 8), i * 16384 + wp);
+	}
+	wp = wp + 1;
+	wp = wp >= 16384 ? 0 : wp;
+	st.poke(wp, 0);
+	y0 = st.peek(6);
+	y1 = st.peek(7);
+	y2 = st.peek(8);
+	y3 = st.peek(9);
+	io.poke(xl + 0.5 * (y0 - y1 + y2 - y3) * w, 0);
+	io.poke(xr + 0.5 * (y0 + y1 - y2 - y3) * w, 1);
+	return sm;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Forks of Glitch helpers (smaller rings, direct units), one call site each in the core.
+// ---------------------------------------------------------------------------------------------------------------
+// Linear-interpolated read from a ring of 16384 samples (grain shifter), channel c.
+dv_rdo(rb, c, pos) {
+	p = pos - 16384 * floor(pos / 16384);
+	i0 = floor(p);
+	i0 = i0 >= 16384 ? 0 : i0;
+	fr = p - i0;
+	i1 = i0 + 1 >= 16384 ? 0 : i0 + 1;
+	return rb.peek(i0, c) * (1 - fr) + rb.peek(i1, c) * fr;
+}
+
+// Linear-interpolated read from a ring of 65536 samples (delay), channel c.
+dv_rd(rb, c, pos) {
+	p = pos - 65536 * floor(pos / 65536);
+	i0 = floor(p);
+	i0 = i0 >= 65536 ? 0 : i0;
+	fr = p - i0;
+	i1 = i0 + 1 >= 65536 ? 0 : i0 + 1;
+	return rb.peek(i0, c) * (1 - fr) + rb.peek(i1, c) * fr;
+}
+
+// Linear-interpolated read from a ring of 8192 samples (chorus), channel c.
+dv_rdc(rb, c, pos) {
+	p = pos - 8192 * floor(pos / 8192);
+	i0 = floor(p);
+	i0 = i0 >= 8192 ? 0 : i0;
+	fr = p - i0;
+	i1 = i0 + 1 >= 8192 ? 0 : i0 + 1;
+	return rb.peek(i0, c) * (1 - fr) + rb.peek(i1, c) * fr;
+}
+
+// Granular pitch shifter (gl_grain, pitch kind only): params at b: wet, semitones, grain ms, spray. st: 0 write pos, 2 last act,
+// 3 grain counter, 4..7 / 8..11 the two grains (phase, anchor, rate, size). rb: Data(16384, 2).
+dv_grain(io, pv, b, w, st, rb, sr, act) {
+	wp = st.peek(0);
+	szs = clip(pv.peek(b + 2) * 0.001 * sr, 64, 7000);
+	p1 = pv.peek(b + 1);
+	p3 = pv.peek(b + 3);
+	if (act > 0.5 && st.peek(2) < 0.5) {
+		st.poke(0, 4);
+		st.poke(0, 7);
+		st.poke(0.5, 8);
+		st.poke(0, 11);
+	}
+	st.poke(act, 2);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	yl = xl;
+	yr = xr;
+	if (act > 0.5) {
+		yl = 0;
+		yr = 0;
+		for (q = 0; q < 2; q += 1) {
+			o = 4 + q * 4;
+			g0 = st.peek(o);
+			ss = st.peek(o + 3);
+			fst = ss < 1 ? 1 : 0;
+			g = g0 + 1 / max(ss, 1);
+			nw = (g >= 1 || fst > 0.5) ? 1 : 0;
+			if (nw > 0.5) {
+				g = fst > 0.5 ? g0 : g - 1;
+				cnt = st.peek(3) + 1;
+				st.poke(cnt, 3);
+				h1 = gl_hash(cnt + q * 0.5, 2.2);
+				rr = pow(2, p1 / 12);
+				dd = szs * max(rr - 1, 0) + 4 + p3 * szs * 0.5 * h1;
+				st.poke(wp - dd, o + 1);
+				st.poke(rr, o + 2);
+				st.poke(szs, o + 3);
+			}
+			st.poke(g, o);
+			wn = sin(3.141592653589793 * g);
+			wn = wn * wn;
+			ss = st.peek(o + 3);
+			ps = st.peek(o + 1) + st.peek(o + 2) * ss * g;
+			yl += wn * dv_rdo(rb, 0, ps);
+			yr += wn * dv_rdo(rb, 1, ps);
+		}
+	}
+	rb.poke(xl, wp, 0);
+	rb.poke(xr, wp, 1);
+	wp = wp + 1;
+	wp = wp >= 16384 ? 0 : wp;
+	st.poke(wp, 0);
+	io.poke(xl + (yl - xl) * w, 0);
+	io.poke(xr + (yr - xr) * w, 1);
+	return wp;
+}
+
+// Stereo delay (gl_dly): params at b: wet, time ms, feedback, ping-pong, damping Hz. st: 0 write pos, 1 smoothed time, 2..3 damping.
+// rb: Data(65536, 2). The output is the wet echo only (added to the input by the caller's residue).
+dv_dly(io, pv, b, w, st, rb, sr) {
+	History dyDpH(-999);
+	History dySrH(-1);
+	History dyDcH(0);
+	dt = clip(pv.peek(b + 1) * 0.001 * sr, 16, 65000);
+	ds = st.peek(1);
+	ds = ds < 1 ? dt : ds + (dt - ds) * 0.0008;
+	st.poke(ds, 1);
+	fb = pv.peek(b + 2);
+	pp = pv.peek(b + 3);
+	damp = pv.peek(b + 4);
+	dc = dyDcH;
+	if (damp != dyDpH || sr != dySrH) {
+		dc = 1 - exp(-6.283185307179586 * damp / sr);
+		dyDcH = dc;
+		dyDpH = damp;
+		dySrH = sr;
+	}
+	wp = st.peek(0);
+	rl = dv_rd(rb, 0, wp - ds);
+	rr = dv_rd(rb, 1, wp - ds);
+	ll = st.peek(2) + (rl - st.peek(2)) * dc;
+	lr = st.peek(3) + (rr - st.peek(3)) * dc;
+	st.poke(ll, 2);
+	st.poke(lr, 3);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	fl = ll + (lr - ll) * pp;
+	fr = lr + (ll - lr) * pp;
+	mi = (xl + xr) * 0.5;
+	inl = xl + (mi - xl) * pp;
+	inr = xr * (1 - pp);
+	rb.poke(clip(inl + fb * fl, -8, 8), wp, 0);
+	rb.poke(clip(inr + fb * fr, -8, 8), wp, 1);
+	wp = wp + 1;
+	wp = wp >= 65536 ? 0 : wp;
+	st.poke(wp, 0);
+	io.poke(xl + ll * w, 0);
+	io.poke(xr + lr * w, 1);
+	return ds;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// New Deviate modules.
+// ---------------------------------------------------------------------------------------------------------------
+// Snap: transient emphasis. A fast and a slow envelope follower of the stereo peak; the excess of the fast over the slow one is the
+// onset evidence r (0 in the sustain, up to 1 at an attack). Gain 1 + 3 amt r, soft-limited at 1.5. st: 0 fast, 1 slow.
+dv_snap(io, amt, st, sr) {
+	History snSrH(-1);
+	History snFaH(0);
+	History snFrH(0);
+	History snSaH(0);
+	History snSrrH(0);
+	fa = snFaH;
+	fr = snFrH;
+	sa = snSaH;
+	sx = snSrrH;
+	if (sr != snSrH) {
+		fa = 1 - exp(-1 / (0.0002 * sr));
+		fr = 1 - exp(-1 / (0.004 * sr));
+		sa = 1 - exp(-1 / (0.008 * sr));
+		sx = 1 - exp(-1 / (0.06 * sr));
+		snFaH = fa;
+		snFrH = fr;
+		snSaH = sa;
+		snSrrH = sx;
+		snSrH = sr;
+	}
+	xl = io.peek(0);
+	xr = io.peek(1);
+	m = max(abs(xl), abs(xr));
+	f0 = st.peek(0);
+	s0 = st.peek(1);
+	f1 = f0 + (m - f0) * (m > f0 ? fa : fr);
+	s1 = s0 + (m - s0) * (m > s0 ? sa : sx);
+	st.poke(f1, 0);
+	st.poke(s1, 1);
+	r = clip((f1 - s1) / (f1 + 0.002), 0, 1);
+	gn = 1 + 3 * amt * r;
+	yl = xl * gn;
+	yr = xr * gn;
+	io.poke(1.5 * tanh(yl * 0.6666666666666666), 0);
+	io.poke(1.5 * tanh(yr * 0.6666666666666666), 1);
+	return r;
+}
+
+// Click burst: a 12 ms decaying sine plus noise, added to both channels. t = samples since the hit was applied, amp = the hit's peak level,
+// lvl 0..0.9, hz = the sine's frequency.
+dv_click(io, lvl, hz, amp, t, sr) {
+	env = exp(-t / (0.0006 * sr));
+	sn = sin(6.283185307179586 * hz * t / sr);
+	nl = gl_hash(t, 5.1) * 2 - 1;
+	nr = gl_hash(t, 9.7) * 2 - 1;
+	g = lvl * amp * env;
+	io.poke(io.peek(0) + g * (0.65 * sn + 0.35 * nl), 0);
+	io.poke(io.peek(1) + g * (0.65 * sn + 0.35 * nr), 1);
+	return g;
+}
+
+// Resonator bank: six bandpass modes at f0 * (m + 1)^(1 + (stretch - 1) / 2) (harmonic at stretch 1, bar-like above), decay time t60.
+// params at b: wet, f0 Hz, stretch, t60 s. The ringing is ADDED (x + wet * sum), so the core's residue is the ringing alone. st: 0..5 tan coefficients, 6..11 damping 1/Q,
+// 12..17 amplitudes (0.08 x the gain that makes white noise come out of a mode at its input level: a narrow mode only rings if the hit has energy at its frequency), 18..21 the key the coefficients were made for, 24.. two states per mode and channel.
+dv_res(io, pv, b, w, st, sr) {
+	f0 = pv.peek(b + 1);
+	sx = pv.peek(b + 2);
+	t60 = pv.peek(b + 3);
+	if (f0 != st.peek(18) || sx != st.peek(19) || t60 != st.peek(20) || sr != st.peek(21)) {
+		st.poke(f0, 18);
+		st.poke(sx, 19);
+		st.poke(t60, 20);
+		st.poke(sr, 21);
+		ex = 1 + (sx - 1) * 0.5;
+		for (m = 0; m < 6; m += 1) {
+			fm = clip(f0 * pow(m + 1, ex), 30, sr * 0.45);
+			qm = clip(3.141592653589793 * fm * t60 / 6.9, 0.7, 150);
+			st.poke(tan(3.141592653589793 * fm / sr), m);
+			st.poke(1 / qm, 6 + m);
+			st.poke(clip(0.08 * sqrt(qm * sr / (3.141592653589793 * fm)), 0.5, 10) / sqrt(m + 1), 12 + m);
+		}
+	}
+	xl = io.peek(0);
+	xr = io.peek(1);
+	sl = 0;
+	sg = 0;
+	for (m = 0; m < 6; m += 1) {
+		g = st.peek(m);
+		k = st.peek(6 + m);
+		am = st.peek(12 + m);
+		yl = gl_svf(st, 24 + m * 4, xl, g, k, 1);
+		yr = gl_svf(st, 26 + m * 4, xr, g, k, 1);
+		sl += am * yl;
+		sg += am * yr;
+	}
+	io.poke(xl + sl * w, 0);
+	io.poke(xr + sg * w, 1);
+	return sl;
+}
+
+// Chorus / flanger: one modulated delay per channel (quadrature LFO), output 0.5 * (delayed - x) * wet added to x.
+// params at b: wet, rate Hz, base delay ms, depth 0..1. st: 0 phase, 1 write pos. rb: Data(8192, 2).
+dv_chor(io, pv, b, w, st, rb, sr) {
+	hz = pv.peek(b + 1);
+	bs = pv.peek(b + 2) * 0.001 * sr;
+	dp = pv.peek(b + 3);
+	ph = st.peek(0) + hz / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 0);
+	wp = st.peek(1);
+	for (c = 0; c < 2; c += 1) {
+		lf = sin(6.283185307179586 * (ph + 0.25 * c));
+		d = clip(bs * (1 + 0.5 * dp * lf) + 2, 2, 8000);
+		x = io.peek(c);
+		r = dv_rdc(rb, c, wp - d);
+		rb.poke(x, wp, c);
+		io.poke(x + 0.5 * (r - x) * w, c);
+	}
+	wp = wp + 1;
+	wp = wp >= 8192 ? 0 : wp;
+	st.poke(wp, 1);
+	return ph;
+}
+
+// Residue limiter: the identity up to |x| = 1.2, a tanh knee to 2.5.
+dv_wsoft(x) {
+	a = abs(x);
+	return a <= 1.2 ? x : (x < 0 ? -1 : 1) * (1.2 + 1.3 * tanh((a - 1.2) / 1.3));
+}
+
+// Zero d[j * n .. j * n + n) (ch2 = 1: both channels of a stereo Data), skipping indices at or past sz.
+dv_wipe(d, j, n, sz, ch2) {
+	for (i = 0; i < n; i += 1) {
+		ix = j * n + i;
+		if (ix < sz) {
+			d.poke(0, ix, 0);
+			if (ch2 > 0.5) {
+				d.poke(0, ix, 1);
+			}
+		}
+	}
+	return n;
+}

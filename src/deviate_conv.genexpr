@@ -1,0 +1,303 @@
+// deviate_conv.genexpr — Deviate's time-sliced two-stage partitioned convolution (a fork of src/reverbplus_conv.genexpr).
+// Plain functions with Data / Buffer arguments only (run in Node by tests/test_deviate_dsp.js through tests/genexpr_functions.js).
+// Built as  fft_init + deviate_conv + deviate_fx + deviate_core  (the twiddle table `tab` comes from fft_init).
+//
+// out[t] = (IR * x)[t - 256]: the caller aligns the tap so that this 256-sample latency is the device's Envelope latency.
+//
+//   head stage  block P1 = 128, FFT N1 = 256, up to 32 partitions = IR[0, 4096). Block m ends at cn mod 128 == 127; its jobs run during the next
+//               block, one job every 4 samples (22 jobs), its output is read 256 samples later.
+//   tail stage  block P2 = 2048, FFT N2 = 4096, up to 48 partitions (a frequency-domain delay line of 48 slots = 2.05 s). Output block b = m + 2
+//               depends only on input blocks <= m, so the jobs of block m run during block m + 1: one job every 8 samples (62 jobs).
+//   One forward FFT per block carries L + jR; unpacked to separate L / R spectra it feeds the FDL; the accumulated Y_L + j Y_R is packed back
+//   for ONE inverse FFT. No sample runs more than one FFT pass or one MAC chunk.
+//
+// PER-INPUT-SLOT IR TAG (what differs from Reverb+): every captured input block remembers WHICH impulse response it is to be convolved with
+// (tgh / tgt: offset of that IR in `irs`, its head and tail partition counts, latched from cp at the first sample after the block). The MAC
+// of an output block sums slot(m - p) * H_tag(slot)[p], so a new hit convolves with its own IR while the older input blocks keep ringing
+// with theirs: no bank swap, no crossfade. A slot whose IR has fewer partitions than p contributes nothing at p.
+// A frame holds the last TWO blocks, so the IR change is exact except in the frame that straddles it (one head block, one tail block): the tag of a
+// frame is the IR selected when the frame is captured. The core restarts the counter after a wipe (a clean pipeline phase, no half-finished job).
+//
+// Data (sizes): tab(4096, 3) twiddles from fft_init; cvr(8192, 2) input ring; cxh(256, 2) / cxt(4096, 2) work frames; fdh(32 * 129 * 4) /
+// fdt(48 * 2049 * 4) FDL, per bin [Lre, Lim, Rre, Rim]; ohr(512, 2) / otr(8192, 2) output rings; ach(192) MAC scratch (head 0..95, tail 96..191);
+// tgh(32, 3) / tgt(48, 3) slot tags [offset, nHead, nTail]; cout(2) result.
+// irs = the IR bank (Buffer ---deviateir): the IR at offset o has head partition p bin k at o + (p * 129 + k) * 4 and tail partition q bin k at
+// o + nHead * 516 + (q * 2049 + k) * 4 (src/deviate_ir.js dvIrPlan).
+// cp(4): 0 loaded (0 = no IR: the MAC jobs are skipped), 1 offset, 2 nHead, 3 nTail of the IR a block captured NOW is tagged with.
+//
+// GenExpr: single return at function level, no early return, no identifiers e<digit>.
+
+dvc_mod(x, m) {
+	return x - m * floor(x / m);
+}
+
+// One pass of an in-place radix-2 FFT over n points (n <= 4096, the twiddle table of fft_init):
+// pass 0 = bit reversal, pass p = 1..log2(n) = the butterfly stage with block length 2^p.
+// inv = 1 uses the conjugate kernel and does NOT scale (the caller multiplies by 1 / n).
+dvc_pass(x, tab, n, pass, inv) {
+	if (pass < 0.5) {
+		invDiv = n * 0.000244140625;
+		for (i = 0; i < n; i += 1) {
+			j = tab.peek(i, 2) * invDiv;
+			if (j > i) {
+				tr = x.peek(i, 0);
+				ti = x.peek(i, 1);
+				x.poke(x.peek(j, 0), i, 0);
+				x.poke(x.peek(j, 1), i, 1);
+				x.poke(tr, j, 0);
+				x.poke(ti, j, 1);
+			}
+		}
+	} else {
+		sgn = inv > 0.5 ? -1 : 1;
+		len = floor(pow(2, pass) + 0.5);
+		half = len * 0.5;
+		stp = 4096 / len;
+		for (s = 0; s < n; s += len) {
+			for (k = 0; k < half; k += 1) {
+				wr = tab.peek(k * stp, 0);
+				wi = sgn * tab.peek(k * stp, 1);
+				a = s + k;
+				b = a + half;
+				xr = x.peek(b, 0);
+				xi = x.peek(b, 1);
+				tr = xr * wr - xi * wi;
+				ti = xr * wi + xi * wr;
+				ur = x.peek(a, 0);
+				ui = x.peek(a, 1);
+				x.poke(ur + tr, a, 0);
+				x.poke(ui + ti, a, 1);
+				x.poke(ur - tr, b, 0);
+				x.poke(ui - ti, b, 1);
+			}
+		}
+	}
+	return 0;
+}
+
+// One sample: push (xl, xr), run this sample's job of each stage, write cout = (L, R) of the sum of
+// both stages (y[cn - 256]).
+dvc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, tgh, tgt, ach, cout) {
+	w = dvc_mod(cn, 8192);
+	cvr.poke(xl, w, 0);
+	cvr.poke(xr, w, 1);
+	loaded = cp.peek(0);
+
+	// ---------------- head stage ----------------
+	rh = dvc_mod(cn, 128);
+	if (rh - 4 * floor(rh / 4) < 0.5) {
+		kh = floor(rh / 4);
+		mp = floor(cn / 128) - 1;
+		if (kh == 0) {
+			sl0 = dvc_mod(mp, 32);
+			tgh.poke(cp.peek(1), sl0, 0);
+			tgh.poke(cp.peek(2), sl0, 1);
+			tgh.poke(cp.peek(3), sl0, 2);
+			for (i = 0; i < 256; i += 1) {
+				ix = dvc_mod(cn - 256 + i, 8192);
+				cxh.poke(cvr.peek(ix, 0), i, 0);
+				cxh.poke(cvr.peek(ix, 1), i, 1);
+			}
+		}
+		if (kh == 10) {
+			slot = dvc_mod(mp, 32);
+			for (kk = 0; kk < 129; kk += 1) {
+				nk = kk == 0 ? 0 : 256 - kk;
+				xr0 = cxh.peek(kk, 0);
+				xi0 = cxh.peek(kk, 1);
+				xr1 = cxh.peek(nk, 0);
+				xi1 = cxh.peek(nk, 1);
+				o = (slot * 129 + kk) * 4;
+				fdh.poke((xr0 + xr1) * 0.5, o);
+				fdh.poke((xi0 - xi1) * 0.5, o + 1);
+				fdh.poke((xi0 + xi1) * 0.5, o + 2);
+				fdh.poke(-(xr0 - xr1) * 0.5, o + 3);
+			}
+		}
+		if (kh == 11) {
+			for (p = 0; p < 32; p += 1) {
+				sl = dvc_mod(mp - p, 32);
+				bh = -1;
+				if (loaded > 0.5 && p < tgh.peek(sl, 1)) {
+					bh = tgh.peek(sl, 0) + p * 516;
+				}
+				ach.poke(bh, p);
+				ach.poke(sl * 516, 32 + p);
+			}
+			for (kk = 0; kk < 129; kk += 1) {
+				ylr = 0;
+				yli = 0;
+				yrr = 0;
+				yri = 0;
+				k4 = kk * 4;
+				for (p = 0; p < 32; p += 1) {
+					bh = ach.peek(p);
+					if (bh >= 0) {
+						xo = ach.peek(32 + p) + k4;
+						ho = bh + k4;
+						xlr = fdh.peek(xo);
+						xli = fdh.peek(xo + 1);
+						xrr = fdh.peek(xo + 2);
+						xri = fdh.peek(xo + 3);
+						hlr = irs.peek(ho);
+						hli = irs.peek(ho + 1);
+						hrr = irs.peek(ho + 2);
+						hri = irs.peek(ho + 3);
+						ylr += xlr * hlr - xli * hli;
+						yli += xlr * hli + xli * hlr;
+						yrr += xrr * hrr - xri * hri;
+						yri += xrr * hri + xri * hrr;
+					}
+				}
+				cxh.poke(ylr - yri, kk, 0);
+				cxh.poke(yli + yrr, kk, 1);
+				if (kk > 0 && kk < 128) {
+					cxh.poke(ylr + yri, 256 - kk, 0);
+					cxh.poke(yrr - yli, 256 - kk, 1);
+				}
+			}
+		}
+		// FFT passes: kh 1..9 forward (bit reversal, then stages 1..8), 12..20 inverse; ONE call site (an inlined pass costs compile time)
+		hp = -1;
+		hinv = 0;
+		if (kh == 1) {
+			hp = 0;
+		}
+		if (kh >= 2 && kh <= 9) {
+			hp = kh - 1;
+		}
+		if (kh == 12) {
+			hp = 0;
+			hinv = 1;
+		}
+		if (kh >= 13 && kh <= 20) {
+			hp = kh - 12;
+			hinv = 1;
+		}
+		if (hp >= 0) {
+			dvc_pass(cxh, tab, 256, hp, hinv);
+		}
+		if (kh == 21) {
+			for (i = 0; i < 128; i += 1) {
+				oi = dvc_mod(mp * 128 + i, 512);
+				ohr.poke(cxh.peek(128 + i, 0) * 0.00390625, oi, 0);
+				ohr.poke(cxh.peek(128 + i, 1) * 0.00390625, oi, 1);
+			}
+		}
+	}
+
+	// ---------------- tail stage ----------------
+	rt = dvc_mod(cn, 2048);
+	if (rt - 8 * floor(rt / 8) < 0.5) {
+		kt = floor(rt / 8);
+		mt = floor(cn / 2048) - 1;
+		if (kt == 0) {
+			sl1 = dvc_mod(mt, 48);
+			tgt.poke(cp.peek(1), sl1, 0);
+			tgt.poke(cp.peek(2), sl1, 1);
+			tgt.poke(cp.peek(3), sl1, 2);
+			for (i = 0; i < 4096; i += 1) {
+				ix = dvc_mod(cn - 4096 + i, 8192);
+				cxt.poke(cvr.peek(ix, 0), i, 0);
+				cxt.poke(cvr.peek(ix, 1), i, 1);
+			}
+		}
+		if (kt == 14) {
+			slot = dvc_mod(mt, 48);
+			for (kk = 0; kk < 2049; kk += 1) {
+				nk = kk == 0 ? 0 : 4096 - kk;
+				xr0 = cxt.peek(kk, 0);
+				xi0 = cxt.peek(kk, 1);
+				xr1 = cxt.peek(nk, 0);
+				xi1 = cxt.peek(nk, 1);
+				o = (slot * 2049 + kk) * 4;
+				fdt.poke((xr0 + xr1) * 0.5, o);
+				fdt.poke((xi0 - xi1) * 0.5, o + 1);
+				fdt.poke((xi0 + xi1) * 0.5, o + 2);
+				fdt.poke(-(xr0 - xr1) * 0.5, o + 3);
+			}
+		}
+		if (kt == 15) {
+			for (q = 0; q < 48; q += 1) {
+				sl = dvc_mod(mt - q, 48);
+				bt = -1;
+				if (loaded > 0.5 && q < tgt.peek(sl, 2)) {
+					bt = tgt.peek(sl, 0) + tgt.peek(sl, 1) * 516 + q * 8196;
+				}
+				ach.poke(bt, 96 + q);
+				ach.poke(sl * 8196, 144 + q);
+			}
+		}
+		if (kt >= 15 && kt <= 47) {
+			k0 = (kt - 15) * 64;
+			cntb = min(64, 2049 - k0);
+			// One bin at a time, summed over partitions in registers.
+			for (kk = 0; kk < cntb; kk += 1) {
+				ylr = 0;
+				yli = 0;
+				yrr = 0;
+				yri = 0;
+				j4 = (k0 + kk) * 4;
+				for (q = 0; q < 48; q += 1) {
+					bt = ach.peek(96 + q);
+					if (bt >= 0) {
+						xo = ach.peek(144 + q) + j4;
+						ho = bt + j4;
+						xlr = fdt.peek(xo);
+						xli = fdt.peek(xo + 1);
+						xrr = fdt.peek(xo + 2);
+						xri = fdt.peek(xo + 3);
+						hlr = irs.peek(ho);
+						hli = irs.peek(ho + 1);
+						hrr = irs.peek(ho + 2);
+						hri = irs.peek(ho + 3);
+						ylr += xlr * hlr - xli * hli;
+						yli += xlr * hli + xli * hlr;
+						yrr += xrr * hrr - xri * hri;
+						yri += xrr * hri + xri * hrr;
+					}
+				}
+				bk = k0 + kk;
+				cxt.poke(ylr - yri, bk, 0);
+				cxt.poke(yli + yrr, bk, 1);
+				if (bk > 0 && bk < 2048) {
+					cxt.poke(ylr + yri, 4096 - bk, 0);
+					cxt.poke(yrr - yli, 4096 - bk, 1);
+				}
+			}
+		}
+		tp = -1;
+		tinv = 0;
+		if (kt == 1) {
+			tp = 0;
+		}
+		if (kt >= 2 && kt <= 13) {
+			tp = kt - 1;
+		}
+		if (kt == 48) {
+			tp = 0;
+			tinv = 1;
+		}
+		if (kt >= 49 && kt <= 60) {
+			tp = kt - 48;
+			tinv = 1;
+		}
+		if (tp >= 0) {
+			dvc_pass(cxt, tab, 4096, tp, tinv);
+		}
+		if (kt == 61) {
+			for (i = 0; i < 2048; i += 1) {
+				oi = dvc_mod((mt + 2) * 2048 + i, 8192);
+				otr.poke(cxt.peek(2048 + i, 0) * 0.000244140625, oi, 0);
+				otr.poke(cxt.peek(2048 + i, 1) * 0.000244140625, oi, 1);
+			}
+		}
+	}
+
+	// ---------------- output: y[cn - 256] ----------------
+	ih = dvc_mod(cn - 256, 512);
+	it = dvc_mod(cn - 256, 8192);
+	cout.poke(ohr.peek(ih, 0) + otr.peek(it, 0), 0);
+	cout.poke(ohr.peek(ih, 1) + otr.peek(it, 1), 1);
+	return 0;
+}
