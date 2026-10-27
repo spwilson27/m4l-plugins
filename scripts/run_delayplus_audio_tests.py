@@ -478,6 +478,12 @@ def main():
         start_code = f.read()
     with open(END_PATH, encoding="utf-8") as f:
         end_code = f.read()
+    # the device embeds the MINIFIED text (build_delayplus.gendsp_json -> minify_gen): test that, not the readable
+    # source (DP_MINIFY=0 for debugging). sweep2 F9: Live printed "gen~ failed to compile patcher" for Delay+.
+    if os.environ.get("DP_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        start_code = minify_gen(start_code)
+        end_code = minify_gen(end_code)
     only = set(sys.argv[1:])
     todo = [c for c in cases() if not only or c["name"] in only]
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, max(len(todo), 1))) as ex:
