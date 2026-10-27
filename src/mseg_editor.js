@@ -816,9 +816,16 @@ function handleKeyCommand(keycode, textchar, cmd, shift, ctrl) {
         return 1;
     }
 
-    // Delete / Backspace (ASCII 8, 127, Max JKEY_BACKSPACE -3, JKEY_DELETE -4, macOS 51, 117)
-    if (k === 8 || k === 127 || k === -3 || k === -4 || k === 51 || k === 117 ||
-        ch === 8 || ch === 127 || ch === -3 || ch === -4) {
+    // Escape: Max's v8ui reports it as keycode -3 with textcharacter 27 (checked before delete)
+    if (k === 27 || ch === 27) {
+        selectedIds = [];
+        mgraphics.redraw();
+        return 1;
+    }
+
+    // Delete / Backspace (ASCII 8, 127, Max JKEY_DELETE -4; -3 is Esc when ch is 27, handled above)
+    if (k === 8 || k === 127 || k === -3 || k === -4 ||
+        ch === 8 || ch === 127 || ch === -4) {
         deleteSelectedPoints();
         return 1;
     }
