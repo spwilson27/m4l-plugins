@@ -47,6 +47,7 @@ var DV_SCOPE = Object.freeze({
     WAVE_HEAD: 41, // next waveform block to be written (0..DV_WAVE_BLOCKS-1)
     SPEC_HEAD: 42, // next slot of the ---deviatespec rings
     ALIVE: 48, // moves every 64 samples, also in silence (drives the DSP resend)
+    SPEC_ALIVE: 49, // the Spectral stage shell's alive counter (src/deviate_spec.genexpr); the engine waits for it before switching to Spectral
     HIDDEN: 64, // 64..127: the hidden values (DV_HIDDEN rows, applied page)
     ECHO: 128, // 128..159: what the gen runs with (DV_ECHO)
     WAVE: 256, // 256..1535: DV_WAVE_BLOCKS blocks of DV_WAVE_STRIDE

@@ -15,6 +15,8 @@ var latArg = jsarguments.length > 2 ? Number(jsarguments[2]) : 256;
 var names = { scope: "", tap: "" };
 var tapNames = [];
 var drawP = null;
+var rWins = [];      // [a, b] ms pairs: max residue (output - delayed source) inside
+var clickMs = [];    // click start times (ms) of the spec_t source
 var resultPath = "/tmp/deviate_audio.txt";
 var armed = false;
 
@@ -30,6 +32,25 @@ function tapnames() {
 function dparams() {
     var a = Array.prototype.slice.call(arguments).map(Number);
     drawP = { v: a.slice(0, 8), r: a.slice(8, 16), lock: a.slice(16, 24), chance: a[24], seed: a[25], drift: a[26] };
+}
+
+function rwindows() {
+    rWins = Array.prototype.slice.call(arguments).map(function (s) {
+        var q = String(s).split(":");
+        return [Number(q[0]), Number(q[1])];
+    });
+}
+
+function clicks() {
+    clickMs = Array.prototype.slice.call(arguments).map(Number);
+}
+
+// CPU % from `adstatus cpu` (audio_device mode); NonRealTime has no meaningful real-time load.
+var cpuMax = 0, cpuSum = 0, cpuCount = 0;
+function cpu(v) {
+    cpuMax = Math.max(cpuMax, v);
+    cpuSum += v;
+    cpuCount++;
 }
 
 function resultpath(p) {
@@ -76,6 +97,42 @@ function analyze(durMs) {
             diffR = Math.max(diffR, Math.abs(r - S[i - latArg]));
         }
     }
+    // residue = output - the source delayed by the latency (exactly the Mix-scaled effect sum, since the dry path is a bit-exact delay)
+    var srcSq = 0, resSq = 0, cntR = 0, maxStep = 0;
+    var RES = new Float64Array(n);
+    for (var i5 = latArg; i5 < n; i5++) {
+        var rl = L[i5] - S[i5 - latArg], rr = R[i5] - S[i5 - latArg];
+        RES[i5] = Math.max(Math.abs(rl), Math.abs(rr));
+        srcSq += S[i5 - latArg] * S[i5 - latArg];
+        resSq += rl * rl;
+        cntR++;
+        if (i5 > 0) maxStep = Math.max(maxStep, Math.abs(L[i5] - L[i5 - 1]));
+    }
+    kv("src_rms", cntR ? Math.sqrt(srcSq / cntR) : 0);
+    kv("res_rms", cntR ? Math.sqrt(resSq / cntR) : 0);
+    kv("maxstep", maxStep);
+    for (var w = 0; w < rWins.length; w++) {
+        var i0 = Math.round(rWins[w][0] * 48), i1 = Math.min(n, Math.round(rWins[w][1] * 48));
+        var mxr = 0;
+        for (var i6 = i0; i6 < i1; i6++) if (RES[i6] > mxr) mxr = RES[i6];
+        kv("rmax_" + rWins[w][0] + "_" + rWins[w][1], mxr);
+    }
+    if (clickMs.length && rec.channelcount() >= 4) {
+        // Spectral stage output T (ch4, aligned with the source delayed by 1279): energy around the clicks and in the tone-only gaps
+        var T4 = readChannel(rec, 4, n);
+        var clickE = 0, clickT = 0, toneE = 0, toneT = 0, LATS = 1279;
+        for (var c4 = 0; c4 < clickMs.length; c4++) {
+            var c0 = Math.round(clickMs[c4] * 48);
+            clickE += 2 * 0.8 * 0.8;
+            for (var i7 = c0 - 100; i7 < c0 + 1400; i7++) if (i7 + LATS < n) clickT += T4[i7 + LATS] * T4[i7 + LATS];
+            for (var i8 = c0 + 2400; i8 < c0 + 7200; i8++) if (i8 + LATS < n) {
+                toneE += S[i8] * S[i8];
+                toneT += T4[i8 + LATS] * T4[i8 + LATS];
+            }
+        }
+        kv("clickE", clickE); kv("clickT", clickT); kv("clickRatio", clickE ? clickT / clickE : 0);
+        kv("toneE", toneE); kv("toneT", toneT); kv("toneRatio", toneE ? toneT / toneE : 0);
+    }
     var sf = firstAbove(S, 0.5), df = firstAbove(L, 0.5);
     kv("n", n); kv("nan", nan); kv("maxL", maxL); kv("maxR", maxR); kv("diffL", diffL); kv("diffR", diffR);
     kv("prefmax", prefmax); kv("tailmax", tailmax); kv("srcfirst", sf); kv("devfirst", df);
@@ -93,7 +150,7 @@ function analyze(durMs) {
         tap = readChannel(tb, 1, rows * stride);
     }
     var get = function (name, r) { return tap[r * stride + col[name]]; };
-    var hitRows = [], appliedRows = [];
+    var hitRows = [], appliedRows = [], serialRows = [];
     if (rows > 1) {
         for (var q = 0; q < tapNames.length; q++) {
             var nm = tapNames[q];
@@ -108,6 +165,13 @@ function analyze(durMs) {
         for (var r2 = 1; r2 < rows; r2++) {
             if (get("hits", r2) !== get("hits", r2 - 1)) hitRows.push(r2);
             if (get("applied", r2) !== get("applied", r2 - 1)) appliedRows.push(r2);
+            if (get("serial", r2) !== get("serial", r2 - 1)) serialRows.push(r2);
+        }
+        for (var sq = 0; sq < Math.min(serialRows.length, 12); sq++) {
+            var rs = Math.min(rows - 1, serialRows[sq] + 4);
+            var sd = [];
+            for (var i4 = 0; i4 < 8; i4++) sd.push(get("d" + i4, rs));
+            kv("sdraws" + sq, sd.join(","));
         }
         kv("hit_samples", hitRows.length ? hitRows.map(function (x) { return x * 16 + 15; }).join(",") : "none");
         kv("applied_samples", appliedRows.length ? appliedRows.map(function (x) { return x * 16 + 15; }).join(",") : "none");
@@ -121,6 +185,7 @@ function analyze(durMs) {
             kv("metas" + h, me.join(","));
             kv("ser" + h, get("serial", rh));
             kv("gate" + h, get("gate", rh));
+            kv("hitsrc" + h, get("hitsrc", rh));
             if (drawP) {
                 dvStep(st, drawP, "hit");
                 var e1 = 0, e2 = 0;
@@ -165,6 +230,7 @@ function analyze(durMs) {
         kv("wavehead", sc[DV_SCOPE.WAVE_HEAD]);
     }
 
+    kv("cpuAvg", cpuCount ? cpuSum / cpuCount : 0); kv("cpuMax", cpuMax); kv("cpuCount", cpuCount);
     var report = new File(resultPath, "write", "TEXT");
     report.eof = 0;
     report.writestring(out);

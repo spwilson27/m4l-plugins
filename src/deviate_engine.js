@@ -117,6 +117,23 @@ function dvDevResend() {
     outlet(0, "dvsplit", dvSplitEff);
     outlet(0, "dvmtrig", dvMtrig);
     if (!dvRrBusy) outlet(0, "dvreroll", 0);   // the gen takes the first value as its baseline
+    if (dvSpec.state === 1 || dvSpec.state === 2) dvSpecBind();
+}
+
+// The Spectral stage's gen~ has its own message hub: `specmsg` messages are routed to it by the patcher.
+function dvSpecBind() {
+    if (dvNames.scope) outlet(0, "specmsg", "scope", dvNames.scope);
+}
+
+function dvSpecAlive() {
+    try {
+        if (!dvNames.scope) return -1;
+        var v = new Buffer(dvNames.scope).peek(1, DV_SCOPE.SPEC_ALIVE, 1);
+        var n = typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
+        return isFinite(n) ? n : -1;
+    } catch (e) {
+        return -1;
+    }
 }
 
 function dvGenAlive() {
@@ -135,6 +152,7 @@ function dvDevChanged() {
     if (dvDsp.ready) {
         dvIrStartSoon();
         dvStatePollStart();
+        if (dvSplitWant && dvSplitEff !== 1) dvOnSplit(1); // Spectral was asked for before the DSP was up
     }
 }
 
@@ -271,12 +289,20 @@ function dvApplyLatency(samples) {
     } catch (e) {}
 }
 
-// Split Mode: the latency attribute and the gen's mode change in the same tick. With the Spectral stage (DV_SPEC_STAGE) the DSP lane
-// first hot-loads the spec shell and waits for its alive counter; the stub has no stage, so the change is immediate.
+// Split Mode. Back to Envelope is immediate. To Spectral the stage is hot-loaded into its shell first (once); when its alive counter has moved
+// the latency attribute and the gen's dvsplit change in the same tick (the gen fades its output over 256 samples around the tap move).
+// Without a running DSP / spec shell the change waits (dvDevChanged) or, with no Spectral stage in the build, is immediate.
+var dvSplitWant = 0;
 function dvOnSplit(v) {
     var want = v > 0.5 ? 1 : 0;
+    dvSplitWant = want;
     if (want === dvSplitEff) return;
-    dvSetSplit(want);
+    if (!want) { dvSetSplit(0); return; }
+    if (typeof DV_SPEC_STAGE === "undefined" || !DV_SPEC_STAGE) { dvSetSplit(1); return; }
+    if (!dvDsp.ready) return;
+    dvSpecLoad(function (ok) {
+        if (ok && dvSplitWant) dvSetSplit(1);
+    });
 }
 
 function dvSetSplit(mode) {

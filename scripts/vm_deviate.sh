@@ -6,6 +6,8 @@
 #   scripts/vm_deviate.sh sync          rsync the repo to ~/ableton-deviate in the VM
 #   scripts/vm_deviate.sh audio [case ...]
 #                                       sync, then scripts/run_deviate_audio_tests.py [case ...] in the VM (real Max, shared harness)
+#   scripts/vm_deviate.sh py <script.py> [args]
+#                                       sync, then /usr/bin/python3 <script.py> [args] in the VM (measurements: scripts/measure_deviate.py)
 #   scripts/vm_deviate.sh live          host build of every face, sync, write deviate_test.als in the VM (scripts/make_deviate_set.py,
 #                                       VM paths), then reopen it in the running Live (scripts/vm_live_open.sh ensure --fresh; DEV_COLD=1
 #                                       = kill + relaunch) and wait for the MCP bridge
@@ -54,7 +56,11 @@ case "${1:-}" in
   audio)
     shift
     host_build deviate || exit 1   # also refreshes build_cache/ (the generated dv_hidden text: the VM has no node)
-    sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 scripts/run_deviate_audio_tests.py '"$*" ;;
+    sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 -u scripts/run_deviate_audio_tests.py '"$*" ;;
+  py)
+    shift
+    host_build deviate || exit 1
+    sync_repo && "${SSH[@]}" 'cd ~/'"$VMREL"' && /usr/bin/python3 -u '"$*" ;;
   live)
     host_build deviate || exit 1
     sync_repo || exit 1

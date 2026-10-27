@@ -1,18 +1,29 @@
-// Deviate gen core (STUB: detector + draw + windows + Ring envelope + telemetry + delayed dry; no effects yet).
-// The DSP lane extends this file with the effect chains. Keep it clean: ONE call site per helper (dv_draw, dv_hidden).
+// Deviate gen core: detector, seeded draw, windows, the three effect chains, the Ring envelope, Mix, telemetry.
+// Built as  fft_init + deviate_conv.genexpr + deviate_fx.genexpr + deviate_core.genexpr  (scripts/build_deviate.py gen_code) with the line `//@hidden`
+// below replaced by the generated function dv_hidden(mE, mT, hv) (dvHiddenGen() in src/deviate_config.js). Contract: src/deviate_config.js
+// (DV_SCOPE, DV_ECHO, DV_CTL, DV_PARAMS gen messages, dvStep, dvRingEnv, dvWindows, dvHiddenFromMetas). Inputs: in1 / in2 the audio, in3 / in4 the
+// Spectral stage's transient signal (src/deviate_spec.genexpr, a separate gen~ shell; zero until it is loaded).
+// One call site per helper: the Glitch helpers keep a coefficient cache in a History that every call site would share.
 //
-// Built as  cepstrum_lib.genexpr + deviate_conv.genexpr + deviate_core.genexpr  with the line `//@hidden` below replaced by the
-// generated function dv_hidden(mE, mT, hv) (dvHiddenGen() in src/deviate_config.js). Contract: src/deviate_config.js
-// (DV_SCOPE, DV_ECHO, DV_CTL, DV_PARAMS gen messages, dvStep, dvRingEnv, dvWindows, dvHiddenFromMetas).
-//
-// Signal flow of this stub:
-//   in1/in2 -> mono -> DETECT (envelope trigger model: fast env 15 ms release, slow 60 ms baseline, onset when
-//                      armed && fast > thr && fast > slow * ratio; a MIDI counter change (dvmtrig) is the second source;
-//                      one shared lockout so an audio onset next to a MIDI hit is deduped)
-//           t0 -> DRAW (dv_draw, mirrors dvStep) -> page E/T; the page is APPLIED at t0 + LAT - 96 (dv_hidden -> hidden values,
-//                 Ring envelope and windows restart); a Reroll applies its page at once.
-//   out = soft_limit(delayed dry + Mix * effect residue)  -- the residues are exact zeros in this stub, so out == the dry
-//         delayed by LAT (256 Envelope / 1279 Spectral) for every Mix.
+// Signal flow:
+//   in1/in2 -> mono -> DETECT (envelope trigger model: fast env 15 ms release, slow 60 ms baseline, onset when armed && fast > thr && fast > slow * ratio;
+//                      a MIDI counter change (dvmtrig) is the second source; one shared lockout so an audio onset next to a MIDI hit is deduped)
+//           t0 -> DRAW (dv_draw, mirrors dvStep) -> page E/T; the page is APPLIED at t0 + LAT - 96 (dv_hidden -> dv_pg1..3 -> parameter targets;
+//                 Ring envelope, windows, click and sends restart); a Reroll applies its page at once.
+//   xd = input delayed by LAT (256 Envelope, 1279 Spectral). Windows after the hit (measured from the hit's arrival at the output): gT 1 -> 0 over 10..20 ms,
+//   gR 0 -> 1 over 120..180 ms, gB = 1 - gT - gR.
+//     T chain (input gT * T source): snap shaper > drive > click burst > crush > high-pass filter
+//     B chain (input gB * B source): comb > formant > phaser > grain pitch shift (+-12 st) > ring modulator > saturation; beside it the resonator bank
+//                                    (6 modes, excited by the whole hit (1 - gR) * xd) rings
+//     L chain: chorus / flanger on gR * B source; sends of xd (open 200 ms after the hit): reverb, delay, slapback, convolver (10 built-in IRs, each input
+//              block remembers the IR it was captured with)
+//     Envelope mode: T source = B source = xd. Spectral mode: T = the stage's percussive part, B = xd - T (T + B = xd exactly).
+//   out = soft_limit( xd + Mix * limit( T residue + env(age) * (B + resonator + L + sends residue) ) ); every chain returns residue fx(in) - in, so Mix 0
+//   (and every neutral setting) is a bit-exact delayed dry.
+// Ring law: env(age) = 1 for 150 ms, then -66 dB at Tr (= 0.05 .. 1.83 s from Ring), then a 20 ms fade to exactly 0, so nothing is audible 2.0 s after
+// a hit. Every in-loop decay (reverb, delay feedback, comb, resonator) is derived from Tr (at most 0.9 Tr) so the envelope's restart on the next hit cannot
+// pump old residue. Chains run only from the apply sample until the envelope has ended, and an effect only while its smoothed wet is above 0.02; when the
+// tails end the rings and the convolver's frequency-domain delay line are zeroed in slices (the "wipe") so the next hit meets no old residue.
 //
 // Timing of a hit: t0 is the sample of the (undelayed) input at which the detector fires. Draw at t0. Page applied at
 // t0 + LAT - 96 (age 0 of the Ring envelope). The hit reaches the output at t0 + LAT (ONSET_AGE counts from there).
@@ -118,6 +129,136 @@ dv_draw(pv, pr, lk, st, tT, tE, seedIn, chanceIn, driftIn, ev) {
 	return gateV;
 }
 
+// ---- hidden values (dvHV, DV_HIDDEN rows) -> the smoothed parameter vector targets (dvQT) ---------------------------------------------
+// pv layout (indexes into dvQ / dvQT; the gl_* / dv_* helpers read b + n):
+//   0 snap amt | 1 click level | 2 click Hz | 8 drive: wet, mode, dB, tone | 12 crush: wet, bits, factor, jitter | 16 filter: wet, type, Hz, res
+//   20 resonator: wet, f0, stretch, t60 | 24 comb: wet, Hz, fb, damp | 28 formant: wet, vowel, shift, res | 32 phaser: wet, stages, sync, rate,
+//   sync rate, depth, fb | 40 grain: wet, semitones, ms, spray | 44 ring: wet, mode, Hz | 47 sat amt | 48 chorus: wet, Hz, ms, depth
+//   52 reverb: wet, size, rt60, damp | 56 delay: wet, ms, fb, ping-pong, damp | 61 slap: wet, ms, tone, offset | 65 conv wet | 66 conv IR tag
+// Every in-loop decay is derived from the Ring time Tr (hidden row 35): at most 0.9 Tr, so a restarted Ring envelope never meets old residue.
+// Hidden row indexes (DV_HIDDEN): 0 snap_amt 1 click_lvl 2 click_hz 3 tfilt_hz 5 pitch_st 6 pitch_wet 7 grain_ms 8 res_wet 9 res_f0 10 res_stretch
+//   11 comb_wet 12 comb_hz 13 form_wet 14 form_vowel 16 phas_wet 17 phas_hz 18 chor_wet 19 chor_hz 20 chor_ms 21 conv_wet 22 conv_ir 23 rev_wet
+//   24 rev_size 25 dly_wet 26 dly_ms 27 dly_fb 28 slap_wet 29 drive_amt 30 crush_wet 31 crush_bits 32 ring_wet 33 ring_hz 34 sat_amt 35 tr_s
+dv_pg1(hv, qt) {
+	snapA = peek(hv, 0);
+	clkL = peek(hv, 1);
+	clkH = peek(hv, 2);
+	flH = peek(hv, 3);
+	drA = peek(hv, 29);
+	cW = peek(hv, 30);
+	cB = peek(hv, 31);
+	poke(qt, snapA, 0);
+	poke(qt, clkL, 1);
+	poke(qt, clkH, 2);
+	poke(qt, clip(drA * 2, 0, 1), 8);
+	poke(qt, clip(drA * 1.7, 0, 2), 9);
+	poke(qt, 6 + drA * 26, 10);
+	poke(qt, 9000 - drA * 4500, 11);
+	poke(qt, cW, 12);
+	poke(qt, 12 - 1.25 * cB, 13);
+	poke(qt, 1 + 0.75 * cB, 14);
+	poke(qt, 0.1, 15);
+	poke(qt, clip((flH - 22) * 0.05, 0, 1), 16);
+	poke(qt, 2, 17);
+	poke(qt, flH, 18);
+	poke(qt, 0.15, 19);
+	return 0;
+}
+
+dv_pg2(hv, qt) {
+	h8 = peek(hv, 8);
+	h9 = peek(hv, 9);
+	h10 = peek(hv, 10);
+	h11 = peek(hv, 11);
+	h13 = peek(hv, 13);
+	h14 = peek(hv, 14);
+	h16 = peek(hv, 16);
+	h17 = peek(hv, 17);
+	h6 = peek(hv, 6);
+	h5 = peek(hv, 5);
+	h7 = peek(hv, 7);
+	h32 = peek(hv, 32);
+	h33 = peek(hv, 33);
+	h34 = peek(hv, 34);
+	t9 = 0.9 * peek(hv, 35);
+	cmbHz = peek(hv, 12);
+	poke(qt, h8, 20);
+	poke(qt, h9, 21);
+	poke(qt, h10, 22);
+	poke(qt, clip(t9, 0.05, 1.2), 23);
+	poke(qt, h11, 24);
+	poke(qt, cmbHz, 25);
+	poke(qt, clip(pow(10, -3 / (cmbHz * max(t9, 0.02))), 0, 0.95), 26);
+	poke(qt, 6000, 27);
+	poke(qt, h13, 28);
+	poke(qt, h14, 29);
+	poke(qt, 0, 30);
+	poke(qt, 0.55, 31);
+	poke(qt, h16, 32);
+	poke(qt, 1, 33);
+	poke(qt, 0, 34);
+	poke(qt, h17, 35);
+	poke(qt, 0, 36);
+	poke(qt, 0.8, 37);
+	poke(qt, 0.4, 38);
+	poke(qt, h6, 40);
+	poke(qt, h5, 41);
+	poke(qt, h7, 42);
+	poke(qt, 0.05, 43);
+	poke(qt, h32, 44);
+	poke(qt, 0, 45);
+	poke(qt, h33, 46);
+	poke(qt, h34, 47);
+	return 0;
+}
+
+dv_pg3(hv, qt) {
+	h18 = peek(hv, 18);
+	h19 = peek(hv, 19);
+	h20 = peek(hv, 20);
+	h23 = peek(hv, 23);
+	h24 = peek(hv, 24);
+	h25 = peek(hv, 25);
+	h28 = peek(hv, 28);
+	h21 = peek(hv, 21);
+	h22 = peek(hv, 22);
+	t9 = 0.9 * peek(hv, 35);
+	dlMs = peek(hv, 26);
+	dlFb = peek(hv, 27);
+	poke(qt, h18, 48);
+	poke(qt, h19, 49);
+	poke(qt, h20, 50);
+	poke(qt, 0.6, 51);
+	poke(qt, h23, 52);
+	poke(qt, h24, 53);
+	poke(qt, max(t9, 0.03), 54);
+	poke(qt, 5500, 55);
+	poke(qt, h25, 56);
+	poke(qt, dlMs, 57);
+	poke(qt, min(dlFb, pow(10, -3 * dlMs * 0.001 / max(t9, 0.03))), 58);
+	poke(qt, 0.5, 59);
+	poke(qt, 4500, 60);
+	poke(qt, h28, 61);
+	poke(qt, 70, 62);
+	poke(qt, 5000, 63);
+	poke(qt, 0.5, 64);
+	poke(qt, h21, 65);
+	poke(qt, h22, 66);
+	return 0;
+}
+
+// Move q toward qt (every 8th sample): a continuous parameter by `k`, snapping when closer than 1e-5 + 1e-4 |qt|; hard = 1 copies qt.
+dv_pvsm(q, qt, k, hard) {
+	for (i = 0; i < 67; i += 1) {
+		a = peek(q, i);
+		b = peek(qt, i);
+		d = b - a;
+		nv = (hard > 0.5 || abs(d) < 0.00001 + 0.0001 * abs(b)) ? b : a + d * k;
+		poke(q, nv, i);
+	}
+	return 0;
+}
+
 //@hidden
 
 Buffer scope("deviatescope");
@@ -170,6 +311,48 @@ Data dvE(8);
 Data dvAT(8);
 Data dvAE(8);
 Data dvHV(64);
+Data dvQ(72);
+Data dvQT(72);
+Data dvIoT(2);
+Data dvIoB(2);
+Data dvIoR(2);
+Data dvIoQ(2);
+Data dvIoV(2);
+Data dvIoD(2);
+Data dvIoS(2);
+Data stSnap(4);
+Data stDrv(8);
+Data stCrs(8);
+Data stFlt(8);
+Data stRes(48);
+Data stCmb(8);
+Data rbCmb(8192);
+Data stFrm(16);
+Data stPha(24);
+Data stGrn(16);
+Data rbGrn(16384, 2);
+Data stRng(4);
+Data stChr(4);
+Data rbChr(8192, 2);
+Data stRev(16);
+Data rbRev(65536);
+Data stDly(8);
+Data rbDly(65536, 2);
+Data stSlp(8);
+Data rbSlp(65536);
+Data dvTab(4096, 3);
+Data dvCvr(8192, 2);
+Data dvCxh(256, 2);
+Data dvCxt(4096, 2);
+Data dvFdh(16512);
+Data dvFdt(393408);
+Data dvOhr(512, 2);
+Data dvOtr(8192, 2);
+Data dvCp(4);
+Data dvTgH(32, 3);
+Data dvTgT(48, 3);
+Data dvAch(192);
+Data dvCout(2);
 
 Delay dlyL(2048);
 Delay dlyR(2048);
@@ -235,6 +418,16 @@ History waveHead(0);
 History specHead(0);
 History specOn(0);
 History hidC(0);
+History qInit(0);
+History q8(0);
+History pvT(0);
+History clkT(1000000000);
+History clkAmp(0.3);
+History pkAcc(0);
+History lifePrev(0);
+History wipeJ(-1);
+History cvN(0);
+History cvArm(0);
 
 // History discipline: a History read after a write in the same sample returns the OLD value (AGENTS 16 / 21), so every History
 // is read into a local, computed on, and written back exactly once per sample (never read again after its write).
@@ -243,6 +436,7 @@ first = (inited < 0.5) ? 1 : 0;
 inited = 1;
 if (first > 0.5) {
 	poke(dvST, 1, 4);
+	poke(stFlt, 2, 0);
 }
 
 // ---- cached coefficients (pow / exp only when an input moved) ----
@@ -502,6 +696,13 @@ if (evNow > -0.5) {
 	}
 	wake = 1;
 }
+pkaN = pkAcc;
+if (evNow > -0.5 && evNow < 0.5) {
+	pkaN = fastN;
+} else if (pa > 0) {
+	pkaN = max(pkaN, fastN);
+}
+pkAcc = pkaN;
 hitCount = hcN;
 hitSrc = hsN;
 pendApply = pa;
@@ -517,6 +718,11 @@ irN = irTag;
 dkN = decayK;
 esN = endS;
 pcN = pageCnt;
+hardNow = 0;
+ckAmpN = clkAmp;
+ckTN = clkT;
+cvArmN = cvArm;
+pvTN = pvT;
 if (applyNow > 0.5) {
 	for (i = 0; i < 8; i += 1) {
 		te = peek(dvE, i);
@@ -536,6 +742,32 @@ if (applyNow > 0.5) {
 		poke(scope, hvv, 64 + i, 0);
 	}
 	poke(scope, irN, 11, 0);
+	dv_pg1(dvHV, dvQT);
+	dv_pg2(dvHV, dvQT);
+	dv_pg3(dvHV, dvQT);
+	hardNow = (qInit < 0.5) ? 1 : 0;
+	qInit = 1;
+	pvTN = 4000;
+	tagI = clip(floor(irN + 0.5), 0, 9);
+	irCnt = peek(ir, 1, 0);
+	irRdy = peek(ir, 3, 0);
+	irSr = peek(ir, 2, 0);
+	irOff = peek(ir, 16 + 4 * tagI, 0);
+	irNh = peek(ir, 18 + 4 * tagI, 0);
+	irNt = peek(ir, 19 + 4 * tagI, 0);
+	cpLd = (irRdy > 0.5 && tagI < irCnt && abs(irSr - sr) < 1) ? 1 : 0;
+	poke(dvCp, cpLd, 0);
+	poke(dvCp, irOff, 1);
+	poke(dvCp, irNh, 2);
+	poke(dvCp, irNt, 3);
+	cwT = peek(dvQT, 65);
+	if (ageReset > 0.5) {
+		ckAmpN = max(pkAcc, 0.15);
+		ckTN = -96;
+		if (cwT >= 0.02 && cpLd > 0.5) {
+			cvArmN = 1;
+		}
+	}
 	if (applyCount > 0.5) {
 		pcN = wrap(pcN + 1, 0, 100000);
 		poke(scope, pcN, 38, 0);
@@ -549,6 +781,25 @@ irTag = irN;
 decayK = dkN;
 endS = esN;
 pageCnt = pcN;
+clkAmp = ckAmpN;
+
+// ---- smoothed parameter vector: toward the targets every 8th sample; discrete entries and the very first page at once ----
+q8N = wrap(q8 + 1, 0, 8);
+q8 = q8N;
+pvT = max(pvTN - 1, 0);
+if (hardNow > 0.5 || (q8N < 0.5 && pvTN > 0)) {
+	dv_pvsm(dvQ, dvQT, 0.05, hardNow);
+}
+if (applyNow > 0.5) {
+	di13 = peek(dvQT, 13);
+	di14 = peek(dvQT, 14);
+	di29 = peek(dvQT, 29);
+	di66 = peek(dvQT, 66);
+	poke(dvQ, di13, 13);
+	poke(dvQ, di14, 14);
+	poke(dvQ, di29, 29);
+	poke(dvQ, di66, 66);
+}
 
 // ---- sleep decision ----
 qc = (inPk < 0.00001 && wake < 0.5) ? min(quietCnt + 1, 1000000) : 0;
@@ -559,7 +810,7 @@ if (ageReset > 0.5) {
 	agN = 0;
 	erN = 1;
 }
-busy = (pa > 0 || lockN > 0 || ow > 0 || ssN > 0.5 || agN < esN + fdN + 64) ? 1 : 0;
+busy = (pa > 0 || lockN > 0 || ow > 0 || ssN > 0.5 || agN < esN + fdN + 64 || wipeJ >= 0) ? 1 : 0;
 asleep = (qc >= 16384 && busy < 0.5) ? 1 : 0;
 
 // ---- delayed dry (always written, so a wake-up is seamless) ----
@@ -595,9 +846,253 @@ if (asleep < 0.5) {
 age = min(agN + 1, 1000000000);
 envRec = erN;
 
-// ---- effects (STUB): the DSP lane puts the chains here; residues are  fx(in) - in  =  0 for now ----
+// ---- life of the effect tails: they run from the apply sample until the Ring envelope has faded to exact 0 ----
+fft_init(dvTab);
+lifeNow = (agN < esN + fdN) ? 1 : 0;
+lifeOld = lifePrev;
+lifePrev = lifeNow;
+startWipe = (lifeOld > 0.5 && lifeNow < 0.5) ? 1 : 0;
+
+// ---- the chains (T transient, B body, L long tail + sends); every one returns residue  fx(in) - in  ----
 resL = 0;
 resR = 0;
+pkTv = 0;
+pkBv = 0;
+pkLv = 0;
+ckN = ckTN;
+cvNn = cvN;
+if (asleep < 0.5 && lifeNow > 0.5) {
+	tkW = (modeN > 0.5) ? 3 : 1;
+	twMs = max(agN - 96, 0) * 1000 / sr;
+	gTs = gT;
+	if (modeN > 0.5) {
+		uT3 = clip(twMs / max(wtN * 3, 1), 0, 1);
+		gTs = 1 - uT3 * uT3 * (3 - 2 * uT3);
+	}
+	srcTL = xdL;
+	srcTR = xdR;
+	srcBL = xdL;
+	srcBR = xdR;
+	tapL = in1;
+	tapR = in2;
+	if (modeN > 0.5) {
+		srcTL = in3;
+		srcTR = in4;
+		srcBL = xdL - in3;
+		srcBR = xdR - in4;
+		tapL = dlyL.read(1023);
+		tapR = dlyR.read(1023);
+	}
+	xTL = gTs * srcTL;
+	xTR = gTs * srcTR;
+	xBL = gB * srcBL;
+	xBR = gB * srcBR;
+	xRL = gR * srcBL;
+	xRR = gR * srcBR;
+	sgS = clip(1 - (agN - 0.2 * sr) / (0.02 * sr), 0, 1);
+	sndL = xdL * sgS;
+	sndR = xdR * sgS;
+
+	// ---- T: snap > drive > click > crush > filter ----
+	rTL = 0;
+	rTR = 0;
+	tEnd = 96 + (wtN * tkW + 14) * 0.001 * sr;
+	if (agN < tEnd) {
+		poke(dvIoT, xTL, 0);
+		poke(dvIoT, xTR, 1);
+		qSn = peek(dvQ, 0);
+		if (qSn > 0.02) {
+			dv_snap(dvIoT, qSn, stSnap, sr);
+		}
+		qDr = peek(dvQ, 8);
+		if (qDr > 0.02) {
+			gl_drive(dvIoT, dvQ, 8, qDr, stDrv, sr);
+		}
+		qCk = peek(dvQ, 1);
+		if (qCk > 0.01 && ckN >= 0 && ckN < 0.012 * sr) {
+			qCh = peek(dvQ, 2);
+			dv_click(dvIoT, qCk, qCh, clkAmp, ckN, sr);
+		}
+		qCr = peek(dvQ, 12);
+		if (qCr > 0.02) {
+			gl_crush(dvIoT, dvQ, 12, qCr, stCrs, sr);
+		}
+		qFl = peek(dvQ, 16);
+		if (qFl > 0.02) {
+			gl_filter(dvIoT, dvQ, 16, qFl, stFlt, sr);
+		}
+		oTL = peek(dvIoT, 0);
+		oTR = peek(dvIoT, 1);
+		rTL = dv_wsoft(oTL - xTL);
+		rTR = dv_wsoft(oTR - xTR);
+	}
+
+	// ---- B: comb > formant > phaser > pitch > ring modulator > saturation; the resonator bank rings beside it, excited by the whole hit (T + B windows) ----
+	rBL = 0;
+	rBR = 0;
+	rsL = 0;
+	rsR = 0;
+	qRs = peek(dvQ, 20);
+	if (qRs > 0.02) {
+		xqL = (1 - gR) * xdL;
+		xqR = (1 - gR) * xdR;
+		poke(dvIoQ, xqL, 0);
+		poke(dvIoQ, xqR, 1);
+		dv_res(dvIoQ, dvQ, 20, qRs, stRes, sr);
+		oQL = peek(dvIoQ, 0);
+		oQR = peek(dvIoQ, 1);
+		rsL = oQL - xqL;
+		rsR = oQR - xqR;
+	}
+	poke(dvIoB, xBL, 0);
+	poke(dvIoB, xBR, 1);
+	qCb = peek(dvQ, 24);
+	if (qCb > 0.02) {
+		gl_comb(dvIoB, dvQ, 24, qCb, stCmb, rbCmb, sr);
+	}
+	qFm = peek(dvQ, 28);
+	if (qFm > 0.02) {
+		gl_form(dvIoB, dvQ, 28, qFm, stFrm, sr);
+	}
+	qPh = peek(dvQ, 32);
+	if (qPh > 0.02) {
+		dv_phas(dvIoB, dvQ, 32, qPh, stPha, sr);
+	}
+	qGr = peek(dvQ, 40);
+	if (qGr > 0.02) {
+		dv_grain(dvIoB, dvQ, 40, qGr, stGrn, rbGrn, sr, 1);
+	}
+	qRg = peek(dvQ, 44);
+	if (qRg > 0.02) {
+		dv_ring(dvIoB, dvQ, 44, qRg, stRng, sr);
+	}
+	qSt = peek(dvQ, 47);
+	if (qSt > 0.02) {
+		sG = 1 + 4 * qSt;
+		sW = clip(qSt * 1.5, 0, 1);
+		sbL = peek(dvIoB, 0);
+		sbR = peek(dvIoB, 1);
+		syL = tanh(sG * sbL) / (1 + 0.7 * (sG - 1));
+		syR = tanh(sG * sbR) / (1 + 0.7 * (sG - 1));
+		poke(dvIoB, sbL + (syL - sbL) * sW, 0);
+		poke(dvIoB, sbR + (syR - sbR) * sW, 1);
+	}
+	oBL = peek(dvIoB, 0);
+	oBR = peek(dvIoB, 1);
+	rBL = dv_wsoft(oBL - xBL);
+	rBR = dv_wsoft(oBR - xBR);
+
+	// ---- L: chorus / flanger on the late part ----
+	rRL = 0;
+	rRR = 0;
+	qCo = peek(dvQ, 48);
+	if (qCo > 0.02) {
+		poke(dvIoR, xRL, 0);
+		poke(dvIoR, xRR, 1);
+		dv_chor(dvIoR, dvQ, 48, qCo, stChr, rbChr, sr);
+		oRL = peek(dvIoR, 0);
+		oRR = peek(dvIoR, 1);
+		rRL = dv_wsoft(oRL - xRL);
+		rRR = dv_wsoft(oRR - xRR);
+	}
+
+	// ---- sends: reverb, delay, slap, convolver (their input closes 200 ms after the hit) ----
+	sdL = 0;
+	sdR = 0;
+	qRv = peek(dvQ, 52);
+	if (qRv > 0.02) {
+		poke(dvIoV, sndL, 0);
+		poke(dvIoV, sndR, 1);
+		dv_rev(dvIoV, dvQ, 52, qRv, stRev, rbRev, sr);
+		vL = peek(dvIoV, 0);
+		vR = peek(dvIoV, 1);
+		sdL += vL - sndL;
+		sdR += vR - sndR;
+	}
+	qDl = peek(dvQ, 56);
+	if (qDl > 0.02) {
+		poke(dvIoD, sndL, 0);
+		poke(dvIoD, sndR, 1);
+		dv_dly(dvIoD, dvQ, 56, qDl, stDly, rbDly, sr);
+		dL = peek(dvIoD, 0);
+		dR = peek(dvIoD, 1);
+		sdL += dL - sndL;
+		sdR += dR - sndR;
+	}
+	qSl = peek(dvQ, 61);
+	if (qSl > 0.02) {
+		poke(dvIoS, sndL, 0);
+		poke(dvIoS, sndR, 1);
+		gl_slap(dvIoS, dvQ, 61, qSl, stSlp, rbSlp, sr);
+		lpL = peek(dvIoS, 0);
+		lpR = peek(dvIoS, 1);
+		sdL += lpL - sndL;
+		sdR += lpR - sndR;
+	}
+	if (cvArm > 0.5) {
+		cn0 = cvN;
+		dvc_tick(cn0, tapL * sgS, tapR * sgS, dvTab, dvCvr, dvCxh, dvCxt, dvFdh, dvFdt, dvOhr, dvOtr, ir, dvCp, dvTgH, dvTgT, dvAch, dvCout);
+		cvNn = wrap(cn0 + 1, 0, 4194304);
+		qCv = peek(dvQ, 65);
+		cvL = peek(dvCout, 0);
+		cvR = peek(dvCout, 1);
+		sdL += 0.7 * qCv * cvL;
+		sdR += 0.7 * qCv * cvR;
+	}
+
+	// ---- the sum: T un-enveloped (its own window), everything else under the Ring envelope ----
+	wtL = rTL + envV * (rBL + rsL + rRL + sdL);
+	wtR = rTR + envV * (rBR + rsR + rRR + sdR);
+	resL = dv_wsoft(wtL);
+	resR = dv_wsoft(wtR);
+	pkTv = max(abs(xTL), abs(xTR));
+	pkBv = max(max(abs(xBL), abs(xBR)), max(abs(rsL), abs(rsR)));
+	pkLv = envV * max(max(abs(xRL), abs(xRR)), max(abs(sndL), abs(sndR)));
+}
+clkT = (ckN < 1000000000) ? ckN + 1 : ckN;
+cvArmN = (startWipe > 0.5) ? 0 : cvArmN;
+cvArm = cvArmN;
+cvN = (startWipe > 0.5) ? 0 : cvNn;
+
+// ---- wipe: when the tails have ended the rings and the convolver's frequency-domain delay line are zeroed in slices (1536 samples), so the
+// next hit meets no old residue; small states at once in the first slice ----
+wj = wipeJ;
+if (startWipe > 0.5) {
+	wj = 0;
+}
+if (wj >= 0) {
+	if (wj < 0.5) {
+		dv_wipe(stSnap, 0, 4, 4, 0);
+		dv_wipe(stDrv, 0, 8, 8, 0);
+		dv_wipe(stCrs, 0, 8, 8, 0);
+		dv_wipe(stFlt, 0, 8, 8, 0);
+		dv_wipe(stRes, 0, 48, 48, 0);
+		dv_wipe(stCmb, 0, 8, 8, 0);
+		dv_wipe(stFrm, 0, 16, 16, 0);
+		dv_wipe(stPha, 0, 24, 24, 0);
+		dv_wipe(stGrn, 0, 16, 16, 0);
+		dv_wipe(stRng, 0, 4, 4, 0);
+		dv_wipe(stChr, 0, 4, 4, 0);
+		dv_wipe(stRev, 0, 16, 16, 0);
+		dv_wipe(stDly, 0, 8, 8, 0);
+		dv_wipe(stSlp, 0, 8, 8, 0);
+		poke(stFlt, 2, 0);
+	}
+	dv_wipe(dvFdt, wj, 257, 393408, 0);
+	dv_wipe(dvFdh, wj, 11, 16512, 0);
+	dv_wipe(dvCvr, wj, 6, 8192, 1);
+	dv_wipe(dvOtr, wj, 6, 8192, 1);
+	dv_wipe(dvOhr, wj, 1, 512, 1);
+	dv_wipe(rbDly, wj, 43, 65536, 1);
+	dv_wipe(rbRev, wj, 43, 65536, 0);
+	dv_wipe(rbSlp, wj, 43, 65536, 0);
+	dv_wipe(rbGrn, wj, 11, 16384, 1);
+	dv_wipe(rbCmb, wj, 6, 8192, 0);
+	dv_wipe(rbChr, wj, 6, 8192, 1);
+	wj = (wj >= 1535) ? -1 : wj + 1;
+}
+wipeJ = wj;
+
 wsmO = (first > 0.5) ? clip(dvwet, 0, 1) : wsm;
 wsmN = wsmO + (clip(dvwet, 0, 1) - wsmO) * 0.002;
 wsm = wsmN;
@@ -622,9 +1117,9 @@ shN = specHead;
 if (asleep < 0.5) {
 	pkInN = max(pkIn, inPk);
 	pkFastN = max(pkFast, fastN);
-	pkTN = max(pkT, gT * xdPk);
-	pkBN = max(pkB, gB * xdPk);
-	pkLN = max(pkL, gR * xdPk * envV);
+	pkTN = max(pkT, pkTv);
+	pkBN = max(pkB, pkBv);
+	pkLN = max(pkL, pkLv);
 	pkOutN = max(pkOut, max(abs(o1), abs(o2)));
 	pkDryN = max(pkDry, xdPk);
 	outM = (o1 + o2) * 0.5;

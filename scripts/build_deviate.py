@@ -411,21 +411,91 @@ def hidden_gen_text():
     return text
 
 
-def gen_code():
-    """cepstrum_lib + deviate_conv + deviate_core, the core's `//@hidden` line replaced by the generated dv_hidden function."""
+def pick_functions(text, names):
+    """The named top-level GenExpr functions of `text` (with the comment lines right above each), in the order given."""
+    lines = text.split("\n")
+    out = []
+    for n in names:
+        start = next((k for k, ln in enumerate(lines) if ln.startswith(n + "(") and ln.rstrip().endswith("{")), None)
+        if start is None:
+            raise SystemExit(f"function {n} not found")
+        top = start
+        while top > 0 and lines[top - 1].startswith("//"):
+            top -= 1
+        end = start
+        while lines[end] != "}":
+            end += 1
+        out.append("\n".join(lines[top:end + 1]))
+    return "\n\n".join(out)
+
+
+def _core_text():
     core = read("deviate_core.genexpr")
     lines = core.split("\n")
     marks = [i for i, ln in enumerate(lines) if ln.strip() == "//@hidden"]
     if len(marks) != 1:
         raise SystemExit("src/deviate_core.genexpr must contain exactly one line `//@hidden`")
     lines[marks[0]] = hidden_gen_text()
-    parts = [read("cepstrum_lib.genexpr"), read("deviate_conv.genexpr"), "\n".join(lines)]
+    return "\n".join(lines)
+
+
+def gen_code():
+    """fft_init (twiddle table of the convolver) + deviate_conv + deviate_fx + deviate_core, the core's `//@hidden` line replaced by the
+    generated dv_hidden function. The main gen has 4 inputs (in1/in2 the audio, in3/in4 the Spectral stage's transient signal) and 2 outputs."""
+    parts = [pick_functions(read("cepstrum_lib.genexpr"), ["fft_init"]), read("deviate_conv.genexpr"), read("deviate_fx.genexpr"), _core_text()]
     return "\n".join(p.rstrip() + "\n" for p in parts)
+
+
+def gendsp_json(code, nin, nout):
+    """A gen patcher (in 1..nin -> codebox -> out 1..nout) as .gendsp JSON text (sc.gendsp_json only has 2 inputs)."""
+    code = sc.minify_gen(code)
+
+    def b(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
+               "patching_rect": [float(x), float(y), 200.0, 22.0]}
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    boxes = [b(f"obj-in{k + 1}", f"in {k + 1}", 20 + 100 * k, 20, 0, 1) for k in range(nin)]
+    boxes.append(b("obj-code", "", 20, 60, nin, nout, cls="codebox", code=code, fontname="<Monospaced>", fontsize=12.0))
+    boxes += [b(f"obj-out{k + 1}", f"out {k + 1}", 20 + 100 * k, 400, 1, 0) for k in range(nout)]
+    lines = [{"patchline": {"source": [f"obj-in{k + 1}", 0], "destination": ["obj-code", k]}} for k in range(nin)]
+    lines += [{"patchline": {"source": ["obj-code", k], "destination": [f"obj-out{k + 1}", 0]}} for k in range(nout)]
+    return json.dumps({"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen", "rect": [50.0, 50.0, 600.0, 450.0], "boxes": boxes, "lines": lines}})
+
+
+SPEC_LIB = ["fft_init", "fft_run", "stft_win"]
+SPEC_SS = ["ss_in", "ss_frame", "ss_mid", "ss_apply", "ss_ola", "ss_out"]
+
+
+def spec_code():
+    """The Spectral split stage: the FFT / STFT helpers it uses + src/deviate_spec.genexpr (a separate gen~, hot-loaded into a shell)."""
+    parts = [pick_functions(read("cepstrum_lib.genexpr"), SPEC_LIB), pick_functions(read("spectral_split_lib.genexpr"), SPEC_SS),
+             read("deviate_spec.genexpr")]
+    return "\n".join(p.rstrip() + "\n" for p in parts)
+
+
+STUB_CODE = "out1 = in1 * 0;\nout2 = in2 * 0;\n"
+
+
+def spec_header():
+    """GEN_SPEC_TEXT / GEN_SPEC_HASH (the real stage) and GEN_SPEC_STUB / GEN_SPEC_STUB_HASH (the shell's initial silent gen), 2 in / 2 out each."""
+    text = gendsp_json(spec_code(), 2, 2)
+    stub = gendsp_json(STUB_CODE, 2, 2)
+    h = hashlib.sha1(text.encode()).hexdigest()[:12]
+    hs = hashlib.sha1(stub.encode()).hexdigest()[:12]
+    return (f"var GEN_SPEC_TEXT = {json.dumps(text)};\nvar GEN_SPEC_HASH = \"{h}\";\n"
+            f"var GEN_SPEC_STUB = {json.dumps(stub)};\nvar GEN_SPEC_STUB_HASH = \"{hs}\";\n")
 
 
 def gen_header():
     """The engine script's first lines: GEN_DSP_TEXT / GEN_DSP_HASH (theme_common.wrap_v8ui_code expects exactly this shape)."""
-    text = sc.gendsp_json(gen_code())
+    text = gendsp_json(gen_code(), 4, 2)
     h = hashlib.sha1(text.encode()).hexdigest()[:12]
     return f"var GEN_DSP_TEXT = {json.dumps(text)};\nvar GEN_DSP_HASH = \"{h}\";\n", h
 
@@ -459,7 +529,7 @@ def engine_script(mod, lay, gen_hdr):
               f"var DV_GEN_PARAMS = {json.dumps(gen_params)};\n"
               f"var DV_PANEL_THEME = {json.dumps(lay['panel_theme'])};\n"
               f"var DV_VARNAMES = {json.dumps({k: P[k][0] for k in P})};\n"
-              f"var DV_SPEC_STAGE = false;\n")  # the DSP lane sets this when the Spectral split stage exists
+              f"var DV_SPEC_STAGE = true;\n" + spec_header())
     return (gen_hdr + consts + read("deviate_config.js").rstrip() + "\n\n" + read("deviate_ir.js").rstrip() + "\n\n"
             + read("deviate_dsp.js").rstrip() + "\n\n" + read("deviate_engine.js").rstrip() + "\n")
 
@@ -503,6 +573,9 @@ def build_device(face, out_dir=None):
         # every gen-bound message goes into this hub (data on its right inlet); the scripted gen~ connects to its outlet.
         # gate 1 1, not t a: a scripted connect from t a silently makes no cord.
         named(newobj("obj-gen-in", "gate 1 1", 20, 100, 60, 2, 1), "dv_genin"),
+        # the Spectral stage's own hub (its gen~ shell takes only the `scope` binding): the engine sends it as `specmsg scope <name>`
+        named(newobj("obj-spec-in", "gate 1 1", 160, 100, 60, 2, 1), "dv_specin"),
+        newobj("obj-route-spec", "route specmsg", 20, 70, 100, 1, 2, ["", ""]),
         newobj("obj-buf-scope", f"buffer~ ---deviatescope @samps {SCOPE_SAMPS}", 480, 300, 260, 1, 2, ["float", "bang"]),
         newobj("obj-buf-ctl", f"buffer~ ---deviatectl @samps {CTL_SAMPS}", 480, 330, 240, 1, 2, ["float", "bang"]),
         newobj("obj-buf-ir", f"buffer~ ---deviateir @samps {IR_SAMPS}", 480, 360, 260, 1, 2, ["float", "bang"]),
@@ -531,7 +604,8 @@ def build_device(face, out_dir=None):
         line("obj-loadbang", 0, "obj-msg-names", 0), line("obj-msg-names", 0, "obj-engine", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-engine", 0),
         # engine outlets: 0 gen hub, 1 state bus, 2 MIDI From menu (_parameter_range / setsymbol), 3 `<key> <value>` -> the real objects
-        line("obj-engine", 0, "obj-gen", 0), line("obj-engine", 1, "obj-state-send", 0),
+        line("obj-engine", 0, "obj-route-spec", 0), line("obj-route-spec", 1, "obj-gen", 0),
+        line("obj-route-spec", 0, "obj-spec-in", 1), line("obj-engine", 1, "obj-state-send", 0),
         line("obj-engine", 2, "obj-ctrl-midi_in", 0), line("obj-engine", 3, "obj-route-key", 0),
         line("obj-state-test", 0, "obj-engine", 0),
         line("obj-midiin", 0, "obj-midiparse", 0), line("obj-midiparse", 0, "obj-stripnote", 0),
@@ -580,6 +654,19 @@ def build_device(face, out_dir=None):
     return dev_name, gen_hash
 
 
+def ir_cache(sr=48000):
+    """build_cache/deviate_ir_<sr>.wav: the IR bank spectra the engine builds at run time, for the audio tests (the VM has no node)."""
+    out = os.path.join(ROOT, "build_cache", f"deviate_ir_{sr}.wav")
+    srcs = [os.path.join(SRC, f) for f in ("deviate_ir.js", "deviate_config.js")] + [os.path.join(ROOT, "scripts", "make_deviate_ir_cache.js")]
+    if os.path.isfile(out) and os.path.getmtime(out) >= max(os.path.getmtime(s) for s in srcs):
+        return out
+    try:
+        subprocess.run(["node", srcs[2], str(sr), out], cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        print("note: node is not available, build_cache/deviate_ir_%d.wav was not refreshed" % sr)
+    return out
+
+
 def build_sets(out_dir=None):
     gen = os.path.join(ROOT, "scripts", "make_deviate_set.py")
     if not os.path.isfile(gen):
@@ -615,6 +702,7 @@ def main():
         hashes[name] = h
     if len(set(hashes.values())) > 1:
         raise SystemExit(f"GEN_DSP_HASH differs between builds: {hashes}")
+    ir_cache()
     if not args.no_sets and not args.face:
         build_sets()
 

@@ -21,21 +21,20 @@ function ok(cond, msg) {
 }
 const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
 
-// ---- build the gen text exactly like the build: cepstrum_lib + deviate_conv + deviate_core with //@hidden replaced ----
+// ---- the gen text is the build's: fft_init + deviate_conv + deviate_fx + deviate_core with //@hidden replaced (python3 scripts/build_deviate.py) ----
 const coreRaw = read("deviate_core.genexpr");
 const coreLines = coreRaw.split("\n");
 ok(coreLines.filter((l) => l === "//@hidden").length === 1, "the core has the line //@hidden exactly once");
 const hiddenText = cfg.dvHiddenGen();
 const core = coreLines.map((l) => (l === "//@hidden" ? hiddenText : l)).join("\n");
-const full = [read("cepstrum_lib.genexpr"), read("deviate_conv.genexpr"), core].join("\n");
-try {
-    const bd = path.join(ROOT, "scripts", "build_deviate.py");
-    if (fs.existsSync(bd)) {
-        const r = cp.spawnSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import build_deviate; sys.stdout.write(build_deviate.gen_code())"], { cwd: ROOT, encoding: "utf8" });
-        if (r.status === 0 && r.stdout) ok(r.stdout.trim() === full.trim(), "build_deviate.gen_code() equals the concatenation built here");
-        else console.log("note: build_deviate.gen_code() not usable yet: " + (r.stderr || "").split("\n")[0]);
-    }
-} catch (e) { console.log("note: " + e.message); }
+let full = "";
+{
+    const r = cp.spawnSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import build_deviate; sys.stdout.write(build_deviate.gen_code())"], { cwd: ROOT, encoding: "utf8" });
+    ok(r.status === 0 && r.stdout.length > 1000, "build_deviate.gen_code() works: " + (r.stderr || "").split("\n").slice(-2).join(" "));
+    full = r.stdout;
+    ok(full.includes(hiddenText), "the build embeds dvHiddenGen() from src/deviate_config.js");
+    ok(full.includes(read("deviate_conv.genexpr").trim()) && full.includes(read("deviate_fx.genexpr").trim()), "the build embeds deviate_conv + deviate_fx");
+}
 
 // ---- 1. lint ----
 const lint = lintGenExpr(full, "deviate gen");
@@ -128,7 +127,8 @@ ok(code.includes(String(Math.pow(10, -3.3))), "Ring fade start level 10^-3.3");
 ok(code.includes("dv_hidden(dvAE, dvAT, dvHV);"), "hidden values from the applied page");
 
 // ---- 3. function parity ----
-const fns = gx.load(hiddenText, core);
+globalThis.atan2 = Math.atan2;
+const fns = gx.load(full);
 const mkData = (arr, size) => { const d = new gx.DataSim(size || arr.length); arr.forEach((v, i) => d.poke(v, i)); return d; };
 // dv_hidden vs dvHiddenFromMetas
 {
@@ -264,14 +264,14 @@ function makeSim(overrides) {
     decls.Param.forEach((d) => rep(d.name, "P." + d.name));
     decls.History.forEach((d) => rep(d.name, "H." + d.name));
     decls.History.forEach((d) => { body = body.replace(new RegExp(`^(\\s*)H\\.${d.name} = `, "gm"), `$1W.${d.name} = `); });
-    rep("in1", "IO.in1"); rep("in2", "IO.in2"); rep("samplerate", "IO.sr");
+    rep("in1", "IO.in1"); rep("in2", "IO.in2"); rep("in3", "IO.in3"); rep("in4", "IO.in4"); rep("samplerate", "IO.sr");
     body = body.replace(/^out1 = /m, "IO.out1 = ").replace(/^out2 = /m, "IO.out2 = ");
     const H = {}, W = {}, P = {};
     decls.History.forEach((d) => { H[d.name] = Number(d.arg); });
     decls.Param.forEach((d) => { P[d.name] = Number(d.arg); });
     Object.assign(P, overrides || {});
     const data = {};
-    decls.Data.forEach((d) => { data[d.name] = new gx.DataSim(Number(d.arg)); });
+    decls.Data.forEach((d) => { const q = d.arg.split(",").map(Number); data[d.name] = new gx.DataSim(q[0], q[1] || 1); });
     decls.Buffer.forEach((d) => { data[d.name] = new gx.DataSim(d.name === "scope" ? cfg.DV_SCOPE_SAMPS : d.name === "spec" ? cfg.DV_SPEC_N : 64, d.name === "spec" ? 5 : 1); });
     class Dly {
         constructor(n) { this.n = n; this.a = new Float64Array(n); this.w = 0; }
@@ -283,14 +283,15 @@ function makeSim(overrides) {
     const names = Object.keys(data);
     const B = { max: Math.max, min: Math.min, abs: Math.abs, floor: Math.floor, pow: Math.pow, exp: Math.exp, sin: Math.sin, tanh: Math.tanh,
         clip: (x, lo, hi) => Math.max(lo, Math.min(hi, x)), peek: (b, i, c) => b.peek(i, c), poke: (b, v, i, c) => b.poke(v, i, c), wrap, dim: (bf) => bf.size,
-        fixnan: (x) => (Number.isFinite(x) ? x : 0), dv_draw: fns.dv_draw, dv_hidden: fns.dv_hidden, dv_soft: fns.dv_soft };
+        fixnan: (x) => (Number.isFinite(x) ? x : 0), sqrt: Math.sqrt, tan: Math.tan, cos: Math.cos, log: Math.log, log10: Math.log10, round: Math.round };
+    Object.assign(B, fns);
     const bnames = Object.keys(B);
     const fn = new Function("H", "W", "P", "IO", ...bnames, ...names, body);
-    const IO = { sr: 48000, in1: 0, in2: 0, out1: 0, out2: 0 };
+    const IO = { sr: 48000, in1: 0, in2: 0, in3: 0, in4: 0, out1: 0, out2: 0 };
     const sim = {
         P, H, data, IO, n: 0,
         step(a, b) {
-            IO.in1 = a; IO.in2 = b === undefined ? a : b;
+            IO.in1 = a; IO.in2 = b === undefined ? a : b; IO.in3 = 0; IO.in4 = 0;
             fn(H, W, P, IO, ...bnames.map((k) => B[k]), ...names.map((k) => data[k]));
             Object.assign(H, W);
             sim.n++;
@@ -302,9 +303,10 @@ function makeSim(overrides) {
 }
 function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp * Math.sin(2 * Math.PI * 1000 * t / 48000) : 0; }
 {
-    // delayed dry is bit exact for every Mix; windows/hidden present
-    for (const wet of [0, 1, 0.37]) {
-        const sim = makeSim({ dvwet: wet });
+    // delayed dry is bit exact at Mix 0 (default metas: effects run, Mix scales their residue) and at every Mix when the metas are neutral
+    const NEUTRAL = { dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 0, dvv5: 0, dvv6: 0, dvv7: 0, dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, dvr7: 0 };
+    for (const [wet, neutral] of [[0, false], [1, true], [0.37, true]]) {
+        const sim = makeSim(Object.assign({ dvwet: wet }, neutral ? NEUTRAL : {}));
         let bad = 0, nan = 0;
         const hist = [];
         for (let n = 0; n < 12000; n++) {
@@ -315,7 +317,7 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
             const want = n >= 256 ? hist[n - 256] : 0;
             if (y !== want) bad++;
         }
-        ok(bad === 0 && nan === 0, `sim: output is the input delayed 256 samples exactly at Mix ${wet} (${bad} mismatches)`);
+        ok(bad === 0 && nan === 0, `sim: output is the input delayed 256 samples exactly at Mix ${wet}${neutral ? " with neutral metas" : ""} (${bad} mismatches)`);
     }
     for (const mode of [0, 1]) {
         const sim = makeSim({ dvsplit: mode });
@@ -426,6 +428,28 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
         ok(near(sim.sc(cfg.DV_SCOPE.TR_S), trExp, 1e-9), `sim: TR_S for Ring ${ring}`);
         ok(worst < 1e-9 && ticks > 100, `sim: Ring envelope Ring ${ring} follows dvRingEnv (worst ${worst})`);
         ok(zeroAfter, `sim: Ring envelope is exactly 0 after hold + Tr + fade (Ring ${ring})`);
+    }
+    // Ring cap in the whole core (Node twin of the audio cases ring_cap_*): every effect on, Ring 100: finite, bounded, and exactly the delayed dry from
+    // 2.0 s after the page was applied on (the convolver is off here: no IR bank in the simulated buffer)
+    {
+        const sim = makeSim({ dvv0: 100, dvv1: 100, dvv2: 100, dvv3: 100, dvv4: 100, dvv5: 100, dvv6: 100, dvv7: 100, dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, dvr7: 0 });
+        const hist = [];
+        let nan = 0, peakV = 0, applyN = -1, lastA = 0, late = 0, resMid = 0;
+        for (let n = 0; n < 48000 * 2.4; n++) {
+            const x = burst(n, 1000, 300, 0.8) + (n > 1000 && n < 1500 ? 0.2 * Math.sin(n * 0.37) : 0);
+            hist.push(x);
+            const y = sim.step(x);
+            if (!Number.isFinite(y)) nan++;
+            peakV = Math.max(peakV, Math.abs(y));
+            const a = sim.sc(cfg.DV_SCOPE.PAGE_APPLIED);
+            if (a !== lastA) { applyN = n; lastA = a; }
+            const dry = n >= 256 ? hist[n - 256] : 0;
+            if (applyN >= 0 && n > applyN + 48000 * 0.2 && n < applyN + 48000 * 1.0) resMid = Math.max(resMid, Math.abs(y - dry));
+            if (applyN >= 0 && n > applyN + 48000 * 2.0 + 64) late = Math.max(late, Math.abs(y - dry));
+        }
+        ok(nan === 0 && peakV < 4, `sim: all effects, Ring 100: finite and bounded (peak ${peakV.toFixed(3)})`);
+        ok(resMid > 0.002, `sim: the tail is there between 0.2 and 1 s (${resMid.toExponential(2)})`);
+        ok(late === 0, `sim: the output is exactly the delayed dry from 2.0 s after the apply on (max ${late})`);
     }
     // sleep: silence for 0.5 s -> exact zeros, ASLEEP 1, ALIVE/FRAMES moving; a hit wakes it
     {
