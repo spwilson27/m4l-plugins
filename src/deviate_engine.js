@@ -55,10 +55,40 @@ function anything() {
     var name = messagename;
     if (!name || name.indexOf("set_") !== 0) return;
     var key = name.substring(4);
+    // Spike S1 (e): the Button-mode live.text outputs a bare `bang` (not 1 / 0) when pressed, and nothing when set to 0 through the LOM
+    if (key === "reroll") {
+        if (!arguments.length || String(arguments[0]) === "bang" || Number(arguments[0]) > 0.5) dvOnReroll(1);
+        return;
+    }
     var v = arguments.length ? Number(arguments[0]) : 0;
     if (!isFinite(v)) return;
     dvRaw[key] = v;
     if (key === "split") dvOnSplit(v);
+}
+
+// Reroll: the Button-mode live.text sends a bare `bang` per press (a gen Param can neither hold nor see that: Spike S1 (e) counted
+// nothing). So the engine owns the gen's dvreroll: every press becomes 0, then 1 after 25 ms, then 0 after 100 ms, a clean rising edge.
+var dvRrBusy = false, dvRrPending = 0, dvRrTasks = [];
+var dvRrCalls = 0, dvRrSent = [];
+function dvOnReroll(v) {
+    dvRrCalls++;
+    if (!(v > 0.5)) return;
+    if (dvRrBusy) { dvRrPending++; return; }
+    dvRrBusy = true;
+    outlet(0, "dvreroll", 0);
+    var steps = [[25, 1], [100, 0]];
+    steps.forEach(function (st, i) {
+        var t = new Task(function () {
+            outlet(0, "dvreroll", st[1]);
+            dvRrSent.push(st[1]);
+            if (i === steps.length - 1) {
+                dvRrBusy = false;
+                if (dvRrPending > 0) { dvRrPending--; dvOnReroll(1); }
+            }
+        }, this);
+        t.schedule(st[0]);
+        dvRrTasks.push(t);
+    });
 }
 
 function names(scopeName, ctlName, irName, specName, testName, stateName) {
@@ -86,6 +116,7 @@ function dvDevResend() {
     }
     outlet(0, "dvsplit", dvSplitEff);
     outlet(0, "dvmtrig", dvMtrig);
+    if (!dvRrBusy) outlet(0, "dvreroll", 0);   // the gen takes the first value as its baseline
 }
 
 function dvGenAlive() {
@@ -101,7 +132,37 @@ function dvGenAlive() {
 
 function dvDevChanged() {
     dvBroadcastDsp();
-    if (dvDsp.ready) dvIrStartSoon();
+    if (dvDsp.ready) {
+        dvIrStartSoon();
+        dvStatePollStart();
+    }
+}
+
+// Live only calls getvalueof() (to save a Set or duplicate a track) after notifyclients(): without it the blob it keeps is the
+// initial one. Spike S1 (a): a duplicate_track clone got an empty draw state. So the engine polls the draw serial / reroll counter
+// (300 ms, a Task that costs one 2-float peek) and notifies when either moved.
+var dvStateTask = null;
+var dvStateKey = -1;
+function dvStatePollStart() {
+    if (dvStateTask || typeof Task === "undefined") return;
+    dvStateTask = new Task(dvStatePoll, this);
+    dvStateTask.interval = 300;
+    dvStateTask.repeat();
+}
+
+function dvStatePoll() {
+    try {
+        if (!dvNames.scope || !dvDsp.ready) return;
+        var b = new Buffer(dvNames.scope);
+        var ser = Number(b.peek(1, DV_SCOPE.DRAW_SERIAL, 1)), rr = Number(b.peek(1, DV_SCOPE.REROLL, 1));
+        if (!isFinite(ser) || !isFinite(rr)) return;
+        var key = ser * 65536 + rr;
+        if (key !== dvStateKey) {
+            var first = dvStateKey < 0;
+            dvStateKey = key;
+            if (!first && typeof notifyclients === "function") notifyclients();
+        }
+    } catch (e) {}
 }
 
 function dvDevSr() {
@@ -160,11 +221,36 @@ function init_dsp() {
     dvMidiInit();
     dvApplyPanelTheme();
     dvDspSchedule(dvSelfId);
+    [400, 1500, 4000].forEach(function (ms) {
+        var t = new Task(dvFrontControls, this);
+        t.schedule(ms);
+        dvInitTasks.push(t);
+    });
     [100, 700, 2500].forEach(function (ms) {
         var t = new Task(bang, this);
         t.schedule(ms);
         dvInitTasks.push(t);
     });
+}
+
+// Spike S1 (b): Live loads the canvases (v8ui) in front of the live.* widgets whatever their order in the saved file, so a canvas
+// under widgets hid them. Bringing every live.* box (not comments / lines) to the front after load puts them back on top, in their
+// saved relative order. Run a few times: Live finishes loading the patcher asynchronously.
+var dvFrontN = 0;
+function dvFrontControls() {
+    try {
+        if (!dvPatcher || typeof dvPatcher.bringtofront !== "function") return;
+        var b = dvPatcher.firstobject, n = 0, list = [];
+        while (b) {
+            var mc = String(b.maxclass);
+            if (mc.indexOf("live.") === 0 && mc !== "live.comment" && mc !== "live.line" && mc !== "live.thisdevice") list.push(b);
+            b = b.nextobject;
+        }
+        for (var i = 0; i < list.length; i++) { dvPatcher.bringtofront(list[i]); n++; }
+        dvFrontN = n;
+    } catch (e) {
+        dvFrontN = -1;
+    }
 }
 
 function dvRegisterHook() {
@@ -459,6 +545,7 @@ function dvApplyPanelTheme() {
 
 // ---- test hook (receive ---deviatetest; scripts/test_deviate_live.js) -----------------------------------------------------------
 //   test_report            Global("deviate_test").report_<LOM id> = JSON of the engine / device state
+//   test_blob              Global("deviate_test").blob_<LOM id> = getvalueof() and the restored state
 //   test_hit               one hit as if a MIDI note arrived (dvmtrig counter)
 //   test_reroll            press and release the Reroll button through the real object
 //   test_set <key> <v>     set a parameter through its real live.* object (undo / automation / echo as for a user)
@@ -482,8 +569,20 @@ function test_report() {
         geom: geom, raw: dvRaw, hook: dvNames.test, mtrig: dvMtrig, hitsSent: dvHitsSent, midi: dvMidi,
         ir: { ready: dvIr.ready, ver: dvIr.ver, sr: dvIr.sr }, alive: dvGenAlive(),
         scope: scope ? Array.prototype.slice.call(scope) : null, hidden: hidden ? Array.prototype.slice.call(hidden) : null,
-        ctlGen: dvCtlGen, restored: dvRestored, sections: dvSections.length,
+        ctlGen: dvCtlGen, frontN: dvFrontN, rr: { calls: dvRrCalls, sent: dvRrSent.slice(-8), busy: dvRrBusy }, restored: dvRestored, sections: dvSections.length,
     });
+}
+
+/** Spike S1 (a): the state blob exactly as Live would save it (getvalueof), plus what setvalueof restored. */
+function test_blob() {
+    var g = new Global("deviate_test");
+    var b = null;
+    try { b = Array.prototype.slice.call(getvalueof()); } catch (e) { b = ["err " + e]; }
+    g["blob_" + dvSelfId] = JSON.stringify({ blob: b, restored: dvRestored, sections: dvSections.length, ctlGen: dvCtlGen });
+}
+
+function test_front() {
+    dvFrontControls();
 }
 
 function test_hit() {

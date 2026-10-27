@@ -37,7 +37,7 @@ CTL_SAMPS = 64
 IR_SAMPS = 2500000
 SPEC_SAMPS = 2048  # x 5 channels
 # Spike S1 (DEVIATE_PLAN.md): may a transparent live.* sit over an ignoreclick canvas (z-order in Live)? Off until proven in Live.
-UNDER_CONTROLS = False
+UNDER_CONTROLS = True  # spike S1 passed (README "Spike S1"): the engine brings every live.* to the front, so widgets over an ignoreclick canvas work
 
 ONOFF = ["Off", "On"]
 SPLITS = ["Envelope", "Spectral"]
@@ -89,7 +89,7 @@ for _i, _n in enumerate(METAS):
 P["midi_in"] = _p("MIDI From", "MIDI In", 0, 1, 0, 2, 9, None, 1,
                   "Where MIDI notes that count as hits come from: a MIDI track or a port. Velocity and pitch are ignored.", ["No Input", "-"])
 INVISIBLE = {"split": 1, "midi_in": 2}  # parameter_invisible (1 = stored only, 2 = not stored)
-ENGINE_GEN = {"split"}  # the engine sends these (it decides when and sets the latency attribute)
+ENGINE_GEN = {"split", "reroll"}  # the engine sends these (split: it sets the latency attribute; reroll: it turns every 1 into a pulse the gen can see)
 PARAM_ORDER = list(P)
 ASSERT_N = 33
 assert len(P) == ASSERT_N, len(P)
@@ -349,8 +349,8 @@ def validate_layout(name, lay):
                 problems.append(f"canvas {c['id']} subscribes to unknown parameter {k}")
         if c.get("role", "display") not in ("display", "hit"):
             problems.append(f"canvas {c['id']}: role must be 'display' or 'hit'")
-    # rule 4: no live.* over an interactive canvas. An ignoreclick canvas may sit under a transparent live.* only with UNDER_CONTROLS
-    # (spike S1) and the widget must be later in `boxes` (controls always are).
+    # rule 4: no live.* over an interactive canvas. An ignoreclick canvas may sit under live.* widgets (UNDER_CONTROLS, spike S1: Live puts
+    # v8uis in front of widgets, the engine's dvFrontControls() brings every live.* back to the front).
     live_boxes = [b["box"] for b in lay["controls"] + lay["extra_boxes"]
                   if str(b["box"].get("maxclass", "")).startswith("live.") and b["box"].get("presentation") == 1 and not b["box"].get("hidden")
                   and b["box"].get("maxclass") not in ("live.comment", "live.line")]
@@ -362,7 +362,7 @@ def validate_layout(name, lay):
                 if not c.get("ignoreclick"):
                     problems.append(f"{bx['id']} overlaps interactive canvas {c['id']} (give the canvas ignoreclick or move the widget)")
                 elif not UNDER_CONTROLS:
-                    problems.append(f"{bx['id']} overlaps canvas {c['id']}: widgets over a canvas are disabled until spike S1 passes (UNDER_CONTROLS)")
+                    problems.append(f"{bx['id']} overlaps canvas {c['id']}: widgets over a canvas are disabled (UNDER_CONTROLS)")
     ids_order = [b["box"]["id"] for b in lay["panels"]]
     for p in lay["panels"]:
         if p["box"].get("background") != 1:

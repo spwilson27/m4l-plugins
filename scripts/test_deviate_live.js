@@ -203,7 +203,7 @@ step("report", () => {
         check(r.dsp === 1, `${d.face}: test_report dsp ready (${r.dsp}${r.dspError ? " " + r.dspError : ""})`);
         check(String(r.face).toLowerCase() === d.face.toLowerCase(), `${d.face}: report face "${r.face}"`);
         let w = NaN; try { w = amxdWidth(d.face); } catch (e) { /* no file on the host */ }
-        check(r.geom && r.geom.devicewidth === w, `${d.face}: devicewidth ${r.geom && r.geom.devicewidth} == amxd ${w}`);
+        if (!isNaN(w)) check(r.geom && r.geom.devicewidth === w, `${d.face}: devicewidth ${r.geom && r.geom.devicewidth} == amxd ${w}`);
         check(r.geom && r.geom.latencyAttr === 256, `${d.face}: latency attribute ${r.geom && r.geom.latencyAttr} == 256`);
         check(r.alive > 0, `${d.face}: gen alive counter ${r.alive}`);
         check(Array.isArray(r.scope) && r.scope.length >= 160, `${d.face}: scope header read (${r.scope && r.scope.length} floats)`);
@@ -219,8 +219,10 @@ step("params", () => {
         const names = paramNames(d);
         check(JSON.stringify(names) === JSON.stringify(first), `${d.face}: parameter names / order equal the first device's (${names.length})`);
     }
-    check(JSON.stringify(first) === JSON.stringify(want), `parameter list equals --dump-params (${first.length} vs ${want.length})` +
-        (JSON.stringify(first) === JSON.stringify(want) ? "" : `\n  live: ${first.join(", ")}\n  want: ${want.join(", ")}`));
+    // Live lists the parameters in its own order (not the table's), so compare as sets; the order only has to be the same in every device
+    const sw = want.slice().sort(), sf = first.slice().sort();
+    check(JSON.stringify(sf) === JSON.stringify(sw), `parameter list equals --dump-params as a set (${first.length} vs ${want.length})` +
+        (JSON.stringify(sf) === JSON.stringify(sw) ? "" : `\n  live: ${first.join(", ")}\n  want: ${want.join(", ")}`));
 });
 
 // ---- helpers for the value checks ---------------------------------------------------------------------------------------------------
@@ -233,6 +235,7 @@ run.forEach((d) => step("snapshot", () => snapshot(d)));
 step("echo", () => {
     for (const d of run) {
         setParam(d, "Snap", 77); setParam(d, "R Snap", 12);
+        hook(d, "test_hit"); sleep(300);   // the gen refreshes its echo block only while awake (asleep after 0.35 s of silence): a hit wakes it
         const ok = waitFor(() => { const s = scope(d); return Math.abs(s[S.ECHO + E.V] - 77) < 1e-3 && Math.abs(s[S.ECHO + E.R] - 12) < 1e-3 ? s : null; }, 1500, 300);
         const s = ok || scope(d);
         check(!!ok, `${d.face}: LOM Snap 77 / R Snap 12 reach the gen (echo ${s[S.ECHO + E.V]} / ${s[S.ECHO + E.R]})`);
@@ -267,7 +270,8 @@ step("hit", () => {
     }
     // locks: L Snap + L Pitch hold their draws across the next hit (all ranges 50)
     setParam(target, "L Snap", 1); setParam(target, "L Pitch", 1);
-    sleep(700);
+    sleep(300);
+    hook(target, "test_hit"); sleep(700);   // the gen refreshes its echo block only while awake (it sleeps after 0.35 s of silence): a hit wakes it
     const s0 = scope(target);
     check((s0[S.ECHO + E.LOCKS] & 3) === 3, `${target.face}: lock mask in the echo ${s0[S.ECHO + E.LOCKS]} has bits 0 and 1`);
     hook(target, "test_hit"); sleep(500);

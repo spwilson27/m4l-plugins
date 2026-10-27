@@ -32,7 +32,7 @@ check("order is forever (first 24 keys)", dump.slice(0, 24).map((p) => p.key).jo
     "v_snap,v_pitch,v_body,v_motion,v_space,v_echo,v_grit,v_ring,r_snap,r_pitch,r_body,r_motion,r_space,r_echo,r_grit,r_ring,sens,thresh,chance,mix,seed,drift,reroll,split");
 check("value defaults 30,50,30,20,30,20,20,10", dump.slice(0, 8).map((p) => p.init).join() === "30,50,30,20,30,20,20,10");
 check("every gen message is unique", (() => { const g = dump.map((p) => p.gen).filter(Boolean); return new Set(g).size === g.length; })());
-check("DV_ENGINE_GEN split", C.DV_ENGINE_GEN.split === 1);
+check("DV_ENGINE_GEN split", C.DV_ENGINE_GEN.split === 1 && C.DV_ENGINE_GEN.reroll === 1);
 
 // ---- scope layout ----------------------------------------------------------------------------------------------
 const S = C.DV_SCOPE;
@@ -202,6 +202,13 @@ for (const kind of ["idle", "hit", "ring", "extreme"]) {
 }
 check("preview states differ", JSON.stringify(Array.from(C.dvPreviewTel("idle"))) !== JSON.stringify(Array.from(C.dvPreviewTel("hit"))) &&
     C.dvPreviewTel("extreme")[S.HIT_GATE] === 0 && C.dvPreviewTel("idle")[S.ONSET_AGE] === -1);
+
+{   // spike S1 findings the engine must keep
+    const eng = require("fs").readFileSync(require("path").join(__dirname, "..", "src", "deviate_engine.js"), "utf8");
+    check("engine calls notifyclients() when the draw state moves (Live reads getvalueof only after it)", /notifyclients\(\)/.test(eng) && /dvStatePoll/.test(eng));
+    check("engine brings every live.* to the front (canvases load in front of widgets)", /bringtofront/.test(eng) && /dvFrontControls/.test(eng));
+    check("engine turns a Reroll press (a bare bang) into a 0 -> 1 -> 0 pulse for the gen", /"bang"/.test(eng) && /dvOnReroll/.test(eng));
+}
 
 console.log(`\ndeviate config: ${passes} passed, ${fails} failed`);
 process.exit(fails ? 1 : 0);

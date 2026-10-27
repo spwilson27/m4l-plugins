@@ -110,7 +110,7 @@ var DV_PARAM_INDEX = {};
     for (var i = 0; i < DV_PARAMS.length; i++) DV_PARAM_INDEX[DV_PARAMS[i][0]] = i;
 })();
 // Parameters whose gen message the ENGINE sends (it decides when): split (waits for the spec stage, sets the latency attribute)
-var DV_ENGINE_GEN = { split: 1 };
+var DV_ENGINE_GEN = { split: 1, reroll: 1 };
 
 // ---- utilities ---------------------------------------------------------------------------------------------------
 function dvClamp(x, lo, hi) {

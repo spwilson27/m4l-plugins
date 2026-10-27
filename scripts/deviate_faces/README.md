@@ -125,8 +125,34 @@ MIDI From routing, the IR bank, the state blob `DeviateStateData` and the Live t
 check): `r ---deviatetest` with the expanded per-instance name published in `Global("deviate_hooks").map` (JSON `{LOM device id: name}`); messages
 `test_report`, `test_hit`, `test_reroll`, `test_set <key> <v>`; report in `Global("deviate_test").report_<LOM id>`.
 
-## Spike S1 (open): results go here
+## Spike S1 (done, Live 12.4.x in the VM, 2026-10-27): results and decisions
 
-(a) blob persistence of the non-presentation engine v8ui across `duplicate_track`; (b) `ignoreclick` canvas under `live.*` widgets (z-order) ->
-`UNDER_CONTROLS` in `build_deviate.py`; (c) `setattr("latency")` following Split Mode; (d) `midi_inputs 0` routing into `midiin`; (e) the momentary Reroll
-returning to 0 through the LOM. Not run yet.
+Run with `scripts/vm_deviate.sh spike --phase adde|e2|b` (`scripts/test_deviate_spike_s1.js`) and the skeleton `scripts/vm_deviate.sh test --midi`
+(`scripts/test_deviate_live.js`, now all green on a Stub + a scratch "Under" device).
+
+* **(a) blob persistence: PASS, with a fix.** `duplicate_track` of the Stub: the clone's `DeviateStateData` equals the original's (20 ints, e.g.
+  `[1,1,7,0,7091,8295,...]`, reroll counter 7 survives, the clone's gen holds the same 8 draws to 0.01). Before the fix it was NOT saved: Live
+  calls `getvalueof()` only after `notifyclients()`, and the engine never called it (clone got `[1,0,0,...]`). The engine now polls the gen's
+  DRAW_SERIAL / REROLL (300 ms Task, 2 floats) and calls `notifyclients()` when they move. **Decision: the blob stays on the non-presentation
+  engine v8ui** (no 1x1 presentation v8ui needed). A real Set save / reopen was not run (duplicate_track is the stand-in, as for Mega Modulator).
+* **(b) ignoreclick canvas under live.* widgets: PASS with a rule.** Live loads the v8ui canvases IN FRONT of the live.* widgets whatever their
+  order in the saved file: a full-device ignoreclick canvas under the whole Stub layout hid every widget (screenshot: only the canvas painted).
+  The engine now calls `patcher.bringtofront()` on every `live.*` box (not live.comment / live.line / live.thisdevice; 33 boxes) at +0.4 / 1.5 /
+  4 s after init (`dvFrontControls`, hook `test_front`, report `frontN`). Then the widgets draw over the canvas (the canvas shows through their
+  transparent parts) and real OS clicks reach them: Lock toggle `L Snap` 0 -> 1, Snap dial drag 30 -> 53.6, Chance dial drag 100 -> 76.4, with the
+  canvas under them (`ignoreclick 1`). `live.numbox` drags did not move the value, but they do not on the Stub (no overlap) either, so that is
+  the synthetic drag, not the canvas. **`UNDER_CONTROLS = True`.** Face rule: the canvas must have `"ignoreclick": True` and `role: "display"`;
+  every `live.*` goes in `controls` (the engine fronts them, nothing else to do); a canvas that needs clicks (`role: "hit"`) still must not overlap
+  a widget. Do not draw text under widgets expecting it to stay readable: dials / numboxes paint their own labels and values over it.
+* **(c) latency: PASS.** Split 1 -> `latency_in_samples` 1279 within 2 s, back to 256 (telemetry LATENCY follows; attribute 256 at load).
+* **(d) MIDI From: PASS.** `this_device midi_inputs 0` `routing_type` set to the "Deviate MIDI Src" track (value form: the `{identifier}` dict);
+  note-ons reach `midiin`: engine `midi.hits` +7, gen HITS 55 -> 62 per 4-bar clip pass. Available types list the MIDI tracks by name.
+* **(e) Reroll: PASS, with a fix.** The Button-mode `live.text` emits a bare `bang` (not 1 / 0) per press and nothing for a LOM set of 0; its LOM
+  value stays 1 after a LOM set of 1 (a second press needs 0 -> 1 again, or a real mouse press). Passed straight to the gen as `dvreroll` the press
+  was never seen (0 rerolls). **The engine now owns `dvreroll`** (`ENGINE_GEN` / `DV_ENGINE_GEN` include `reroll`): every press becomes
+  0, then 1 after 25 ms, then 0 after 100 ms (queued if pressed again meanwhile), resend sends 0 as the baseline. Result: exactly one reroll and one
+  new draw per press, awake and asleep (REROLL 5 -> 6, DRAW_SERIAL 59 -> 60), HITS unchanged.
+* **Other findings.** DSP ready arrives 0.75 s after gen creation (trace `dsp ready after 750 ms`), IR bank 2.4 s. The gen refreshes its ECHO
+  telemetry block only while awake (it sleeps after about 0.35 s of silence), so tests wake it with a hit before reading echoes. Live lists the
+  device parameters in its own order (not the table's, equal across devices): compare as sets. Invisible parameters (Split, MIDI In) are not in
+  the LOM list: use `test_set split`.
