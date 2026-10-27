@@ -25,7 +25,6 @@ import os
 import struct
 import subprocess
 import sys
-import time
 
 from minify_embed import minify_patcher
 from minify_gen import minify_gen
@@ -367,7 +366,19 @@ def line(src, so, dst, di):
     return {"patchline": {"source": [src, so], "destination": [dst, di]}}
 
 
-BUILD_STAMP = time.strftime("%Y%m%d-%H%M%S")
+def _source_stamp():
+    """Deterministic build stamp: hash of this device's sources (no wall clock, so rebuilds are byte-identical)."""
+    import hashlib
+    h = hashlib.sha1()
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for p in sorted(glob.glob(os.path.join(root, "src", "reverbplus_*"))):
+        if os.path.isfile(p):
+            h.update(os.path.basename(p).encode()); h.update(open(p, "rb").read())
+    return h.hexdigest()[:12]
+
+
+BUILD_STAMP = _source_stamp()
 
 
 def read(name):

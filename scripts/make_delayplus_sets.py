@@ -218,6 +218,9 @@ def m4l_xml(amxd, out_path, devid):
         sys.exit("missing .amxd: %s" % amxd)
     st = os.stat(amxd)
     rel = os.path.relpath(amxd, os.path.dirname(os.path.abspath(out_path)))
+    if out_path.endswith(".adg"):
+        # presets stay portable and byte-deterministic: relative reference only, no checkout path, no mtime
+        return fill(tpl("m4l"), DEVID=devid, REL=esc(rel), ABS="", SIZE=st.st_size, CRC=0, MOD=0)
     return fill(tpl("m4l"), DEVID=devid, REL=esc(rel), ABS=esc(amxd),
                 SIZE=st.st_size, CRC=0, MOD=int(st.st_mtime))
 

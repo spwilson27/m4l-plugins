@@ -624,7 +624,7 @@ function prep(src) {
     assert.deepStrictEqual(names2, ["Transients", "Tones"], "chains are named after the channels, in order");
     assert.strictEqual((adg.match(/<MxDeviceAudioEffect /g) || []).length, 2, "one device per chain");
     assert.strictEqual((adg.match(/<UserName Value="Transient Split"/g) || []).length, 1, "rack name");
-    assert.strictEqual((adg.match(/Transient Split\.amxd/g) || []).length >= 4, true, "each chain references the .amxd (relative and absolute)");
+    assert.strictEqual((adg.match(/Transient Split\.amxd/g) || []).length >= 2, true, "each chain references the .amxd (relative path)");
     console.log("[device] built device and rack preset checks passed");
 }
 
