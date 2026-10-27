@@ -139,7 +139,7 @@ function runRackLinkTests() {
     const nBefore = A.sent.length;
     rackTick(w, all, 500, 5);
     assert.ok(A.sent.length > nBefore, "messages are repeated");
-    assert.deepStrictEqual(A.link.rack.messages().map((m) => m[0]), ["lead", "epoch", "serve", "role"]);
+    assert.deepStrictEqual(A.link.rack.messages().map((m) => m[0]), ["lead", "epoch", "serve", "role", "inrack"]);
 
     // the leader's gen stops: after the 1.5 s ready timeout A (lowest chain among the ready ones) leads, C follows A with a new epoch
     B.gen.run = false;

@@ -63,7 +63,7 @@ NUM_HELP = {
     "mix": "Mix: this chain outputs Mix x its channel + (1 - Mix) x its share (1/3) of the dry input, so the rack sum is Mix x wet + (1 - Mix) x dry (dry delayed by the same 5120 samples; the dry share passes through each chain's devices). Outside a rack: ordinary dry/wet.",
     "tilt": "Tilt (+-6 dB/oct): weights the analysed level by dB per octave around 1 kHz (positive favours highs, negative lows) before it is classified. The output level is not changed.",
 }
-NUM_UNITS = {"hithr": "%.1f dB", "lothr": "%.1f dB", "rhithr": "%.1f dB", "rlothr": "%.1f dB", "hiknee": "%.1f dB", "loknee": "%.1f dB", "rise": "%.2f", "fall": "%.2f", "tilt": "%.1f dB/oct", "mix": "%.0f %"}
+NUM_UNITS = {"hithr": "%.1f", "lothr": "%.1f", "rhithr": "%.1f", "rlothr": "%.1f", "hiknee": "%.1f", "loknee": "%.1f", "rise": "%.2f", "fall": "%.2f", "tilt": "%.1f dB/oct", "mix": "%.0f %"}
 # key: (long name, short name, values, initial)
 ENUM = {
     "relative": ("Relative Loudness Mode", "Relative", ["Absolute", "Relative"], 0),
@@ -125,15 +125,15 @@ def build_patcher():
 
     # ---- controls (presentation): Reverb-style titled sections, theme-bound native live.* controls ----
     # Thresholds section (x = 300..476): two columns of label + LCD value, three rows
-    LX1, NX1, LX2, NX2 = 306, 350, 392, 436
+    LX1, NX1, LX2, NX2 = 304, 346, 392, 432
     rows = [("hithr", "Higher", "hiknee", "Hi Knee"), ("lothr", "Lower", "loknee", "Lo Knee"), ("rhithr", "Rel High", "rlothr", "Rel Low")]
     for i, (k1, t1, k2, t2) in enumerate(rows):
         y = 21 + i * 17
-        boxes.append(sc.make_theme_comment(f"obj-lbl-{k1}", t1, LX1, y + 1, 42))
-        boxes.append(sc.make_lcd_numbox(k1, NUM[k1], NUM_HELP[k1], NX1, y, 38, 15, unit_text=NUM_UNITS.get(k1)))
-        boxes.append(sc.make_theme_comment(f"obj-lbl-{k2}", t2, LX2, y + 1, 42))
-        boxes.append(sc.make_lcd_numbox(k2, NUM[k2], NUM_HELP[k2], NX2, y, 38, 15, unit_text=NUM_UNITS.get(k2)))
-    boxes.append(sc.make_theme_comment("obj-lbl-relnote", "Rel: dB below the loudest bin", 306, 74, 166, 12, size=8.5, name="live_display_scale_text"))
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{k1}", t1, LX1, y + 1, 41))
+        boxes.append(sc.make_lcd_numbox(k1, NUM[k1], NUM_HELP[k1], NX1, y, 44, 15, unit_text=NUM_UNITS.get(k1)))
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{k2}", t2, LX2, y + 1, 39))
+        boxes.append(sc.make_lcd_numbox(k2, NUM[k2], NUM_HELP[k2], NX2, y, 44, 15, unit_text=NUM_UNITS.get(k2)))
+    boxes.append(sc.make_theme_comment("obj-lbl-relnote", "Values in dB. Rel: below the loudest bin", 306, 74, 166, 12, size=8.5, name="live_display_scale_text"))
     # Rise / Fall / Tilt / Relative Loudness Mode live in the canvas: real parameters, kept off the face
     for key in ("rise", "fall", "tilt"):
         box = sc.make_numbox(key, NUM[key], NUM_HELP[key], 0, 0, 60, 15, sc.ORANGE, 2, 8.5, NUM_UNITS.get(key))

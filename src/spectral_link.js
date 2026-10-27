@@ -386,6 +386,7 @@ function splCreateLink(cfg, envIn) {
         m.push(["epoch", rs.epoch]);
         m.push(["serve", rs.serve]);
         m.push(["role", rs.role]);
+        m.push(["inrack", state.isInRack ? 1 : 0]);
         return m;
     }
 

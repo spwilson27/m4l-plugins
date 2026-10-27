@@ -122,8 +122,8 @@ def build_patcher():
         boxes.append(sc.make_lcd_numbox(key, NUM[key], NUM_HELP[key], CX, y, CW, 15))
     boxes.append(sc.make_theme_comment("obj-lbl-output", "Output", RX, 111, 56))
     boxes.append(sc.make_theme_menu("output", ENUM["output"], ENUM_HELP["output"], CX, 110, CW, 15))
-    boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 128, 56))
-    boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 127, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 128, 36))
+    boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], 344, 127, 92, 15))   # 4 cells of 23 px: "512" needs 21
     boxes.append(sc.make_theme_comment("obj-lbl-mix", "Mix", RX, 145, 56))
     boxes.append(sc.make_lcd_numbox("mix", NUM["mix"], NUM_HELP["mix"], CX, 144, CW, 15))
     # Tilt / Decay / Smoothing: automatable parameters drawn and edited by the display (hidden from the face)

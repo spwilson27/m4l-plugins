@@ -83,7 +83,7 @@ assert.deepStrictEqual([sb.hsScalars.f0, sb.hsScalars.series, sb.hsScalars.rootH
 
 // ---- following: the display comes from the leader's buffer
 data["---lead"] = scope({ [cfg.HS_SC_FRAME]: 3, [cfg.HS_SC_AWAKE]: 1, [cfg.HS_SC_F0]: 330, [cfg.HS_SC_SERIES]: 110, [cfg.HS_SC_ROOTH]: 3, [cfg.HS_SC_SR]: 44100, [cfg.HS_SC_N]: 4096 });
-sb.hsLink = { rack: { displayScope: () => "---lead", messages: () => [["lead", "---lead"], ["epoch", 2], ["serve", 0], ["role", 2]], state: () => ({}) }, notify() {} };
+sb.hsLink = { rack: { displayScope: () => "---lead", messages: () => [["lead", "---lead"], ["epoch", 2], ["serve", 0], ["role", 2], ["inrack", 1]], state: () => ({}) }, notify() {} };
 peeks.length = 0;
 sb.hsPoll();
 assert.ok(peeks.every((p) => p[0] === "---lead"), "a follower reads the leader's scope buffer");
@@ -91,8 +91,8 @@ assert.strictEqual(sb.hsScalars.f0, 330);
 assert.strictEqual(sb.hsScalars.n, 4096);
 sent.length = 0;
 sb.ssDevResend();
-const rk = sent.filter((m) => ["lead", "epoch", "serve", "role"].includes(m[1])).map((m) => m[1]);
-assert.deepStrictEqual(rk, ["lead", "epoch", "serve", "role"], "the rack messages are re-sent with the parameters");
+const rk = sent.filter((m) => ["lead", "epoch", "serve", "role", "inrack"].includes(m[1])).map((m) => m[1]);
+assert.deepStrictEqual(rk, ["lead", "epoch", "serve", "role", "inrack"], "the rack messages are re-sent with the parameters");
 // back to the own buffer when the leader is gone
 sb.hsLink = { rack: { displayScope: () => "", messages: () => [], state: () => ({}) }, notify() {} };
 peeks.length = 0;

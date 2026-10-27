@@ -82,6 +82,7 @@ Param outsel(0);
 Param mixamt(1);
 Param role(-1);
 Param serve(0);
+Param inrack(1);
 Param epoch(0);
 
 History sCnt(0);
@@ -91,6 +92,7 @@ History sBoot(0);
 History selH(0);
 History roleH(-1);
 History serveH(0);
+History inrackH(1);
 History epH(0);
 History epSeen(-1);
 History mixH(1);
@@ -157,6 +159,7 @@ if (sCtl >= 32 || nChg > 0.5 || sBoot < 0.5) {
 	sCtl = 0;
 	selH = clip(floor(outsel + 0.5), 0, @@K@@);
 	roleH = clip(floor(role + 0.5), -1, 2);
+	inrackH = inrack > 0.5 ? 1 : 0;
 	serveH = clip(floor(serve + 0.5), 0, @@SERVEMAX@@);
 	epH = floor(epoch + 0.5);
 	mixH = clip(mixamt, 0, 1);
@@ -478,7 +481,7 @@ if (mixInit < 0.5) {
 	mixS = mixH;
 }
 mixS = mixS + (mixH - mixS) * 0.002;
-kShare = (selH > 0.5 && roleH > 0.5) ? @@KSHARE@@ : 1;
+kShare = (selH > 0.5 && inrackH > 0.5) ? @@KSHARE@@ : 1;
 ov1 = fixnan(fixdenorm(mixS * wetL + (1 - mixS) * kShare * dryL.read(@@LAT@@)));
 ov2 = fixnan(fixdenorm(mixS * wetR + (1 - mixS) * kShare * dryR.read(@@LAT@@)));
 // fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.

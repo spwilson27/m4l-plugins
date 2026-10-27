@@ -62,8 +62,8 @@ ls_masks(ms, lsd, n, sr, relm, thi, tlo, khi, klo, riseb, fallb, tlt, age) {
 	lo = min(tlo, thi);
 	kdh = max(khi, 0.01);
 	kdl = max(klo, 0.01);
-	riseK = 1 - exp(0 - 1 / clip(riseb, 0.13, 125));
-	fallK = 1 - exp(0 - 1 / clip(fallb, 0.13, 125));
+	riseK = 1 - exp(-1 / clip(riseb, 0.13, 125));
+	fallK = 1 - exp(-1 / clip(fallb, 0.13, 125));
 	invKneeHi = 1 / kdh;
 	invKneeLo = 1 / kdl;
 	for (k = 0; k <= half; k += 1) {
