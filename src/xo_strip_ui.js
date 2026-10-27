@@ -24,7 +24,7 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 2; // Outlet 0: commands to node.codebox, Outlet 1: UI sync
 
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 
 // Category buttons select samples by WORDS in their name / folders (src/xo_search.js, prepended; the node engine matches and
 // sends each point its category mask). Order = toolbar order = first-match colouring priority.
@@ -2426,7 +2426,8 @@ function getvalueof() {
   ];
   for (let i = 0; i < savedList.length; i++) {
     const s = savedList[i];
-    out.push(s.sampleIndex, s.catIdx, s.pitchSt, s.decayMs, s.gainDb);
+    // v4 adds reverse, speed %, grain ms and stretch mode per row
+    out.push(s.sampleIndex, s.catIdx, s.pitchSt, s.decayMs, s.gainDb, s.reverse ? 1 : 0, s.speedPct || 100, s.grainMs || 45, s.stretchMode !== undefined ? s.stretchMode : 1);
   }
   // v3: category search terms ("XS", Match folders, then one encoded term list per category, see xoEncodeTerms)
   out.push("XS", matchFolders ? 1 : 0);
@@ -2460,7 +2461,8 @@ function setvalueof(...args) {
     const count = Math.max(0, Math.round(Number(arr[9]) || 0));
     savedList = [];
     let offset = 10;
-    for (let i = 0; i < count && offset + 4 < arr.length; i++, offset += 5) {
+    const rowLen = ver >= 4 ? 9 : 5;
+    for (let i = 0; i < count && offset + rowLen - 1 < arr.length; i++, offset += rowLen) {
       const sIdx = Math.max(0, Math.round(Number(arr[offset]) || 0));
       const pt = points[sIdx];
       savedList.push({
@@ -2471,7 +2473,11 @@ function setvalueof(...args) {
         catIdx: ver >= 3 ? Math.max(-1, Math.min(CAT_ID_LIST.length - 1, Math.round(Number(arr[offset + 1])))) : (pt ? pt.catIdx : -1),
         pitchSt: Number(arr[offset + 2]) || 0,
         decayMs: Number(arr[offset + 3]) || 2500,
-        gainDb: Number(arr[offset + 4]) || 0
+        gainDb: Number(arr[offset + 4]) || 0,
+        reverse: ver >= 4 && Number(arr[offset + 5]) ? 1 : 0,
+        speedPct: ver >= 4 ? (Number(arr[offset + 6]) || 100) : 100,
+        grainMs: ver >= 4 ? (Number(arr[offset + 7]) || 45) : 45,
+        stretchMode: ver >= 4 && Number.isFinite(Number(arr[offset + 8])) ? Math.max(0, Math.min(2, Math.round(Number(arr[offset + 8])))) : 1
       });
     }
     // v3 tail: "XS" matchFolders terms x categories. Older blobs (or a missing / short tail) keep the defaults.
