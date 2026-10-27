@@ -59,5 +59,6 @@ const lampOnly = (k) => stream({ kind: "ring" }, (s) => { s[k] = 0.9; }) !== str
 R.ok(lampOnly(S.PK_T) && lampOnly(S.PK_B) && lampOnly(S.PK_L), "T, B and L lamps each move pixels");
 R.ok(/DRAW/.test(hit) && /ENV|SPEC/.test(hit), "DRAW and ENV labels painted");
 const calls = hit.split("|").length;
+console.log("hit paint calls", calls);
 R.ok(calls <= 700, `hit paint uses ${calls} calls (<= 700)`);
 R.done();
