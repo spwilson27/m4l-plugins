@@ -79,6 +79,9 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Clip+ (section 29). Max audio in the VM: scripts/vm_clipplus.sh audio
      npm run -s typecheck && python3 scripts/build_clipplus.py && node tests/test_clipplus.js && python3 scripts/render_preview.py "devices/Clip+.amxd"
+
+     # Amp (section 30; one engine, five faces: Amp Stack / Neural / Pedal / Lab / Rack). VM: scripts/vm_amp.sh audio, scripts/vm_amp.sh livetest
+     npm run -s typecheck && python3 scripts/build_amp.py && node tests/test_amp.js && for d in Stack Neural Pedal Lab Rack; do python3 scripts/render_preview.py "devices/Amp $d.amxd"; done
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -1904,3 +1907,43 @@ Face, 418×169 (at default 240 px Mid Size), widening +120 px when the left `Fil
 npm run -s typecheck && python3 scripts/build_clipplus.py && node tests/test_clipplus.js && python3 scripts/render_preview.py "devices/Clip+.amxd"
 scripts/vm_clipplus.sh audio
 ```
+
+---
+
+## 30. Architecture of the Amp devices (`devices/Amp Stack|Neural|Pedal|Lab|Rack.amxd`)
+
+A neural amp that runs NAM models (the open Neural Amp Modeler format that Tone 3000 hosts, `.nam` files) inside a gen~, with a tone stack, cab voicings, a noise gate and Normalize. One engine, five faces (the user picks one); the DSP, parameters and state are identical in all five. Face contract: `scripts/amp_designs/README.md`.
+
+### Files
+- `src/amp_config.js`: `.nam` parser (`ampParseNam`: classic files with `head_size` / `head_bias` and the newer export with `head` objects, activation objects, `kernel_sizes`), the reference forward pass (`ampForward`), the GenExpr generator (`ampGenNam` / `ampGenCode` / `ampGendsp`), parameters (`AMP_PARAMS`), telemetry layout (`AMP_SCOPE`), tone stack / cab biquads (`ampToneBiquads`, `AMP_CABS`).
+- `src/amp_core.genexpr`: the gen template (input, gate, model switch, sleep, Normalize, DC block, 10 biquads from `---ampcf`, output, mix, telemetry); `//@NAM_DECL` / `//@NAM_BODY` (each on a line of its own) take the generated network.
+- `src/amp_engine.js`: shared by every face (concatenated into the face's one main v8ui): deferred DSP, model loading, parameter routing, tone coefficients, telemetry, test hooks.
+- `src/amp_face_<slug>.js` + `scripts/amp_designs/<slug>.py`: the five faces; `scripts/build_amp.py [slug ...]` builds them.
+- `src/amp_models/{clean,crunch,lead}.nam`: built-in captures (NAM Feather WaveNets trained with the NAM code on synthetic amp circuits by `scripts/amp_train_defaults.py`; validation ESR 0.005 / 0.012 / 0.018). `scripts/amp_nam_ref.py` writes `tests/amp_ref/*` (random-weight Nano / Feather / Lite / Standard WaveNets and two LSTMs, with the official NAM torch output). Both need a venv with torch + `neural-amp-modeler` (+ scipy for training); never the repo's plain python. This nam version needs a tkinter stub on the path (`PYTHONPATH=<dir with an empty tkinter package>`).
+
+### Supported models
+WaveNet (any channels <= 32, kernel <= 8, dilations, non-gated or gated, activations Tanh / Fasttanh / ReLU / LeakyReLU / Sigmoid / Hardtanh / SiLU / Softsign; layer1x1 on, head1x1 off, no FiLM / bottleneck / groups / post head / condition DSP) and LSTM (input 1, up to 4 layers, hidden <= 64), up to 65,520 weights. Weight order follows NAM: per array rechannel, per layer conv (out, in, k) + bias, input mixin, 1x1 + bias, then head rechannel (+ bias); `head_scale` is the last weight. LSTM per layer: W (4H x (in + H), gates i f g o) + bias + h0 + c0, then head weights + bias. Anything else is rejected with a short reason (`amp.model.error`) and the previous model keeps playing.
+
+### Generated gen per architecture
+- The gen code depends on the architecture (loop bounds, ring and weight offsets are constants), so the engine generates it at runtime and writes `/tmp/amp_<hash>.gendsp`. The weights live in `buffer~ ---ampw` (two banks of 65,536); the gen copies the active bank into a `Data` when it switches (Data peeks with constant offsets were about 3x cheaper than Buffer peeks). Same architecture: the engine writes the idle bank and sends `wbase` (the gen fades out 128 samples, stays muted for the receptive field so the history is the new model's, fades in 256). New architecture: `setattr gen <file>` on the same gen~ (silent only for its compile).
+- WaveNet history: one ring per layer (power-of-two length, pow2 modulo by `floor`, one conditional wrap per tap); each layer gathers its `ch * k` taps once, then each output channel is one dot product. Fully unrolled code (340 KB for Standard) did not compile in Max: keep the loops.
+- **GenExpr gotchas found here**: the bitwise `&` operator silently kills the whole compile (all outputs 0, no error); a v8ui without `outlets = 2` has one outlet, so every message to its outlet 1 is dropped; a placeholder that a comment also mentions got the code spliced into the comment; `out2` cannot be read back after it is assigned (use a local).
+- Idle sleep: input below 1e-6 for longer than the receptive field + 8192 samples skips the network (exact zeros, `asleep` telemetry).
+
+### Engine
+- Parameters: Model (Clean / Crunch / Lead / File), Input, Gate (-100 = off), Bass / Middle / Treble / Presence (NAM tone stack: low shelf 150 Hz 4 dB/step, peak 425 Hz 3 dB/step, high shelf 1.8 kHz 2 dB/step, presence high shelf 4.5 kHz), Cabinet (Off / 1x12 / 4x12 / 2x12, six biquads each), Output, Normalize (loudness metadata -> -18 dB), Mix, plus the Model File live.drop (parameter mode, Live saves and replays the path). LOM names are the short names (`Cab`, `Norm`). Every live.* object outputs `prepend set_<key>` into the face; faces set values with `ampSet` (through the live.* object, so automation and undo work). The engine sends all gen messages itself (outlet 1 -> `amp_genin`, `gate 1 1`).
+- Deferred DSP (AGENTS 1d): no gen~ in the file; one Task tick after `live.thisdevice` the engine loads the selected model and creates `gen~ @gen <file>` (one instance at a time, `Global("amp_dspq")`), re-sends the gen state fast for 4 s after a create / hot-load and once a second after that, confirms by the alive counter (scope 15), retries after 8 s / 12 s. The device is silent until then. `live.thisdevice` re-sends the buffer names before `init_dsp` (a big v8ui can miss the loadbang message), and one-shot Tasks are kept on `amp` (a Task held by a local can be garbage-collected before it fires: some instances never loaded a model in Live).
+- Telemetry `---ampscope` (3136): header (frames, sr, peaks, gate gain, saturation = mean |activation| of the first layer array, rms, model ok, layers, asleep, switching, alive), per-layer activity at 16.., an XY ring (model input / output pairs every 4 samples) at 64.., the output ring at 1088... Faces read it through `ampTel`, `ampLayers()`, `ampXY(n)`, `ampOutRing(n)`.
+- Test hooks (`r #0-amptest`, literal `#0` in a top-level device): `test_tone <face|all> <amp>` (a plucked 110 Hz tone replaces the input), `test_report <face|all>` (`Global("amp_test").report_<face>`), `test_load <face> <path>`. Trace: `Global("amp_trace").text`.
+
+### Faces
+- **Stack** (560 px): amp head drawn in one v8ui, four power tubes glowing with output level and saturation, channel switch, chicken-head knobs, jewel lamp.
+- **Neural** (520 px): the model's real network (arrays, layers, dilation arcs) lit by per-layer activity with input / output waveforms; native Live dials, cab tab, drop zone.
+- **Pedal** (360 px): stompbox in one v8ui, phosphor drive window, LED ring on the drive knob, footswitch cycles the model.
+- **Lab** (640 px): XY transfer plot, tone + cab response with draggable nodes, output FFT with harmonics; native LCD value boxes.
+- **Rack** (620 px): 1U unit with a VFD model browser, meters and a layer-activity waterfall; native fader bars.
+
+### Measured (VM)
+- Real Max (`scripts/vm_amp.sh audio`): the generated gen's raw model output equals the JS reference (which equals the official NAM torch model within float32) exactly for Nano / Feather / Lite / Standard WaveNets and 1- and 2-layer LSTMs; chain and sleep cases pass. Real-time CPU (`adstatus cpu`, audio_device driver, looping stimulus): Feather 2.5 %, Lite 11.7 %, Standard ~40 % of the VM's core (Nano 1.7 %, LSTM 1x16 2.3 %, no model 0.1 %; the VM core is much slower than the host's).
+- Live 12.4.7 (`scripts/vm_amp.sh livetest`, five devices on five tracks): every device's DSP runs, the built-in capture plays the test tone (track meter 0.85), Crunch -> Lead through the LOM switches banks without a hot-load, a Standard file hot-loads and plays, an LSTM file plays, a broken file is rejected while the previous model keeps playing, tone / cab / normalize / mix through the LOM. Live's CPU meter read 16 % with all five Feather amps running.
+- Not checked: dropping a `.nam` onto the drop zones and the Load dialog with real input (the engine path behind them is the same as `test_load`), Set save / reopen with a loaded file.

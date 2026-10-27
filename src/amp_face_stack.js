@@ -193,20 +193,27 @@ function stkKnob(i) {
     stkRgb(1, 1, 1, 0.08);
     stkCircle(x - 2, y - 3, r * 0.6);
     mgraphics.fill();
-    // chicken-head pointer
+    // chicken-head pointer: a long tapered beak, a round crown, a short rounded tail
     var ang = (-135 + 270 * n) * Math.PI / 180;
     var sx = Math.sin(ang), cy = -Math.cos(ang);
     var px = -cy, py = sx;
-    var tip = r + 3, tail = r * 0.55, wid = 4.5;
-    stkRgb(0.92, 0.88, 0.78);
-    stkPoly([[x + sx * tip, y + cy * tip], [x + px * wid - sx * 2, y + py * wid - cy * 2],
-        [x - sx * tail + px * wid * 0.9, y - cy * tail + py * wid * 0.9], [x - sx * tail - px * wid * 0.9, y - cy * tail - py * wid * 0.9],
-        [x - px * wid - sx * 2, y - py * wid - cy * 2]]);
+    var tip = r + 4, tail = r * 0.72;
+    /** @param {number} a along the pointer @param {number} b across it */
+    function at(a, b) { return [x + sx * a + px * b, y + cy * a + py * b]; }
+    stkRgb(0, 0, 0, 0.35);
+    stkPoly([at(tip + 1, 1), at(3, 4.2), at(-tail + 1, 3.4), at(-tail - 1, 1), at(-tail - 1, -1), at(-tail + 1, -3.4), at(3, -4.2)]);
     mgraphics.fill();
-    stkRgb(0.15, 0.1, 0.05);
-    mgraphics.set_line_width(1.2);
-    mgraphics.move_to(x + sx * 2, y + cy * 2);
-    mgraphics.line_to(x + sx * (tip - 1.5), y + cy * (tip - 1.5));
+    stkRgb(0.93, 0.89, 0.8);
+    stkPoly([at(tip, 0), at(4, 3.6), at(1, 4.6), at(-3, 4.4), at(-tail + 1.5, 2.6), at(-tail, 0.9), at(-tail, -0.9),
+        at(-tail + 1.5, -2.6), at(-3, -4.4), at(1, -4.6), at(4, -3.6)]);
+    mgraphics.fill();
+    stkRgb(1, 1, 1, 0.35);
+    stkPoly([at(tip - 2, 0.2), at(3, 2.6), at(-2, 3.2), at(-2, 0.6)]);
+    mgraphics.fill();
+    stkRgb(0.2, 0.13, 0.06);
+    mgraphics.set_line_width(1.1);
+    mgraphics.move_to(at(1, 0)[0], at(1, 0)[1]);
+    mgraphics.line_to(at(tip - 1.5, 0)[0], at(tip - 1.5, 0)[1]);
     mgraphics.stroke();
     // label and value
     mgraphics.select_font_face("Arial Bold");

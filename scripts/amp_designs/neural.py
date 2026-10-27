@@ -23,7 +23,7 @@ WIDGETS = {
 LABELS = []
 # Section panels first, body panel last (Max draws earlier background panels over later ones).
 PANELS = [
-    ("obj-panel-ctl", [337, 3, 180, 163], [0.165, 0.165, 0.165, 1.0], 3),
-    ("obj-panel-body", [0, 0, 520, 169], [0.212, 0.212, 0.212, 1.0], 0),
+    ("obj-panel-ctl", [337, 3, 180, 163], [0.165, 0.165, 0.165, 1.0], 3, "live_desktop"),
+    ("obj-panel-body", [0, 0, 520, 169], [0.212, 0.212, 0.212, 1.0], 0, "live_surface_bg"),
 ]
 DESCRIPTION = "Neural amp (NAM / Tone 3000 captures): a live view of the network's layers and dilated taps, native Live controls."

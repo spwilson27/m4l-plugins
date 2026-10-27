@@ -8,7 +8,7 @@
 var NRL = {
     W: 330, H: 161,
     lcd: { x: 0, y: 21, w: 330, h: 125 },
-    px0: 50, px1: 280, py0: 38, py1: 124, rows: 9,
+    px0: 50, px1: 280, py0: 48, py1: 120, rows: 9,
     phase: 0, hover: "", act: [], tick: 0
 };
 var NRL_NAMES = ["Clean", "Crunch", "Lead", "File"];
@@ -31,15 +31,35 @@ function nrlFit(s, maxW, size) {
     return t + "…";
 }
 
-function nrlLayerCount() {
+/** Real per-layer dilations (all arrays in order). */
+function nrlDils() {
+    var d = amp.model.dilations;
+    if (d && d.length) return d;
     var n = Math.round(Number(amp.model.layers) || 0);
-    return n > 0 ? Math.min(n, 40) : 12;
+    var out = [];
+    for (var i = 0; i < (n > 0 ? n : 12); i++) out.push(Math.pow(2, i % 8));
+    return out;
 }
 
-/** Dilation of layer i: 1, 2, 4, ... repeating (the cycle length is not exposed by the engine). */
+function nrlLayerCount() { return Math.min(nrlDils().length, 40); }
+
+/** Dilation of layer i. */
 function nrlDilation(i, n) {
-    var cyc = (n >= 10 && n % 10 === 0) ? 10 : 8;
-    return Math.pow(2, i % cyc);
+    var d = nrlDils();
+    return d[Math.min(i, d.length - 1)] || 1;
+}
+
+/** Array boundaries: [{start, count, ch}] over the layer columns. */
+function nrlArrays() {
+    var a = amp.model.arrays, out = [], at = 0;
+    if (a && a.length) {
+        for (var i = 0; i < a.length; i++) {
+            var c = a[i].dilations ? a[i].dilations.length : 1;
+            out.push({ start: at, count: c, ch: a[i].ch });
+            at += c;
+        }
+    }
+    return out;
 }
 
 function nrlColX(i, n) { return NRL.px0 + (n > 1 ? i * (NRL.px1 - NRL.px0) / (n - 1) : 0.5 * (NRL.px1 - NRL.px0)); }
@@ -173,17 +193,30 @@ function nrlNetwork() {
                 }
             }
         }
-        // dilation arcs: a long skip over the columns, as a polyline, one every other layer
-        for (i = 0; i < n; i += 2) {
-            var dl = nrlDilation(i, n);
-            var span = Math.min(n - 1 - i, Math.max(1, Math.round(Math.log(dl) / Math.LN2 * 0.9)));
+        // dilation arcs from the real values: the arc over layer i spans (and is as tall as) log2(dilation)
+        for (i = 0; i < n; i++) {
+            var dl = nrlDilation(i, n), lg = Math.log(dl) / Math.LN2;
+            if (lg < 1) continue;
+            var span = Math.min(n - 1 - i, Math.max(1, Math.round(lg * 0.8)));
             if (span < 1) continue;
             var xa = nrlColX(i, n), xb = nrlColX(i + span, n), ar = [];
             for (var q = 0; q <= 14; q++) {
                 var u = q / 14;
-                ar.push([xa + (xb - xa) * u, NRL.lcd.y + 12 - Math.sin(Math.PI * u) * (3 + 4 * Math.min(1, span / 6))]);
+                ar.push([xa + (xb - xa) * u, NRL.lcd.y + 23 - Math.sin(Math.PI * u) * (1.5 + lg * 0.9)]);
             }
-            sptCurve(ar, orange, 0.2 + 0.5 * Math.min(1, act[i] * 1.3));
+            sptCurve(ar, orange, 0.18 + 0.5 * Math.min(1, act[i] * 1.3));
+        }
+        // array boundaries and channel counts
+        var arrs = nrlArrays();
+        for (var ai = 0; ai < arrs.length; ai++) {
+            var A0 = arrs[ai], xs = nrlColX(A0.start, n), xe = nrlColX(Math.min(n - 1, A0.start + A0.count - 1), n);
+            if (ai > 0) {
+                var bx = (nrlColX(A0.start - 1, n) + xs) / 2;
+                sptCurve([[bx, NRL.lcd.y + 22], [bx, NRL.lcd.y + NRL.lcd.h - 16]], sptColor("live_lcd_title"), 0.7);
+            }
+            var by = NRL.lcd.y + NRL.lcd.h - 17;
+            sptCurve([[xs - 3, by - 3], [xs - 3, by], [xe + 3, by], [xe + 3, by - 3]], sptColor("live_display_scale_text"), 0.9);
+            sptText("array " + (ai + 1) + " · " + A0.ch + " ch", (xs + xe) / 2, by + 9, sptColor("live_lcd_title"), SPT_SIZE_SMALL, 1);
         }
         // nodes
         for (i = 0; i < n; i++) {
@@ -209,10 +242,13 @@ function nrlNetwork() {
     sptCurve([[NRL.px1 + 5, L.y + 6], [NRL.px1 + 5, L.y + L.h - 6]], sptColor("live_lcd_frame"), 1);
     sptText("in", 4, L.y + L.h - 5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
     sptText("out", L.w - 4, L.y + L.h - 5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
-    sptText(kind === "LSTM" ? "recurrent cells" : n + " layers · dilations 1, 2, 4…", L.w / 2, L.y + L.h - 5,
-        sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 1);
+    var dls = nrlDils(), dmin = Math.min.apply(null, dls), dmax = Math.max.apply(null, dls);
+    var arrN = nrlArrays().length;
+    var cap = kind === "LSTM" ? arrN + " LSTM layers · " + (arrN ? amp.model.arrays[0].ch : 0) + " hidden"
+        : arrN + (arrN === 1 ? " array · " : " arrays · ") + dls.length + " layers · d " + dmin + (dmax > dmin ? "–" + dmax : "");
+    sptText(cap, L.w / 2, L.y + 9.5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 1);
     // gate reduction pill
-    if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w / 2, L.y + 12, sptColor("live_alert"), SPT_SIZE_SMALL, 1);
+    if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w - 6, L.y + 9.5, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
 }
 
 function nrlLstmX(i, n) { return n === 1 ? (NRL.px0 + NRL.px1) / 2 : NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / (n - 1); }
@@ -268,6 +304,6 @@ function onidleout() { NRL.hover = ""; mgraphics.redraw(); }
 function preview() {
     ampPreviewSetup(0.75);
     NRL.phase = 0.35;
-    for (var i = 0; i < 4; i++) nrlActivity(20);
+    for (var i = 0; i < 4; i++) nrlActivity(nrlLayerCount());
     ampP.input = 4; ampP.bass = 6; ampP.mid = 4.5; ampP.treble = 6.5; ampP.presence = 5.5; ampP.cab = 2;
 }

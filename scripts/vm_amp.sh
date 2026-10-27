@@ -2,7 +2,8 @@
 # Amp Max / Live tests inside the tart VM macos-1 (AGENTS.md 1a: never run Max or Live on the host).
 #   scripts/vm_amp.sh audio [case ...]   host fixtures (node tests/amp_fixtures.js), sync, run the Max harness cases
 #   scripts/vm_amp.sh livetest           under the Live lock: sync, open the bridge set (fresh), load every built
-#                                        Amp device on a new audio track, run scripts/test_amp_live.js (tunnel)
+#                                        Amp device on a new audio track, run scripts/test_amp_live.js (tunnel);
+#                                        `livetest --shots <dir>` also saves a VM screenshot per device (scripts/vm_shot.sh)
 #   scripts/vm_amp.sh sync
 set -u
 VM=macos-1
@@ -42,6 +43,6 @@ case "$cmd" in
     TUNNEL=$!
     trap 'kill $TUNNEL 2>/dev/null' EXIT
     for i in $(seq 1 20); do curl -s -m 1 "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null && break; sleep 0.5; done
-    node "$ROOT/scripts/test_amp_live.js" --port "$LOCAL_PORT" --vmdir "/Users/admin/${DIR}" ;;
+    node "$ROOT/scripts/test_amp_live.js" --port "$LOCAL_PORT" --vmdir "/Users/admin/${DIR}" "$@" ;;
   *) echo "usage: scripts/vm_amp.sh audio|sync [case ...]" >&2; exit 64 ;;
 esac

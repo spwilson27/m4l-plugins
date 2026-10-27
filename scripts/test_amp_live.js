@@ -159,6 +159,18 @@ check(r.model.name === "Clean" && r.p.bass === 9 && r.p.cab === 0 && r.p.mix ===
 o = maxOut(face, 2000);
 check(o.rms > 0.002 && isFinite(o.rms), `still playing after the changes (out rms ${o.rms.toFixed(4)})`);
 for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cab", 2], ["Norm", 1], ["Gate", -100], ["Mix", 100], ["Model", 1]]) setParam(dev, n, v);
+// --shots <dir>: a host screenshot of the VM (scripts/vm_shot.sh) with each device's track selected, tone playing.
+const SHOTS = arg("--shots", "");
+if (SHOTS) {
+    hook("test_tone", "all", 0.4);
+    sleep(2000);
+    for (const d of devices) {
+        evalLom(`var t = new LiveAPI("${d.track}"); new LiveAPI("live_set view").set("selected_track", "id", Number(t.id)); return 1;`);
+        sleep(1500);
+        const out = path.join(SHOTS, faceOf(d.name) + ".png");
+        try { execFileSync(path.join(__dirname, "vm_shot.sh"), [out]); console.log("SHOT " + out); } catch (e) { console.log("SHOT failed " + out); }
+    }
+}
 hook("test_tone", "all", 0);
 evalLom(`new LiveAPI("live_set").call("stop_playing"); return 1;`);
 console.log(fails ? `test_amp_live: ${fails} FAILED` : "test_amp_live: all passed");
