@@ -1,14 +1,20 @@
-// Deviate Lanes face: the Ableton-native display. Three lanes T (transient) / B (body) / L (long) scroll about 2.4 s of level history
-// (one column per telemetry frame, newest on the right). The long lane adds a filled Ring area and the output waveform as a backdrop, the
+// Deviate Lanes face: the Ableton-native display. Three lanes T (transient) / B (body) / L (long) scroll the recent level history (the span is measured and labelled)
+// (one column per telemetry frame, newest on the right; the span depends on the poll rate). The long lane adds a filled Ring area and the output waveform as a backdrop, the
 // body lane faint spectrum bars. A hit leaves a hairline through the lanes with a tick per drawn meta; a hit Chance rejected (gate 0) gets an
 // alert-coloured hairline with a cross cap. The right gutter of each lane has one gauge per meta of that lane (fill = drawn value, tick =
 // the Value). Colours only through sptColor (src/spectral_theme.js is prepended by the build). The canvas only draws (ignoreclick).
 
-var LN_COLS = 72;          // history columns (3 px each, about 2.4 s at 30 fps)
+var LN_COLS = 72;          // history columns (3 px each)
 var LN_COL_PX = 3;
 var LN_PLOT_X = 12;        // plot left edge
 var LN_PLOT_W = LN_COLS * LN_COL_PX; // 216
-var LN_GUT_X = 233;        // gauge gutter
+var LN_GUT_X = 230;        // gauge gutter
+var LN_GAUGE_W = 4;
+var LN_GAUGE_PITCH = 5;
+var LN_RIGHT_MARGIN = 4;   // free px between the last gauge (tick included) and the canvas edge
+var LN_CANVAS_W = 250;
+var LN_CANVAS_H = 159;
+var LN_AXIS_Y = 155;       // axis label baseline: leaves descender room above the canvas bottom
 var LN_Y0 = 14;            // first lane top inside the canvas
 var LN_PITCH = 47;
 var LN_H = 44;
@@ -18,17 +24,18 @@ var LN_FLOOR_DB = 48;
 var lnLvl = [[], [], []];  // per lane level 0..1 per column
 var lnRing = [];           // ring envelope x Ring meta per column
 var lnHit = [];            // 0 none, 1 drew, 2 Chance-rejected
-var lnDraw = [];           // per column: the 8 drawn metas at a hit (or null)
+var lnDraw = [];           // per column: the 8 raw draws (dvTel.draws) at a hit (or null)
+var lnTime = [];           // per column: capture time in ms
 var lnFlash = 0;
 var lnLive = 0;            // frames left before the display counts as settled
 var lnWave = null;         // 36 decimated output-waveform values 0..1
-var PAINT_REGIONS = [[0, 0, 250, 159]];
+var PAINT_REGIONS = [[0, 0, LN_CANVAS_W, LN_CANVAS_H]];
 
 function lnReset() {
     var i, c;
     for (i = 0; i < 3; i++) { lnLvl[i] = []; for (c = 0; c < LN_COLS; c++) lnLvl[i].push(0); }
-    lnRing = []; lnHit = []; lnDraw = [];
-    for (c = 0; c < LN_COLS; c++) { lnRing.push(0); lnHit.push(0); lnDraw.push(null); }
+    lnRing = []; lnHit = []; lnDraw = []; lnTime = [];
+    for (c = 0; c < LN_COLS; c++) { lnRing.push(0); lnHit.push(0); lnDraw.push(null); lnTime.push(null); }
 }
 lnReset();
 
@@ -38,15 +45,23 @@ function lnLevel(v) {
     return dvClamp((20 * Math.log(x) / Math.LN10 + LN_FLOOR_DB) / LN_FLOOR_DB, 0, 1);
 }
 
-function lnPush(pkT, pkB, pkL, ringV, hit, draws) {
+function lnPush(pkT, pkB, pkL, ringV, hit, draws, ts) {
     var vals = [lnLevel(pkT), lnLevel(pkB), lnLevel(pkL)];
     for (var i = 0; i < 3; i++) { lnLvl[i].push(vals[i]); lnLvl[i].shift(); }
     lnRing.push(dvClamp(ringV, 0, 1)); lnRing.shift();
     lnHit.push(hit); lnHit.shift();
     lnDraw.push(hit === 1 ? draws.slice(0) : null); lnDraw.shift();
+    lnTime.push(ts === undefined ? new Date().getTime() : ts); lnTime.shift();
 }
 
-/** 36 values 0..1: peak |output| of the waveform ring over the last ~2.4 s, decimated. */
+/** Axis label for the oldest column, from the measured capture times (independent of the poll rate). */
+function lnSpanLabel() {
+    var a = lnTime[0], b = lnTime[LN_COLS - 1];
+    if (a === null || b === null || b <= a) return "";
+    return "-" + ((b - a) / 1000).toFixed(1) + " s";
+}
+
+/** 36 values 0..1: peak |output| of the waveform ring over the history, decimated. */
 function lnWaveProfile() {
     var w = dvTel.wave;
     if (!w || w.length < DV_SCOPE.WAVE + DV_WAVE_BLOCKS * DV_WAVE_STRIDE) return null;
@@ -71,7 +86,7 @@ sptThemeWatch(function () {});
 function onFrame(t) {
     var hit = 0;
     if (t.hitNew) hit = t.gate ? 1 : 2;
-    lnPush(t.pk.t, t.pk.b, t.pk.l, t.ringEnv * (0.25 + 0.75 * t.ring), hit, t.metas);
+    lnPush(t.pk.t, t.pk.b, t.pk.l, t.ringEnv * (0.25 + 0.75 * t.ring), hit, t.draws);
     lnWave = lnWaveProfile();
     lnFlash = t.hitNew ? 1 : lnFlash * 0.8;
     if (lnFlash < 0.03) lnFlash = 0;
@@ -105,9 +120,9 @@ function preview() {
         var h = 0, ds = null;
         for (i = 0; i < hitCols.length; i++) if (hitCols[i][0] === c) h = hitCols[i][1];
         if (h === 1) ds = dvTel.metas.map(function (v, k) { return dvClamp(v + (c % 7) * 3 * (k % 2 ? 1 : -1), 0, 100); });
-        lnPush(t, b, l, ring, h, ds || dvTel.metas);
+        lnPush(t, b, l, ring, h, ds || dvTel.draws, (c - newest) * 33);
     }
-    lnPush(dvTel.pk.t, dvTel.pk.b, dvTel.pk.l, dvTel.ringEnv * (0.25 + 0.75 * dvTel.ring), hitCols.length && hitCols[0][0] === newest ? hitCols[0][1] : 0, dvTel.metas);
+    lnPush(dvTel.pk.t, dvTel.pk.b, dvTel.pk.l, dvTel.ringEnv * (0.25 + 0.75 * dvTel.ring), hitCols.length && hitCols[0][0] === newest ? hitCols[0][1] : 0, dvTel.draws, 0);
     lnFlash = dvTel.hitNew ? 1 : 0;
     lnWave = lnWaveProfile();
 }
@@ -218,13 +233,13 @@ function lnPaintLane(r) {
     // gutter gauges: drawn value (fill) against the Value (tick)
     var lane = LN_LANES[r], fillCol = dvTel.gate ? col : sptColor("live_alert");
     for (i = 0; i < lane.metas.length; i++) {
-        var gx = LN_GUT_X + i * 6, k = lane.metas[i], top = y + 3, gh = LN_H - 6;
+        var gx = LN_GUT_X + i * LN_GAUGE_PITCH, k = lane.metas[i], top = y + 3, gh = LN_H - 6;
         sptRgba(sptColor("live_lcd_frame"), 0.7);
-        mgraphics.rectangle(gx, top, 4, gh);
+        mgraphics.rectangle(gx, top, LN_GAUGE_W, gh);
         mgraphics.fill();
         var m = dvClamp(dvMetaValue(k) / 100, 0, 1) * gh;
         sptRgba(fillCol, dvTel.gate ? 0.9 : 0.5);
-        mgraphics.rectangle(gx, top + gh - m, 4, Math.max(0.5, m));
+        mgraphics.rectangle(gx, top + gh - m, LN_GAUGE_W, Math.max(0.5, m));
         mgraphics.fill();
         var vy = top + gh - dvNorm("v_" + DV_META_KEYS[k]) * gh;
         sptRgba(sptColor("live_lcd_control_fg_alt"), 1);
@@ -251,7 +266,7 @@ function paint() {
         sptText(dvTel.split ? "Spectral" : "Envelope", right - 40, 10, sptColor("live_lcd_title"), SPT_SIZE_SMALL, 2);
     }
     for (r = 0; r < 3; r++) lnPaintLane(r);
-    var ay = LN_Y0 + 2 * LN_PITCH + LN_H + 6;
-    sptText("-2.4 s", LN_PLOT_X, ay, sptColor("live_display_scale_text"), 7, 0);
+    var ay = LN_AXIS_Y, span = lnSpanLabel();
+    if (span) sptText(span, LN_PLOT_X, ay, sptColor("live_display_scale_text"), 7, 0);
     sptText("now", LN_PLOT_X + LN_PLOT_W, ay, sptColor("live_display_scale_text"), 7, 2);
 }

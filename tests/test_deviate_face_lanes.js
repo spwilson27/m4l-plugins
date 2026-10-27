@@ -38,4 +38,11 @@ if (built.length) {
         R.ok(e && /themecolor\./.test(e.expression), `${id} is bound to a theme colour`);
     }
 }
+const src = require("fs").readFileSync(path.join(__dirname, "..", "src", "deviate_face_lanes.js"), "utf8");
+const num = (n) => Number((src.match(new RegExp("var " + n + " = (\\d+)")) || [])[1]);
+const gaugeRight = num("LN_GUT_X") + 2 * num("LN_GAUGE_PITCH") + num("LN_GAUGE_W") + 2; // fill + the Value tick overhangs by 1 px + 1
+R.ok(gaugeRight <= num("LN_CANVAS_W") - num("LN_RIGHT_MARGIN"), `gauge right edge ${gaugeRight} leaves a ${num("LN_RIGHT_MARGIN")} px margin`);
+R.ok(num("LN_AXIS_Y") + 3 <= num("LN_CANVAS_H"), "axis label baseline leaves descender room");
+R.ok(/\bt\.draws\b/.test(src) && !/lnPush\([^;]*t\.metas/.test(src) && !/lnPush\([^;]*dvTel\.metas/.test(src), "hit ticks come from the raw draws");
+R.ok(!/"-2\.4 s"/.test(src) && /lnSpanLabel/.test(src), "span label is not a hard-coded constant");
 R.done();
