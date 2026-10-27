@@ -748,7 +748,7 @@ npm run -s typecheck && python3 scripts/build_ableton_mcp.py && node tests/test_
 - **Re-arm:** below 70 % of the threshold, or back near the baseline.
 - **Outlets:** `out3` gate, `out4` held velocity.
 - **Naming:** never name a Param `hold`; with that name the lockout and gate outputs silently stopped working.
-- **Telemetry:** `Buffer scope("trigscope")` (`buffer~ #0-trigscope @samps 800`, bound via `scope #0-trigscope`).
+- **Telemetry:** `Buffer scope("trigscope")` (`buffer~ ---trigscope @samps 800`, bound via `scope ---trigscope`; `#0` is not expanded in a top-level device).
   - Written every 64 samples:
     - `0` fast env
     - `1` slow env

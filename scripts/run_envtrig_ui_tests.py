@@ -40,7 +40,7 @@ def device_patch():
     for b in patcher["boxes"]:
         if b["box"]["id"] == "obj-strip":
             first = b["box"]["textfile"]["text"].split("\n", 1)[0]
-            panel_names = json.loads(first[len("var PANEL_NAMES = "):].rstrip(";"))
+            panel_names = json.loads(first[len("var PANEL_NAMES="):].rstrip(";"))
     return patcher["boxes"], patcher["lines"], panel_names
 
 
