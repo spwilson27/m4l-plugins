@@ -68,7 +68,7 @@ def rpc(code):
 
 def probe():
     return rpc(
-        'messnamed("#0-bsdebug", "drag_probe");'
+        'var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "drag_probe");'
         'var g = new Global("bs_drag_probe");'
         'return { path: String(g.path || ""), name: String(g.name || ""), armed: g.armed || 0 };'
     )
@@ -137,7 +137,7 @@ def main():
         'a.call("focus_view", "Detail/DeviceChain");'
         'return 1;'
     )
-    rpc('messnamed("#0-bsdebug", "dropfile", %s); return 1;' % json.dumps(WAV))
+    rpc('var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, "dropfile", %s); return 1;' % json.dumps(WAV))
     time.sleep(1.2)
     got = probe()
     print("probe", got)

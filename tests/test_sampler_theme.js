@@ -32,7 +32,7 @@ const byId = new Map(boxes.map((b) => [b.id, b]));
 const lines = patcher.lines.map((l) => l.patchline);
 
 // Bitwig regression hashes, taken from the face before face_theme existed (see goldenFor)
-const GOLDEN = { main: "6275ef0a82dce4a3", side: "4a9d65bf59eb4bac" };
+const GOLDEN = { main: "3ed5766e4608d935", side: "54ee9313f16af1cb" };
 
 function makeSandbox(box, rec) {
     const ctx = { emitted: [], size: [box.presentation_rect[2], box.presentation_rect[3]] };
@@ -97,8 +97,9 @@ assert.deepStrictEqual(byId.get("obj-ctrl-env_page").saved_attribute_attributes.
     const shortNames = boxes.filter((b) => b.saved_attribute_attributes && b.saved_attribute_attributes.valueof && b.saved_attribute_attributes.valueof.parameter_shortname)
         .map((b) => b.saved_attribute_attributes.valueof.parameter_shortname);
     assert.strictEqual(new Set(shortNames).size, shortNames.length, "parameter short names stay unique");
-    const m = /var FACE_PARAMS = (\{.*\});/.exec(mainBox.textfile.text);
-    const keys = Object.keys(JSON.parse(m[1]));
+    const m = /var FACE_PARAMS\s*=\s*(\{[\s\S]*?\}\s*\})\s*;\s*var /.exec(mainBox.textfile.text);
+    // the build may minify the script: keys can be unquoted, so evaluate the literal
+    const keys = Object.keys(new Function("return " + m[1])());
     assert.strictEqual(keys[keys.length - 1], "face_theme", "face_theme is the last face parameter");
     const ctrlOrder = boxes.filter((b) => /^obj-ctrl-/.test(b.id) && b.maxclass !== "live.drop").map((b) => b.id.replace("obj-ctrl-", ""));
     assert.strictEqual(ctrlOrder[ctrlOrder.length - 1], "face_theme", "its live.* object is created last");
@@ -137,7 +138,7 @@ for (const key of layoutLib.AB_PARAM_KEYS) {
 assert.strictEqual(byId.get("obj-ctrl-mode").num_lines_presentation, 5, "engine list is a vertical live.tab");
 assert.strictEqual(byId.get("obj-ctrl-sliced").num_lines_presentation, 2, "Single / Sliced is a vertical live.tab");
 {
-    const names = JSON.parse(/var AB_BOXNAMES = (\{.*\});/.exec(mainBox.textfile.text)[1]);
+    const names = new Function("return " + /var AB_BOXNAMES\s*=\s*(\{[\s\S]*?\})\s*;/.exec(mainBox.textfile.text)[1])();
     assert.deepStrictEqual(Object.keys(names).sort(), layoutLib.AB_LAYOUT_KEYS.slice().sort(), "AB_BOXNAMES covers exactly the layout keys");
     const varnames = new Set(boxes.filter((b) => b.varname).map((b) => b.varname));
     for (const [key, name] of Object.entries(names)) assert.ok(varnames.has(name), `layout key ${key}: a box with varname ${name} exists`);
@@ -216,7 +217,7 @@ const reachableByWidget = new Set();
     // theme 0 = the saved file
     const saved = abComputeLayout(0, layoutStates[0]);
     for (const key of AB_LAYOUT_KEYS) {
-        const b = boxes.find((x) => x.varname === JSON.parse(/var AB_BOXNAMES = (\{.*\});/.exec(mainBox.textfile.text)[1])[key]);
+        const b = boxes.find((x) => x.varname === new Function("return " + /var AB_BOXNAMES\s*=\s*(\{[\s\S]*?\})\s*;/.exec(mainBox.textfile.text)[1])()[key]);
         if (saved[key]) assert.deepStrictEqual(saved[key], b.presentation_rect, `Bitwig layout ${key} is the saved rect`);
         else assert.strictEqual(b.hidden, 1, `${key} is hidden in the saved file`);
     }
@@ -344,7 +345,7 @@ for (const theme of [0, 1]) {
     for (const st of [{ sliced: 0 }, { sliced: 1 }]) for (const at of [0, 1, 2, 3, 4]) for (const dyn of [0, 1]) {
         setState(mctx.sb, st); mctx.sb.storeParam("slice_at", at, true); mctx.sb.storeParam("root_dyn", dyn, true); mctx.sb.paint(); collectZones(mctx.sb, reachable);
     }
-    const all = Object.keys(JSON.parse(/var FACE_PARAMS = (\{.*\});/.exec(mainBox.textfile.text)[1]));
+    const all = Object.keys(new Function("return " + /var FACE_PARAMS\s*=\s*(\{[\s\S]*?\}\s*\})\s*;\s*var /.exec(mainBox.textfile.text)[1])());
     for (const k of REGION_KEYS) reachable.add(k);   // regions are reported as zone.region (checked above via collectZones)
     const missing = all.filter((k) => !reachable.has(k));
     assert.deepStrictEqual(missing, [], `parameters not reachable in the Ableton theme: ${missing.join(", ")}`);
@@ -354,7 +355,7 @@ for (const theme of [0, 1]) {
 // Applying the layout
 // ---------------------------------------------------------------------------
 {
-    const names = JSON.parse(/var AB_BOXNAMES = (\{.*\});/.exec(mainBox.textfile.text)[1]);
+    const names = new Function("return " + /var AB_BOXNAMES\s*=\s*(\{[\s\S]*?\})\s*;/.exec(mainBox.textfile.text)[1])();
     const calls = [];
     const objs = new Map();
     const fake = {

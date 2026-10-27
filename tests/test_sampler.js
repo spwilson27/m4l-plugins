@@ -249,12 +249,12 @@ const lines = patcher.lines;
 assert.strictEqual(byId.size, boxes.length, "box ids are unique");
 
 // --- buffers, loadbang message, gen core ---
-assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", "empty user sample buffer");
-assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
-assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 256", "telemetry incl. 32 grain slots (64..127) and per-voice env/filter (128..207)");
-assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2, mstate #0-bsmstate");
-assert.strictEqual(byId.get("obj-buf-pitch").text, "buffer~ #0-bspitch @samps 4096", "Analyzed Root Key curve buffer");
-assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch");
+assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ ---bsamp 1000 2", "empty user sample buffer");
+assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ ---bsvoices @samps 128");
+assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ ---bsscope @samps 256", "telemetry incl. 32 grain slots (64..127) and per-voice env/filter (128..207)");
+assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp ---bsamp, vdata ---bsvoices, scope ---bsscope, pitch ---bspitch, wt1 ---bswt1, wt2 ---bswt2, mstate ---bsmstate");
+assert.strictEqual(byId.get("obj-buf-pitch").text, "buffer~ ---bspitch @samps 4096", "Analyzed Root Key curve buffer");
+assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers ---bsamp ---bsvoices ---bsscope ---bspitch ---bsdebug ---bsmpe ---bswt1 ---bswt2 ---bsamp2");
 assertLink(lines, "obj-loadbang", 0, "obj-msg-gen-buf", 0, "loadbang -> gen buffers");
 assertLink(lines, "obj-msg-gen-buf", 0, "obj-gen-in", 1, "gen buffers");
 assertLink(lines, "obj-msg-ui-buf", 0, "obj-viz", 0, "ui buffers");
@@ -277,7 +277,7 @@ assert.strictEqual(codeBox.code.trim(), minifyGen(gen).trim(), "embeds the mangl
 assert.ok(!byId.get("obj-viz-side").textfile.text.includes("var GEN_DSP_TEXT"), "only the main face carries the gen patch");
 for (const b of boxes) {
     const t = String(b.text || "");
-    if (/^(buffer~|send|receive)\b/.test(t)) assert.ok(t.includes("#0-"), `instance object must use #0- (${t})`);
+    if (/^(buffer~|send|receive)\b/.test(t)) assert.ok(t.includes("---"), `instance object must use --- (${t})`);
 }
 
 const stripped = JSON.stringify({
@@ -3052,7 +3052,7 @@ console.log("Deferred DSP: GUI first, gen~ created from the embedded patch ok");
     while (r.sliceMonoJob) r.sliceMonoStep();
     assert.strictEqual(calls.length, 2, "new sample re-analysed");
     // dsp_ready re-binds the pitch buffer too (it is in the gen binding message)
-    assert.ok(byId.get("obj-msg-gen-buf").text.includes("pitch #0-bspitch"));
+    assert.ok(byId.get("obj-msg-gen-buf").text.includes("pitch ---bspitch"));
 }
 
 console.log("Analyzed Root Key: toggle, tracking, curve buffer and drawing ok");

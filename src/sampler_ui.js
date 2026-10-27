@@ -552,8 +552,27 @@ var scopeTask = (typeof Task !== "undefined") ? new Task(function() {
     if (scopeTask) scopeTask.schedule(45);
 }) : null;
 
-function setbuffers(sName, vName, scName, pName) {
+var mpeBufName = "";
+var wt1BufName = "";
+var wt2BufName = "";
+var osc2BufName = "";
+var debugBufName = "";
+// Per-instance names come from the patcher (---bs* is expanded per device instance by Live; a literal
+// "#0-" is not expanded in a top-level device and script strings are never expanded).
+function setbuffers(sName, vName, scName, pName, dbgName, mpeName, wt1Name, wt2Name, osc2Name) {
     trace("setbuffers", sName + " " + vName + " " + scName + " " + pName);
+    debugBufName = String(dbgName || "");
+    mpeBufName = String(mpeName || "");
+    wt1BufName = String(wt1Name || "");
+    wt2BufName = String(wt2Name || "");
+    osc2BufName = String(osc2Name || "");
+    if (debugBufName) {
+        try {
+            var hk = new Global("better_sampler_hooks");
+            if (!hk.map) hk.map = {};
+            hk.map[String(new LiveAPI(function () {}, "this_device").id)] = debugBufName;
+        } catch (_) {}
+    }
     sampBufName = String(sName || "");
     voicesBufName = String(vName || "");
     scopeBufName = String(scName || "");
@@ -753,8 +772,8 @@ function loadDsp() {
     mgraphics.redraw();
 }
 
-// Diagnostics, reachable from the Ableton MCP bridge with messnamed("#0-bsdebug", "dsp_diag")
-// (#0 is not substituted in a top-level device); results land in the load trace
+// Diagnostics, reachable from the Ableton MCP bridge with messnamed("<---bsdebug>", "dsp_diag")
+// (the expanded ---bsdebug name is in Global("better_sampler_hooks").map[LOM device id]); results land in the load trace
 function dsp_diag() {
     var info = ["ready=" + dspReady, "err=" + dspError, "createdAt=" + dspCreatedAt, "counter=" + scopeFrameCounter(), "scope=" + scopeBufName, "retries=" + dspRetries];
     try {
@@ -772,7 +791,7 @@ function dsp_diag() {
     trace("dsp-diag", info.join(" "));
 }
 
-// Test entry points (messnamed("#0-bsdebug", ...), see scripts/test_sampler_live.js). dbg_param drives a parameter
+// Test entry points (messnamed("<---bsdebug>", ...), see scripts/test_sampler_live.js). dbg_param drives a parameter
 // the way a click on the face does (face -> route -> hidden live.* -> prepend -> hub -> gen); dbg_state dumps what
 // the face and the voice allocator hold into the load trace.
 function dbg_param(key, v) {
@@ -958,9 +977,9 @@ function midi_note(note, vel) {
 var midiChan = 0;
 
 function pokeMpeVoice(v) {
-    if (typeof Buffer === "undefined" || !v) return;
+    if (typeof Buffer === "undefined" || !v || !mpeBufName) return;
     try {
-        var b = new Buffer("#0-bsmpe");
+        var b = new Buffer(mpeBufName);
         b.poke(1, v.index * 4, [v.mpePb || 0, v.mpeSlide || 0, v.mpePress || 0, 0]);
     } catch (_) {}
 }

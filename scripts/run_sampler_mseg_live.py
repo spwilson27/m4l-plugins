@@ -33,7 +33,7 @@ def rpc(code, timeout=30):
 
 def mess(msg):
     return rpc(
-        'messnamed("#0-bsdebug", %s); return 1;' % msg
+        'var m = new Global("better_sampler_hooks").map || {}; var k = Object.keys(m); var dbg = k.length ? m[k[k.length - 1]] : "";messnamed(dbg, %s); return 1;' % msg
     )
 
 

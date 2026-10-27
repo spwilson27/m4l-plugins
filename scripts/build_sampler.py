@@ -1407,7 +1407,7 @@ def build_patcher(design=None):
                 "text": "t b b",
             }
         },
-        # 3 Instance-Isolated Buffers (#0-bsamp, #0-bsvoices, #0-bsscope)
+        # 3 Instance-Isolated Buffers (---bsamp, ---bsvoices, ---bsscope)
         {
             "box": {
                 "id": "obj-buf-samp",
@@ -1416,7 +1416,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 330.0, 220.0, 20.0],
-                "text": "buffer~ #0-bsamp 1000 2",
+                "text": "buffer~ ---bsamp 1000 2",
             }
         },
         {
@@ -1427,7 +1427,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 358.0, 225.0, 20.0],
-                "text": "buffer~ #0-bsvoices @samps 128",
+                "text": "buffer~ ---bsvoices @samps 128",
             }
         },
         {
@@ -1438,7 +1438,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 386.0, 220.0, 20.0],
-                "text": "buffer~ #0-bsscope @samps 256",
+                "text": "buffer~ ---bsscope @samps 256",
             }
         },
         {
@@ -1449,7 +1449,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 414.0, 220.0, 20.0],
-                "text": "buffer~ #0-bsmstate @samps 256",
+                "text": "buffer~ ---bsmstate @samps 256",
             }
         },
         # Analyzed root key: the sample's pitch (MIDI) at 4096 evenly spaced positions, written by the face
@@ -1461,7 +1461,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 414.0, 220.0, 20.0],
-                "text": "buffer~ #0-bspitch @samps 4096",
+                "text": "buffer~ ---bspitch @samps 4096",
             }
         },
         # Factory wavetables (1024 samples per frame). The user table is the sample buffer itself.
@@ -1473,7 +1473,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 442.0, 200.0, 20.0],
-                "text": "buffer~ #0-bswt1",
+                "text": "buffer~ ---bswt1",
                 "varname": "obj-buf-wt1",
             }
         },
@@ -1485,11 +1485,11 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [640.0, 442.0, 200.0, 20.0],
-                "text": "buffer~ #0-bswt2",
+                "text": "buffer~ ---bswt2",
                 "varname": "obj-buf-wt2",
             }
         },
-        # Sample file loader wiring (live.drop -> prepend replace -> buffer~ #0-bsamp -> bang -> v8ui)
+        # Sample file loader wiring (live.drop -> prepend replace -> buffer~ ---bsamp -> bang -> v8ui)
         {
             "box": {
                 "id": "obj-prep-replace",
@@ -1544,9 +1544,9 @@ def build_patcher(design=None):
         # The loaded file's sample rate (Hz, 0 = unknown): the gen scales every read step by file rate / DSP rate
         {"box": {"id": "obj-prep-samprate", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
                  "patching_rect": [1000.0, 576.0, 110.0, 20.0], "text": "prepend samp_rate"}},
-        # Debug entry point for the MCP bridge: messnamed("#0-bsdebug", "dsp_diag") (see src/sampler_ui.js)
+        # Debug entry point for the MCP bridge: messnamed("---bsdebug", "dsp_diag") (see src/sampler_ui.js)
         {"box": {"id": "obj-debug-recv", "maxclass": "newobj", "numinlets": 0, "numoutlets": 1, "outlettype": [""],
-                 "patching_rect": [900.0, 632.0, 110.0, 20.0], "text": "receive #0-bsdebug"}},
+                 "patching_rect": [900.0, 632.0, 110.0, 20.0], "text": "receive ---bsdebug"}},
         # Loadbang buffer binding (rule #8: bind GenExpr Buffer varName with no `set` prefix)
         {
             "box": {
@@ -1567,7 +1567,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 450.0, 520.0, 20.0],
-                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2, mstate #0-bsmstate" + (", samp2 #0-bsamp2, modmap #0-bsmod, mpebuf #0-bsmpe, msegw #0-bsmseg, slbuf #0-bsslot" if design else ""),
+                "text": "samp ---bsamp, vdata ---bsvoices, scope ---bsscope, pitch ---bspitch, wt1 ---bswt1, wt2 ---bswt2, mstate ---bsmstate" + (", samp2 ---bsamp2, modmap ---bsmod, mpebuf ---bsmpe, msegw ---bsmseg, slbuf ---bsslot" if design else ""),
             }
         },
         {
@@ -1578,7 +1578,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 480.0, 290.0, 20.0],
-                "text": "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch",
+                "text": "setbuffers ---bsamp ---bsvoices ---bsscope ---bspitch ---bsdebug ---bsmpe ---bswt1 ---bswt2 ---bsamp2",
             }
         },
         # Route messages emitted from v8ui
@@ -1615,7 +1615,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 510.0, 280.0, 20.0],
-                "text": "setmodbufs #0-bsmod #0-bsmseg #0-bsslot",
+                "text": "setmodbufs ---bsmod ---bsmseg ---bsslot",
             }
         })
 
@@ -1627,7 +1627,7 @@ def build_patcher(design=None):
         {"patchline": {"source": ["obj-midiparse", 0], "destination": ["obj-prep-midi", 0]}},
         {"patchline": {"source": ["obj-prep-midi", 0], "destination": ["obj-viz", 0]}},
 
-        # Sample load: the face's load_sample -> prepend replace -> buffer~ #0-bsamp -> done bang -> face
+        # Sample load: the face's load_sample -> prepend replace -> buffer~ ---bsamp -> done bang -> face
         {"patchline": {"source": ["obj-prep-replace", 0], "destination": ["obj-buf-samp", 0]}},
         {"patchline": {"source": ["obj-buf-samp", 1], "destination": ["obj-prep-loaded", 0]}},
         {"patchline": {"source": ["obj-prep-loaded", 0], "destination": ["obj-viz", 0]}},
@@ -1804,7 +1804,7 @@ def build_patcher(design=None):
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [660.0, 330.0, 230.0, 20.0],
-                "text": "buffer~ #0-bsamp2 1000 2",
+                "text": "buffer~ ---bsamp2 1000 2",
                 "varname": "obj-buf-samp2",
             }
         })
@@ -1829,7 +1829,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 400.0, 160.0, 20.0],
-                "text": "buffer~ #0-bsmod @samps 289",
+                "text": "buffer~ ---bsmod @samps 289",
             }
         })
         dsp_boxes.append({
@@ -1840,7 +1840,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 428.0, 160.0, 20.0],
-                "text": "buffer~ #0-bsmpe 64 1",
+                "text": "buffer~ ---bsmpe 64 1",
             }
         })
         dsp_boxes.append({
@@ -1851,7 +1851,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 456.0, 180.0, 20.0],
-                "text": "buffer~ #0-bsmseg @samps 4096",
+                "text": "buffer~ ---bsmseg @samps 4096",
             }
         })
         dsp_boxes.append({
@@ -1862,7 +1862,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 484.0, 160.0, 20.0],
-                "text": "buffer~ #0-bsslot @samps 128",
+                "text": "buffer~ ---bsslot @samps 128",
             }
         })
         for outlet, prep, msg in (
