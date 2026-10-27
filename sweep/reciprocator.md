@@ -24,3 +24,9 @@ Not checked: multi-instance scope isolation in Live (smoke only loads two instan
 - KEEP audio cases `extremes` and `mix0_dry` (run_reciprocator_audio_tests.py): not red; regression coverage with sound expectations (ceiling 0 dB bound; Mix 0 = dry 0.25 per AGENTS/Stage A+B run).
 - RC-02..RC-07 (S4, log only, no tests): no test to verify; accepted as notes. RC-02 doc drift is correct (device uses ---recipscope).
 - No tests rejected.
+
+## Fix
+- RC-01: fixed (textcolor on live.dial in scripts/build_reciprocator.py). tests/test_reciprocator_sweep2.js now passes.
+- RC-02: fixed (AGENTS.md buffer name now ---recipscope).
+- RC-03..RC-07: S4, left as notes (no change).
+Gate: typecheck, build, test_reciprocator, sweep2 test, preview (read), test_face_fuzz (0 failures), test_device_static (remaining violations belong to other devices), vm_smoke PASS. DSP unchanged, so no VM audio/Live rerun.

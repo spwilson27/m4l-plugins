@@ -107,6 +107,7 @@ def make_dial(key, x, y, w=48.0, h=46.0, color_rgb=(0.28, 0.82, 0.95)):
             "outlettype": ["", "float"],
             "parameter_enable": 1,
             "patching_rect": [x, 220.0, w, h],
+            "textcolor": [0.82, 0.86, 0.90, 1.0],
             "presentation": 1,
             "presentation_rect": [float(x), float(y), float(w), float(h)],
             "saved_attribute_attributes": {"valueof": valueof_dict(key)},
