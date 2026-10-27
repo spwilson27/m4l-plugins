@@ -30,3 +30,11 @@ Counts: S1 0, S2 2, S3 0, S4 6.
 - G-08 KEEP: scripts/test_glitch_persist_live.js is a new check, not a bug.
 - G-02..G-07 log-only S4 nits: no red tests, nothing to verify or delete; G-04 and G-07 are cosmetic and low value.
 - Rejected: none.
+
+## Fix
+- G-01 fixed: ROOT assigned before sourcing vm_common.sh in scripts/vm_glitch.sh (commit 5312dc9). The same bug in scripts/vm_megamod_keys.sh is for the megamod lane.
+- G-09 fixed: onParamIn in src/glitch_ui.js now calls done() (notifyclients) for chaos, morphx/y, mode, seqrate, glide and seqlen (commit 5312dc9). The 6 red tests in tests/test_glitch_sweep2.js pass.
+- G-08: scripts/test_glitch_persist_live.js committed. It was not re-run after the fix; the Live clone Chaos 80 check is unverified.
+- G-02..G-07 (S4): not fixed (log-only nits).
+- Gate: typecheck, build_glitch, test_glitch, test_glitch_sweep2, test_face_fuzz, preview and test_device_static all pass for Glitch (the static violations are other devices'). `vm_glitch.sh run` (full Live suite): all checks passed. DSP unchanged, so no Max audio re-run.
+- DEFERRED(shared): none.
