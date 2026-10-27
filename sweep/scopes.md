@@ -28,3 +28,13 @@ Doc check: anFoldWidth (28/392/1134), AN_SCOPE_MS [5,20,50], OSC_FIXED_MS, gain 
 - KEEP SC-02 (Oscilloscope 4/8 Cyc spans 3.84/7.68 periods instead of 4/8; 96 kHz 3.84): real mislabelled window from the 0.9 x 4096 cap, expected value follows the label. Fixed-ms variant is the deliberately red iteration-1 deferred test in test_oscilloscope_bugsweep.js (kept, not duplicated).
 - REJECT SC-03 (ring-size assertions): prescribes the implementation (ring >= 9600) rather than behaviour; fully covered by SC-01/SC-02. Test lines deleted.
 - SC-04..06 have no tests (S4, unverified; SC-04 needs Live smoke).
+
+## Fix
+- SC-01 (Analyzer 50 ms window at 96/192 kHz), SC-02 (Oscilloscope 4/8 Cyc and fixed 50 ms windows truncated), baseline F5: FIXED. Scope ring grown 4096 -> 16384 per channel
+  (`AN_SCOPE_N`, `OSC_RING_N`, `scopeIx` wrap and poke bases in `analyzer_core.genexpr`: scope R 17952, FFT ring 34336, buffer `@samps 42528`
+  in both builds and the audio runner / probe). Commit 4d3cd7e. Tests that fed 4096-sample signals now feed OSC_RING_N like the face does.
+- SC-03: rejected in verify (implementation of the above). SC-04/05/06 (S4): not fixed (SC-04 gain thumb over "+0.0 dB" still present in preview; cosmetic, left open).
+- Gate: typecheck, both builds, test_analyzer 185580, test_oscilloscope 163561, test_scopes_sweep2 9/9, test_analyzer_bugsweep 16/16,
+  test_oscilloscope_bugsweep 22/22 (was 18 + 2 red), test_device_static clean for both, test_face_fuzz 0 failures, previews rendered and read.
+- Max audio (VM): Analyzer run_analyzer_audio_tests all ok (tone1k, invert, intersample, lowband). Oscilloscope audio suite queued behind the VM harness; not completed at report time.
+- Not run: vm_smoke / Live (Live lock held by other lanes; no face/LOM change beyond ring size, so Live run deferred). AGENTS.md section 28 updated (buffer size, ring).

@@ -1877,7 +1877,7 @@ Fixed height 169. Ableton-native colours from `src/spectral_theme.js`. No device
 
 Default is spectrogram only (392 px). All four open is 1134 px. All closed leaves the rail (28 px). **Freeze** (rail, under the four toggles) holds the drawings and the momentary numbers. Integrated LUFS keeps running. Freeze starts off and is not saved.
 
-`buffer~ ---analyzerscope` (`AN_BUF_SAMPS` 17952), layout in `src/analyzer_config.js`: header, 64 packets of 24 floats (480 samples each), stereo scope ring (4096) and a mono 8192-sample FFT ring. `AnalyzerState` blob version 1 on the face (`parameter_type` 3, stored only): fold mask, section order, spectrogram type, scope mode and time base, trigger, crossover frequencies. Integrated loudness is session state.
+`buffer~ ---analyzerscope` (`AN_BUF_SAMPS` 42528), layout in `src/analyzer_config.js`: header, 64 packets of 24 floats (480 samples each), stereo scope ring (16384 per channel, L at 1568, R at 17952; sized so a 50 ms window at 192 kHz and 8 Cyc fit; the pitch tracker still uses the newest 4096) and a mono 8192-sample FFT ring. `AnalyzerState` blob version 1 on the face (`parameter_type` 3, stored only): fold mask, section order, spectrogram type, scope mode and time base, trigger, crossover frequencies. Integrated loudness is session state.
 
 No automatable analysis parameters. Tuner, key / chromagram and a 3D mesh are not in this version.
 
