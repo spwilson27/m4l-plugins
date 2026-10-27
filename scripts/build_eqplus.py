@@ -692,9 +692,9 @@ def build():
         newobj("obj-plugout", "plugout~", 20, 620, 70, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="eq_plugout"),
         # Open gate: messages enter the right inlet. The face connects its outlet to gen~ after load.
         newobj("obj-gen-in", "gate 1 1", 120, 480, 70, numinlets=2, numoutlets=1, outlettype=[""], varname="eq_genin"),
-        newobj("obj-buf-cfg", "buffer~ #0-eqpluscfg @samps 128", 420, 420, 230, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-buf-spec", "buffer~ #0-eqplusspec 200 4 @samps 8200", 420, 450, 280, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-buf-ir", "buffer~ #0-eqplusir 4096 3", 420, 480, 220, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-cfg", "buffer~ ---eqpluscfg @samps 128", 420, 420, 230, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-spec", "buffer~ ---eqplusspec 200 4 @samps 8200", 420, 450, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-ir", "buffer~ ---eqplusir 4096 3", 420, 480, 220, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-thisdevice", "live.thisdevice", 420, 490, 100, numoutlets=2, outlettype=["bang", "int"]),
         newobj("obj-trig-init", "t b b", 420, 520, 50, numoutlets=2, outlettype=["bang", "bang"]),
         message("obj-msg-init", "init_dsp", 540, 490, 70),
@@ -706,8 +706,8 @@ def build():
         message("obj-msg-hotkey-gain-down", "hotkey_gain -1", 930, 476, 110),
         message("obj-msg-hotkey-freq-left", "hotkey_freq -1", 700, 504, 110),
         message("obj-msg-hotkey-freq-right", "hotkey_freq 1", 820, 504, 110),
-        message("obj-msg-setbuf", "setbuffers #0-eqpluscfg #0-eqplusspec #0-eqplusir", 540, 520, 320),
-        message("obj-msg-gen-buf", "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", 540, 550, 360),
+        message("obj-msg-setbuf", "setbuffers ---eqpluscfg ---eqplusspec ---eqplusir", 540, 520, 320),
+        message("obj-msg-gen-buf", "eqcfg ---eqpluscfg, spec ---eqplusspec, irspec ---eqplusir", 540, 550, 360),
         newobj("obj-metro", "qmetro 33 @active 1", 420, 590, 140, outlettype=["bang"]),
         # Outlet 0 is param <key> <value>; outlet 1 is setwidth_cmd <px>.
         newobj("obj-route-viz", "route param setwidth_cmd", 20, 680, 200, numoutlets=3, outlettype=["", "", ""]),

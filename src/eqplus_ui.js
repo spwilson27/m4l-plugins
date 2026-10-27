@@ -8,11 +8,11 @@ outlets = 2;
 // Outlet 0: param <key> <value> for Live parameters (keys match scripts/build_eqplus.py).
 // Outlet 1: gen hub — ["eqcfg", buf], ["spec", buf], ["outgain", dB].
 //
-// #0-eqplusspec (Max channels are 1-based):
+// ---eqplusspec (Max channels are 1-based):
 //   ch 1 Pre ring, ch 2 Post ring (EQP_SPEC_RING samples each),
 //   ch 3 optional telemetry: [frameTick, writeIndex, sampleRate].
 //   Inlet `frametick <n>` is the same counter when ch 3 is absent.
-// #0-eqpluscfg ch 1: 8 bands * EQP_CFG_STRIDE
+// ---eqpluscfg ch 1: 8 bands * EQP_CFG_STRIDE
 //   (sections, b0, b1, b2, a1, a2). Disabled / Off bands are all zeros.
 
 // Live 12 default dark, the same measured values as spectral_theme.js. paint() refreshes these
@@ -83,15 +83,15 @@ var NODE_R = 5.25;
 var QH_R = 4.875;
 var QH_GAP = 13.5;
 
-var cfgBufName = "#0-eqpluscfg";
-var specBufName = "#0-eqplusspec";
+var cfgBufName = "---eqpluscfg";
+var specBufName = "---eqplusspec";
 var currentSr = 48000;
 
 var shiftSt = 0;
 var outGainDb = 0;
 var tiltEqDb = 0;
 var phaseMode = 0;
-var irBufName = "#0-eqplusir";
+var irBufName = "---eqplusir";
 var irSerial = 0;
 var eqpReportedLatency = -1;
 var rangeIdx = 0;

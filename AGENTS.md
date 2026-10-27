@@ -2098,3 +2098,9 @@ M4L_LIVE_LOCK_WAIT=7200 scripts/vm_deviate.sh run                           # Li
 - Ring buffers are sized for ≤ 96 kHz (reverb 16384, delay 65536, IRs capped at 98304 samples); at 192 kHz the reverb and delay reads wrap. At 96 kHz the 48 convolver tail slots reach about 1 s.
 - The grain pitch shifter is a two-grain overlap-add without alignment, so pure tones get a slight tremolo (as in Glitch).
 - Hit / reroll / split / MIDI Live checks cover the first device only. `live.numbox` drags with synthetic input did not move values in the VM, which is a limit of the synthetic input.
+
+---
+
+## 32. EQ+ (`devices/EQ+.amxd`)
+
+Per-instance buffers are `---eqpluscfg`, `---eqplusspec`, `---eqplusir` (Live expands `---` per instance; `#0-` is not expanded in a top-level device). Max audio: `scripts/vm_eqplus.sh audio [case ...]` (host-generated coefficients in `scripts/eqplus_audio_fixtures.json`, replayed in the VM which has no node; the runner re-records them when node is present, `run_eqplus_audio_tests.py --fixtures`).
