@@ -13,3 +13,9 @@ Tests use M4L_THEME_STATE_FILE tmp paths; none writes the real ~/.m4l_theme_stat
 | TE-4 | S4 | Theme Editor | Unverified: Set-saved theme (setvalueof -> sync_state) may arrive before node boots; node's listen callback then emits the disk state via theme_sync and overrides the Set's state. Needs a Live load order check. | code read | - |
 | TE-5 | S4 | Theme Editor | open_browser handler passes any string to `open` (execFile, no shell); POST /api/state has CORS * and no body limit, so any web page can change the theme (localhost). | code read | - |
 | TE-6 | S4 | Theme Editor | loadbang + live.thisdevice both send `loadbang` to the v8ui (runs teEmitHostColors/watch twice); jweb subpatcher box id "obj-zl- rot" contains a space. | build script | - |
+
+## Verify
+- TE-1 KEEP: ran, fails as stated (hint ends x=260, past Popout at x=204); real visual overlap, expected bound correct.
+- TE-2 REJECT test (deleted): engine forces neutral macros on Default deliberately ("Default" = native look, header comment); shared frozen file. Residual S4 UX note: macro sliders are inert on Default; report to shared-theme lane.
+- TE-3 KEEP: ran, fails for stated reason (no server_status 0 when all ports busy); uses a random high port range and tmp state file, not flaky, no real prefs touched.
+- TE-4..6 no tests, unverified S4 notes, unchanged.

@@ -1,0 +1,12 @@
+devices/Theme Editor.amxd (audio) PASS  11 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Theme Editor(1)
+ready after 419 ms (meter A 0.840, B 0.840)
+baseline meters A 0.858 B 0.858
+shot /tmp/sweep2/theme_editor/tests/out/smoke/theme_editor/default.png (device area), /tmp/sweep2/theme_editor/tests/out/smoke/theme_editor/default_full.png
+sweep: 0/0 parameters, 0 sets in 0 s
+after sweep meters A 0.851 B 0.851
+shot /tmp/sweep2/theme_editor/tests/out/smoke/theme_editor/after_sweep.png (device area), /tmp/sweep2/theme_editor/tests/out/smoke/theme_editor/after_sweep_full.png
+TIMING theme_editor 19 s (rc 0)

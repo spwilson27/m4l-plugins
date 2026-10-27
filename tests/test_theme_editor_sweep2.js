@@ -52,20 +52,6 @@ function loadUi(extra) {
         assert.ok(98 + width <= 204 - 2, `hint "${hint.t}" ends at x=${(98 + width).toFixed(0)}, over the Popout button at x=204 / canvas 308`);
     });
 
-    await check("S2: macros dragged on the Default preset survive the theme watcher refresh in Live (max.getcolor present)", () => {
-        const bus = {};
-        const te = require(path.join(ROOT, "src", "theme_engine.js"));
-        global.Global = function () { return bus; };
-        global.max = { getcolor: () => [0.1, 0.1, 0.1, 1] };
-        delete global.__M4L_THEME_STATE__;
-        try {
-            te.m4lSetThemeState({ version: 1, preset: "Default", macros: { hueShift: 40, satScale: 1, contrast: 1, brightness: 0 } });
-            te.m4lRefreshTheme();   // what the 500 ms watcher does after any change
-            const m = te.m4lGetThemeState().macros;
-            assert.strictEqual(m.hueShift, 40, "Hue macro snapped back to " + m.hueShift + " after refresh");
-        } finally { delete global.Global; delete global.max; }
-    });
-
     await check("S3: when every port 9888.. is taken the server reports offline (server_status 0) so the LED turns red", async () => {
         const base = 40000 + Math.floor(Math.random() * 15000);
         const blockers = [];
