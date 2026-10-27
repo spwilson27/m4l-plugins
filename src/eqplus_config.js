@@ -1,6 +1,6 @@
 // EQ+ shared math and buffer layout (Bitwig EQ+ clone).
 // Global script: prepended to the v8ui by the build, and require()-able from Node.
-// The face pokes one biquad per band into buffer~ #0-eqpluscfg; both the curve
+// The face pokes one biquad per band into buffer~ ---eqpluscfg; both the curve
 // (eqpBandResponseDb) and src/eqplus_core.genexpr apply that biquad `sections`
 // times (1, 2 or 4), so the drawn curve and the DSP match at steady state.
 //
@@ -93,7 +93,7 @@ var EQP_SIDECHAIN_FOLD_W = 128;
 // soloBand param: -1 is off, 0..7 auditions that band through a bandpass.
 var EQP_SOLO_OFF = -1;
 
-// buffer~ #0-eqpluscfg : 128 floats, two curves of 8 bands x 8.
+// buffer~ ---eqpluscfg : 128 floats, two curves of 8 bands x 8.
 // Curve A (the left channel, or the mid) starts at 0. Curve B (the right
 // channel, or the side) starts at 64. Stereo writes the same
 // curve into both halves; the gen reads the second half only when the
@@ -111,7 +111,7 @@ var EQP_CFG_OFF_B2 = 3;
 var EQP_CFG_OFF_A1 = 4;
 var EQP_CFG_OFF_A2 = 5;
 
-// buffer~ #0-eqplusspec : 8200 frames.
+// buffer~ ---eqplusspec : 8200 frames.
 //   ch 0 pre mono, ch 1 post mono (frames 8 .. 8+8191). Header on those
 //   channels: frame 0 ch 0 write index, frame 0 ch 1 heartbeat, frame 1 ch 0 sample rate.
 //   ch 2 metadata: index 0 frameTick, index 1 writeIdx, index 2 samplerate.

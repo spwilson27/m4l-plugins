@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Render EQ+ through the shared Max harness and check the biquad path.
 
-The device's gen reads coefficients from buffer~ #0-eqpluscfg (8 bands x 8 floats)
-and writes the pre/post ring to buffer~ #0-eqplusspec. This runner pokes one band
+The device's gen reads coefficients from buffer~ ---eqpluscfg (8 bands x 8 floats)
+and writes the pre/post ring to buffer~ ---eqplusspec. This runner pokes one band
 with the same coefficients src/eqplus_config.js uses for the curve, then measures
 the rendered sine.
 
@@ -25,12 +25,14 @@ Cases:
                unity and the right channel rises about 12 dB
   ms_side    — route Side, a notch on the side, a pure side input: both
                outputs drop by more than 25 dB
-  The bypass and bell cases also require #0-eqplusspec to carry non-zero pre and
+  The bypass and bell cases also require ---eqplusspec to carry non-zero pre and
   post samples and a write index that has left 0.
 """
 
+import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -46,7 +48,7 @@ SR = mh.DEFAULT_SR
 AMP = 0.2
 
 # Classic js (the harness probe object). Coefficients arrive as `setup <sections> <b0> ...`
-# after `setbufs` has delivered the expanded #0- buffer names.
+# after `setbufs` has delivered the expanded --- buffer names.
 PROBE_JS = r"""
 inlets = 1;
 outlets = 1;
@@ -282,6 +284,32 @@ def write_probe():
     return path
 
 
+FIXTURES_PATH = os.path.join(ROOT, "scripts", "eqplus_audio_fixtures.json")
+
+
+def node_cached(node_src, args):
+    """Run node on the host and record the output in FIXTURES_PATH; in the VM (no node)
+    the recorded output is replayed. Regenerate on the host after changing eqplus_config.js."""
+    key = json.dumps([node_src, [str(a) for a in args]])
+    try:
+        with open(FIXTURES_PATH, encoding="utf-8") as f:
+            fx = json.load(f)
+    except (OSError, ValueError):
+        fx = {}
+    if shutil.which("node"):
+        cmd = [shutil.which("node"), "-e", node_src, CONFIG_PATH] + [str(a) for a in args]
+        proc = subprocess.run(cmd,
+                              check=True, capture_output=True, text=True)
+        if fx.get(key) != proc.stdout:
+            fx[key] = proc.stdout
+            with open(FIXTURES_PATH, "w", encoding="utf-8") as f:
+                json.dump(fx, f, indent=0, sort_keys=True)
+        return proc.stdout
+    if key not in fx:
+        raise SystemExit("no node and no recorded fixture for " + key[:80] + " (run once on the host)")
+    return fx[key]
+
+
 def biquad_setup(mode, freq, gain, q, sr=SR):
     """sections b0 b1 b2 a1 a2 from eqplus_config.js, so the render matches the curve."""
     node = r"""
@@ -294,11 +322,7 @@ if (vals.some(function (v) { return !Number.isFinite(v); })) {
 }
 process.stdout.write(vals.map(function (v) { return Number(v).toFixed(9); }).join(" "));
 """
-    proc = subprocess.run(
-        ["node", "-e", node, CONFIG_PATH, str(mode), str(freq), str(gain), str(q), str(sr)],
-        check=True, capture_output=True, text=True,
-    )
-    return "setup " + proc.stdout.strip()
+    return "setup " + node_cached(node, [mode, freq, gain, q, sr]).strip()
 
 
 def tilt_message(tilt_db, freq, sr=SR):
@@ -318,11 +342,7 @@ c.sections.forEach(function (s, i) {
 const db = cfg.eqpTiltResponseDb(tilt, freq, sr);
 process.stdout.write(parts.join(", ") + "\n" + db.toFixed(6));
 """
-    proc = subprocess.run(
-        ["node", "-e", node, CONFIG_PATH, str(tilt_db), str(freq), str(sr)],
-        check=True, capture_output=True, text=True,
-    )
-    msg, db = proc.stdout.strip().split("\n")
+    msg, db = node_cached(node, [tilt_db, freq, sr]).strip().split("\n")
     return msg, float(db)
 
 
@@ -359,15 +379,15 @@ def device(gen_code, case):
     boxes = [
         mh.gen_box("dev-gen", gen_code, 200, 240, numinlets=4, numoutlets=2),
         mh.box("dev-seq", "t b b", 40, 80, 50, numoutlets=2, outlettype=["bang", "bang"]),
-        mh.msg("dev-setbufs", "setbufs #0-eqpluscfg #0-eqplusspec", 40, 120, 240),
-        mh.msg("dev-bind", "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", 300, 120, 360),
+        mh.msg("dev-setbufs", "setbufs ---eqpluscfg ---eqplusspec", 40, 120, 240),
+        mh.msg("dev-bind", "eqcfg ---eqpluscfg, spec ---eqplusspec, irspec ---eqplusir", 300, 120, 360),
         mh.msg("dev-setup", case["setup"], 40, 160, 520),
         mh.msg("dev-outgain", case.get("outgain", "outgain 0"), 40, 190, 80),
         mh.msg("dev-phase", case.get("phase", "phaseMode 0"), 40, 220, 100),
         mh.msg("dev-route", case.get("route", "chroute 0"), 140, 220, 80),
-        mh.box("dev-cfg", "buffer~ #0-eqpluscfg @samps 128", 700, 80, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-spec", "buffer~ #0-eqplusspec 200 4 @samps 8200", 700, 110, 280, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-ir", "buffer~ #0-eqplusir 4096 3", 700, 140, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-cfg", "buffer~ ---eqpluscfg @samps 128", 700, 80, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-spec", "buffer~ ---eqplusspec 200 4 @samps 8200", 700, 110, 280, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-ir", "buffer~ ---eqplusir 4096 3", 700, 140, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-tone", tone, 200, 200, 90, numinlets=2, outlettype=["signal"]),
         mh.box("dev-amp", "*~ %s" % AMP, 200, 320, 60, numinlets=2, outlettype=["signal"]),
     ]
@@ -523,6 +543,10 @@ def check(case, meta, errors):
 
 def main():
     args = sys.argv[1:]
+    if args and args[0] == "--fixtures":
+        cases()  # runs every node step, recording the fixtures
+        print("fixtures written")
+        return
     gen_path = GEN_PATH
     if args and args[0].endswith(".genexpr"):
         gen_path = args[0]

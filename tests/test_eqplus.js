@@ -5,7 +5,7 @@
  *
  *  1. Biquad math in src/eqplus_config.js: all 13 modes, shift, Adaptive-Q, gesture zones
  *  2. GenExpr lexer / ordering (no e0..e9, no return inside a block)
- *  3. .amxd header, 169 px presentation, hidden live.* parameters, #0- buffers, wiring
+ *  3. .amxd header, 169 px presentation, hidden live.* parameters, --- buffers, wiring
  *  4. v8ui gestures in a mock Max environment (create, drag, wheel, double-click, analyzers, blob)
  *  5. Bidirectional sync with scripts/build_eqplus.py: route selectors out, inlets in, coeff buffer
  *  6. Hover cursor: shelf and cut zones hide the OS cursor and paint a fixed glyph; Bell, the Q handle, nodes and bars keep it
@@ -463,11 +463,11 @@ eq(byId["obj-gen-in"].text, "gate 1 1", "gen hub is gate 1 1");
 eq(byId["obj-gen-in"].varname, "eq_genin", "hub scripting name");
 ok(!boxes.some((b) => b.maxclass === "gen~" || b.maxclass === "gen.codebox~"), "no static gen~");
 ok(!connected("obj-plugin", "obj-plugout"), "plugin~ is not wired to plugout~");
-eq(byId["obj-buf-cfg"].text, "buffer~ #0-eqpluscfg @samps 128", "config buffer");
-eq(byId["obj-buf-spec"].text, "buffer~ #0-eqplusspec 200 4 @samps 8200", "spectrum buffer includes the sidechain ring");
+eq(byId["obj-buf-cfg"].text, "buffer~ ---eqpluscfg @samps 128", "config buffer");
+eq(byId["obj-buf-spec"].text, "buffer~ ---eqplusspec 200 4 @samps 8200", "spectrum buffer includes the sidechain ring");
 for (const b of boxes) {
     const text = b.text || "";
-    if (/^buffer~/.test(text) || /^(send|receive|s|r) /.test(text)) ok(text.includes("#0-"), `#0- required: ${text}`);
+    if (/^buffer~/.test(text) || /^(send|receive|s|r) /.test(text)) ok(text.includes("---"), `--- required: ${text}`);
 }
 eq(byId["obj-metro"].text, "qmetro 33 @active 1", "30 fps metro");
 ok(connected("obj-metro", "obj-viz"), "metro bangs the canvas");
@@ -475,8 +475,8 @@ eq(byId["obj-thisdevice"].text, "live.thisdevice", "live.thisdevice");
 eq(byId["obj-trig-init"].text, "t b b", "init trigger");
 ok(connected("obj-thisdevice", "obj-trig-init"), "thisdevice bangs the trigger");
 eq(byId["obj-msg-init"].text, "init_dsp", "init_dsp message");
-eq(byId["obj-msg-setbuf"].text, "setbuffers #0-eqpluscfg #0-eqplusspec #0-eqplusir", "UI buffer message");
-eq(byId["obj-msg-gen-buf"].text, "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", "gen buffer bind");
+eq(byId["obj-msg-setbuf"].text, "setbuffers ---eqpluscfg ---eqplusspec ---eqplusir", "UI buffer message");
+eq(byId["obj-msg-gen-buf"].text, "eqcfg ---eqpluscfg, spec ---eqplusspec, irspec ---eqplusir", "gen buffer bind");
 ok(connectedPort("obj-trig-init", 1, "obj-msg-setbuf") && connected("obj-msg-setbuf", "obj-viz"), "setbuffers reaches the canvas first");
 ok(connectedPort("obj-trig-init", 1, "obj-msg-gen-buf") && intoHub("obj-msg-gen-buf"), "gen bind enters the hub");
 ok(connectedPort("obj-trig-init", 0, "obj-msg-init") && connected("obj-msg-init", "obj-viz"), "init_dsp is the later bang");
@@ -913,7 +913,7 @@ function runFace() {
     for (const name of ["set_shift", "set_gain", "set_adaptiveq", "set_range", "set_pre", "set_post", "set_resolution", "set_speed", "set_tilt"]) {
         eq(typeof ui[name], "function", `${name} inlet`);
     }
-    if (typeof ui.setbuffers === "function") ui.setbuffers("#0-eqpluscfg", "#0-eqplusspec");
+    if (typeof ui.setbuffers === "function") ui.setbuffers("---eqpluscfg", "---eqplusspec");
     ui.preview();
 
     function take() { return Array.prototype.slice.call(ui.getvalueof()); }
@@ -1176,7 +1176,7 @@ function runFace() {
     ok(dragged.gain > 1, `drag raises gain (${dragged.gain})`);
     near(dragged.freq, cfg.eqpNormToFreq(0.72), Math.abs(cfg.eqpNormToFreq(0.72)) * 0.12, "dragged frequency");
     near(dragged.gain, cfg.eqpNormToDb(0.82, 10), 1.8, "dragged gain");
-    ok(ui.pokes.some((p) => String(p.name).indexOf("eqpluscfg") >= 0), "drag pokes #0-eqpluscfg");
+    ok(ui.pokes.some((p) => String(p.name).indexOf("eqpluscfg") >= 0), "drag pokes ---eqpluscfg");
     const qBefore = dragged.q;
     ui.onwheel(to[0], to[1], 0, 1, 0, 0, 0, 0, 0);
     const qAfter = bandAt(take(), 0).q;
@@ -1575,7 +1575,7 @@ function runFace() {
             err = call(() => {
                 ui.set_adaptiveq(0);
                 ui.set_shift(0);
-                ui.setbuffers("#0-eqpluscfg", "#0-eqplusspec");
+                ui.setbuffers("---eqpluscfg", "---eqplusspec");
                 for (let i = 0; i < 8; i++) {
                     ui.set_band_mode(i, i === 3 ? 7 : 6);
                     ui.set_band_enable(i, 1);
@@ -1595,7 +1595,7 @@ function runFace() {
             syncOk(Math.abs(bandAt(take(), 1).q - (0.7 + 0.1)) <= 0.02, `set_band_q -> ${bandAt(take(), 1).q}`);
             err = call(() => ui.set_band_freq(0, 220));
             syncOk(!err, `set_band_freq repoke threw ${err}`);
-            assertCfg("band inlets", "#0-eqpluscfg", cfgFrom);
+            assertCfg("band inlets", "---eqpluscfg", cfgFrom);
             err = call(() => {
                 ui.set_band_enable(3, 0);
                 ui.set_shift(12);
@@ -1605,7 +1605,7 @@ function runFace() {
             syncOk(bandAt(take(), 3).enabled === 0, "set_band_enable 3 turns band 4 off");
             syncOk(Math.abs(Number(take()[1]) - 12) <= 0.02, `set_shift -> ${take()[1]}`);
             syncOk(Number(take()[4]) === 1, "set_adaptiveq on");
-            assertCfg("after shift and Adaptive-Q", "#0-eqpluscfg", cfgFrom);
+            assertCfg("after shift and Adaptive-Q", "---eqpluscfg", cfgFrom);
             err = call(() => {
                 ui.set_gain(-6);
                 ui.set_range(2);
@@ -1624,11 +1624,11 @@ function runFace() {
             syncOk(Number(st[7]) === 1, `set_resolution -> ${st[7]}`);
             syncOk(Number(st[8]) === 2, `set_speed -> ${st[8]}`);
             syncOk(Number(st[9]) === 0, `set_tilt -> ${st[9]}`);
-            assertCfg("display inlets leave coeffs matching state", "#0-eqpluscfg", cfgFrom);
-            const alt = "#0-eqpluscfg-sync";
+            assertCfg("display inlets leave coeffs matching state", "---eqpluscfg", cfgFrom);
+            const alt = "---eqpluscfg-sync";
             ui.pokes.length = 0;
             err = call(() => {
-                ui.setbuffers(alt, "#0-eqplusspec-sync");
+                ui.setbuffers(alt, "---eqplusspec-sync");
                 ui.set_band_freq(0, 250);
             });
             syncOk(!err, `setbuffers threw ${err}`);
@@ -2654,7 +2654,7 @@ render(data["shaped"], data["freqs"], "after: smoothed harmonic lines", sys.argv
 // ---------------------------------------------------------------------------------------------
 function runBugSweepPass1() {
     const ui = loadFace();
-    if (typeof ui.setbuffers === "function") ui.setbuffers("#0-eqpluscfg", "#0-eqplusspec", "#0-eqplusir");
+    if (typeof ui.setbuffers === "function") ui.setbuffers("---eqpluscfg", "---eqplusspec", "---eqplusir");
     const irPokes = () => ui.pokes.filter((p) => /eqplusir/.test(p.name)).length;
     ui.set_phase_mode(2);
     eq(ui.phaseMode, 2, "bug sweep: Linear Phase engages");

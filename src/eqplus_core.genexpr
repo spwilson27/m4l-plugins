@@ -6,7 +6,7 @@
 // repeated `sections` times (1, 2 or 4).
 //
 // Bind on loadbang with the GenExpr names (no `set` prefix):
-//   eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir
+//   eqcfg ---eqpluscfg, spec ---eqplusspec, irspec ---eqplusir
 //
 // Processing mode (Param phaseMode): 0 zero latency, 1 natural phase,
 // 2 linear phase. Natural phase is the biquad cascade, a 128-tap
