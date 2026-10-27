@@ -159,6 +159,24 @@ def cases():
             "params": "amount 1.0, gate -24, attack 1.5, release 40, wet 1, ceiling -1, lookahead 1.5, detect 0.25, schp 2000, sclp 16000, outmode 1, revgate 0",
         },
         {
+            # Sweep 2: every control at its extreme with a full-scale input: finite, bounded by 0 dB ceiling.
+            "name": "extremes",
+            "mode": "sine",
+            "amp": 1.0,
+            "arm": 250,
+            "dur": 350,
+            "params": "amount 1.5, gate -72, attack 0.05, release 0.5, wet 1, ceiling 0, lookahead 10.0, detect 1.0, schp 20, sclp 18000, outmode 1, revgate 0",
+        },
+        {
+            # Sweep 2: Mix 0 must be the (lookahead-delayed) dry exactly, whatever Amount / Ceiling / Gate do.
+            "name": "mix0_dry",
+            "mode": "sine",
+            "amp": 0.25,
+            "arm": 250,
+            "dur": 350,
+            "params": "amount 1.5, gate -6, attack 1.0, release 60, wet 0.0, ceiling -18, lookahead 0, detect 0.25, schp 60, sclp 12000, outmode 0, revgate 1",
+        },
+        {
             "name": "lookahead_align",
             "mode": "impulse",
             "arm": 250,
@@ -263,6 +281,14 @@ def check(name, meta, errors):
         print(f"sc_filter steady={steady:.6f} scopeEnv={meta.get('scopeEnv'):.6f}")
         if steady > 0.02:
             errors.append(f"sc_filter: 55 Hz tone should be rejected by SC HP = 2000 Hz and gated, got {steady}")
+    elif name == "extremes":
+        print(f"extremes peak={meta.get('peak'):.4f}")
+        if meta.get("peak", 99) > 1.001:
+            errors.append(f"extremes: Hard ceiling 0 dB exceeded ({meta.get('peak')})")
+    elif name == "mix0_dry":
+        print(f"mix0_dry peak={meta.get('peak'):.4f}")
+        if abs(meta.get("peak", 0) - 0.25) > 0.003:
+            errors.append(f"mix0_dry: Mix 0 should pass the dry unchanged (0.25), got {meta.get('peak')}")
     elif name == "lookahead_align":
         # Because dry and wet share the same 10 ms lookahead delay line, wet=0.5
         # produces a single phase-aligned impulse (1 bin at ~0.7071) rather than a double echo.

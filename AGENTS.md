@@ -116,7 +116,7 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      - **Never name identifiers `e0`–`e9`** (or `e` followed by digits): GenExpr's lexer parses `e0` as Euler's constant `e` (`2.71828...`) rather than an identifier.
      - Use `Delay d(size); d.write(x); y = d.read(samps, interp="linear");` instead of `delay()`.
      - **No early `return` inside an `if` / loop block.** Measured in Cepstra (Max 9, `gen.codebox~`): statements after a `return` nested in a block still execute, including `poke` / `History` side effects, and **the last `return` reached wins** (confirmed with a harness test), so both the "skipped" code and the value are wrong. Keep a single `return` at function level and use `if / else` (or a guarded value such as `depth = cond ? x : 0`). `tests/test_cepstra.js`, `tests/test_percipitator.js` and `tests/test_reciprocator.js` enforce this. It had silently broken Percipitator Freeze and silence sleep, and made Reciprocator's Soft/Hard Clip run as the Limiter.
-     - Bind `Buffer varName("extName");` on `loadbang` using the **GenExpr variable name with no `set` prefix** (e.g., `scope #0-recipscope`).
+     - Bind `Buffer varName("extName");` on `loadbang` using the **GenExpr variable name with no `set` prefix** (e.g., `scope ---recipscope`).
    - **Real Max Audio Test Harness**: Every DSP device must have an automated Max audio test runner (`scripts/run_<device>_audio_tests.py`) built on the shared harness `scripts/max_harness.py` (see section 1b). It verifies audio behaviour and the live UI telemetry buffer updates.
 
 ---
@@ -429,7 +429,7 @@ Audio checks (real Max render): `python3 scripts/run_sand_audio_tests.py`
 
 ### Gen core (`gen.codebox~`, hidden)
 - `src/reciprocator_core.genexpr` — Lookahead delay (`0..10 ms`, shared by wet VCA and dry path for phase alignment), detector HP/LP conditioning, blendable Peak/RMS envelope follower (`0.05..250 ms` attack, `0.5..1500 ms` release), normal & reverse smooth cubic noise gate around `Gate` (`-72..-6 dB`, `revgate`), reciprocal gain (`pow(env, -amount)` up to `150%` inverted dynamics), and `Ceiling` (`-18..0 dB`) with selectable `Soft Clip` (`tanh`), `Hard Clip`, or fast peak `Limiter` (`outmode` `0`, `1`, `2`). `set_ceiling(0)` stays at 0 dB (the top of the range); a missing value still falls back to -1 dB.
-- `Buffer scope("recipscope")` writes peak-held input, envelope, gate open state, normalized dB gain, and output peaks every 64 samples. Bound on `loadbang` via `scope #0-recipscope`.
+- `Buffer scope("recipscope")` writes peak-held input, envelope, gate open state, normalized dB gain, and output peaks every 64 samples. Bound on `loadbang` via `scope ---recipscope`.
 
 ### Known rough edges
 - **`Soft Clip` (`outmode 0`) is a real `tanh` now.** Before the nested-return fix every output mode fell through to the Limiter line, so old audio-test expectations and existing Live Sets sound different: Soft/Hard now clip instead of limit. The `audiorate` case (Soft Clip, Ceiling -1 dB) peaks near 0.68, not at the ceiling.
