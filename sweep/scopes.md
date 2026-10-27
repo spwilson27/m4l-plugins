@@ -16,3 +16,9 @@ Doc check: anFoldWidth (28/392/1134), AN_SCOPE_MS [5,20,50], OSC_FIXED_MS, gain 
 | SC-04 | S4 | Oscilloscope | Preview: Gain Scale slider thumb is drawn over the "+0.0 dB" text. Check in Live smoke. | previews/oscilloscope.png | none |
 | SC-05 | S4 | Analyzer | Preview all-panels: "+1" axis label touches the "Oscilloscope" title. | AN_PREVIEW=15 render | none |
 | SC-06 | S4 | docs | AGENTS 28 Oscilloscope subsection ends with an "EQ+ face clicks" paragraph that belongs to EQ+; Oscilloscope has no vm_ audio wrapper entry in section 1 gate (needs OSC_DRUM_DIR). | AGENTS.md | none |
+
+## Not run in stage A+B (VM contention)
+- `vm_smoke.sh` (Analyzer, Oscilloscope) and `vm_oscilloscope.sh audio` / `run_analyzer_audio_tests.py` were started but never got the VM:
+  the Live lock holder `amp-live` (started 10:43, maxhold 600) stayed in place for 45+ min and the Max harness queue was busy. Killed.
+  Still to do in stage C/D: smoke screenshots (check SC-04 gain-slider thumb, fold/reorder/freeze GUI in real Live), Oscilloscope audio suite
+  (OSC_DRUM_DIR=/tmp/drum_probe), Analyzer audio suite incl. 192 kHz scope window check once the ring is enlarged.
