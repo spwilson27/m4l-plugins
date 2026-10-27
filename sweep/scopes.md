@@ -22,3 +22,9 @@ Doc check: anFoldWidth (28/392/1134), AN_SCOPE_MS [5,20,50], OSC_FIXED_MS, gain 
   the Live lock holder `amp-live` (started 10:43, maxhold 600) stayed in place for 45+ min and the Max harness queue was busy. Killed.
   Still to do in stage C/D: smoke screenshots (check SC-04 gain-slider thumb, fold/reorder/freeze GUI in real Live), Oscilloscope audio suite
   (OSC_DRUM_DIR=/tmp/drum_probe), Analyzer audio suite incl. 192 kHz scope window check once the ring is enlarged.
+
+## Verify (stage C, independent)
+- KEEP SC-01 (Analyzer 50 ms window at 96/192 kHz holds 4096 not 4800/9600 samples): real, user-visible (pill says 50 ms), fails for the stated reason, 5/20 ms controls pass; not an iteration-1 item (iter-1 analyzer scope fix was cut+count<=n only).
+- KEEP SC-02 (Oscilloscope 4/8 Cyc spans 3.84/7.68 periods instead of 4/8; 96 kHz 3.84): real mislabelled window from the 0.9 x 4096 cap, expected value follows the label. Fixed-ms variant is the deliberately red iteration-1 deferred test in test_oscilloscope_bugsweep.js (kept, not duplicated).
+- REJECT SC-03 (ring-size assertions): prescribes the implementation (ring >= 9600) rather than behaviour; fully covered by SC-01/SC-02. Test lines deleted.
+- SC-04..06 have no tests (S4, unverified; SC-04 needs Live smoke).

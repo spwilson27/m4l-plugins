@@ -59,8 +59,5 @@ for (const [f, r, mode, n] of [[100, 48000, 3, 8], [50, 48000, 2, 4], [100, 9600
     const periods = fr.spanSamples * f / r;
     ok(Math.abs(periods - n) < 0.1, "SC-02 Oscilloscope " + n + " Cyc at " + f + " Hz / " + r / 1000 + " kHz spans " + n + " periods (got " + periods.toFixed(2) + ")");
 }
-// --- SC-03: the shared ring must hold 50 ms at 192 kHz (9600 samples) -----------------
-ok(osc.OSC_RING_N >= 9600 * 1 / 0.9, "SC-03 Oscilloscope ring (" + osc.OSC_RING_N + ") holds a 50 ms window at 192 kHz with 0.9 usable");
-ok(face.AN_SCOPE_N >= 9600, "SC-03 Analyzer scope ring (" + face.AN_SCOPE_N + ") holds 50 ms at 192 kHz");
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);
