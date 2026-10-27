@@ -22,3 +22,11 @@ Counts: S1 0, S2 3, S3 0, S4 9.
 ## Red tests
 tests/test_ableton_mcp_sweep2.js (fails with 3 failures: MCP-01, MCP-02, MCP-03; each for the stated reason).
 Compatibility note for the fixer: keep every action name and success shape; MCP-01 changes only the missing-path case, MCP-02 may add `total_parameters`, MCP-03 must not affect clients that send no Origin header.
+
+## Verify
+Stage C (independent): ran tests/test_ableton_mcp_sweep2.js, 3 failures, each for the stated reason.
+- MCP-01 KEEP: real user-visible bug (caller cannot tell a no-op from success); set/delete already error on id 0, so expectation is consistent; no repo script relies on ok:true for a missing path; deterministic (mock LiveAPI id 0).
+- MCP-02 KEEP: Mega Modulator has 257 parameters (AGENTS s21), so index/name >127 "not found" is real (hard-coded 128 in handleSetDeviceParameter); test accepts total_parameters or full list, so fix is backward compatible.
+- MCP-03 KEEP: cross-origin/foreign-Host RPC is accepted (status 200); expectation 403 is right, plain clients without Origin and Host 127.0.0.1:port (incl. ssh-tunnel local ports) are unaffected and asserted. Not flaky (random port, health wait loop).
+- MCP-04..MCP-10 (S4, log only, no tests): accepted as log items, no test to delete.
+Rejected: none.
