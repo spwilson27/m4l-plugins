@@ -440,6 +440,8 @@ function ampResendTick() {
 
 // ---- tone stack / cab coefficients ----------------------------------------------------------------
 
+var ampCfVer = 0;
+
 function ampWriteTone() {
     ampToneCache = ampToneBiquads(ampP, amp.sr);
     if (!amp.names.cf || typeof Buffer === "undefined") return;
@@ -447,7 +449,9 @@ function ampWriteTone() {
     for (var i = 0; i < ampToneCache.length; i++) flat = flat.concat(ampToneCache[i]);
     var b = new Buffer(amp.names.cf);
     b.poke(1, 0, flat);
-    b.poke(1, 50, 1);
+    // Slot 50 is a counter (> 0.5 = valid): the gen copies the coefficients once each time it changes.
+    ampCfVer = ampCfVer >= 1000000 ? 1 : ampCfVer + 1;
+    b.poke(1, 50, ampCfVer);
 }
 
 /** @param {number} f */

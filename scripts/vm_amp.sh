@@ -4,6 +4,7 @@
 #   scripts/vm_amp.sh livetest           under the Live lock: sync, open the bridge set (fresh), load the built
 #                                        Neural Amp on a new audio track, run scripts/test_amp_live.js (tunnel);
 #                                        `livetest --shots <dir>` also saves a VM screenshot per device (scripts/vm_shot.sh)
+#   scripts/vm_amp.sh run <script.py> [args]   sync, run a script in the VM (e.g. measure_amp_cpu.py)
 #   scripts/vm_amp.sh sync
 set -u
 VM=macos-1
@@ -28,6 +29,10 @@ case "$cmd" in
     "${SSH[@]}" "cd ~/${DIR} && python3 scripts/run_amp_audio_tests.py $*"
     ;;
   sync) sync_repo ;;
+  run)
+    sync_repo || exit 1
+    "${SSH[@]}" "cd ~/${DIR} && python3 scripts/$*"
+    ;;
   livetest)
     [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || exec "$ROOT/scripts/vm_live_lock.sh" amp-live -- "$0" livetest "$@"
     sync_repo || exit 1
@@ -44,5 +49,5 @@ case "$cmd" in
     trap 'kill $TUNNEL 2>/dev/null' EXIT
     for i in $(seq 1 20); do curl -s -m 1 "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null && break; sleep 0.5; done
     node "$ROOT/scripts/test_amp_live.js" --port "$LOCAL_PORT" --vmdir "/Users/admin/${DIR}" "$@" ;;
-  *) echo "usage: scripts/vm_amp.sh audio|sync [case ...]" >&2; exit 64 ;;
+  *) echo "usage: scripts/vm_amp.sh audio|sync|run|livetest [args]" >&2; exit 64 ;;
 esac

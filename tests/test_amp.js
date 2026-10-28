@@ -78,7 +78,8 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
     g.weights = Array.from({ length: n + 1 }, (_, i) => Math.sin(i * 1.3) * 0.3);
     const gm = A.ampParseNam(g);
     check(gm.layers[0].gated && A.ampForward(gm, x).every(isFinite), "gated ReLU WaveNet parses and runs");
-    check(/exp\(-peek\(vz, o \+ 4\)\)/.test(A.ampGenNam(gm).body), "gated: the generated gate reads the second half of vz");
+    check(/exp\(-zq4\)\)/.test(A.ampGenNam(gm).body) && /exp\(-peek\(vz, o \+ 4\)\)/.test(A.ampGenNam(gm, { fullMacs: 0 }).body), "gated: the generated gate reads the second half of the conv outputs (unrolled and looped)");
+    globalThis.__ampGated = gm;
 }
 
 // 3. generated GenExpr rules + template
@@ -108,9 +109,20 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
 // 3b. the generated network run as JS (GenExpr subset: Data, peek / poke, for, ternaries): per channel state
 // is separate (stereo = two independent models), each channel equals the reference ampForward
 {
-    for (const name of ["nano", "feather", "lstm2"]) {
-        const m = A.ampParseNam(read(`tests/amp_ref/${name}.nam`));
-        const g = A.ampGenNam(m);
+    // A wide WaveNet (24 channels, kernel 7) over the unroll limit takes the looped path.
+    const wide = JSON.parse(read("tests/amp_ref/nano.nam"));
+    wide.config.layers = [Object.assign({}, wide.config.layers[0], { channels: 24, kernel_size: 7, head_size: 1, dilations: [1, 2] })];
+    let nw = 0;
+    for (const lc of wide.config.layers) nw += lc.input_size * lc.channels + lc.dilations.length * (lc.channels * lc.channels * lc.kernel_size + 3 * lc.channels + lc.channels * lc.channels) + lc.channels * lc.head_size + (lc.head_bias ? lc.head_size : 0);
+    wide.weights = Array.from({ length: nw + 1 }, (_, i) => Math.sin(i * 0.7) * 0.2);
+    const cases = ["nano", "feather", "standard", "lstm", "lstm2"].map((name) => [name, A.ampParseNam(read(`tests/amp_ref/${name}.nam`))])
+        .concat([["gated", globalThis.__ampGated], ["wide (looped)", A.ampParseNam(wide)],
+            ["feather (looped)", A.ampParseNam(read("tests/amp_ref/feather.nam")), { fullMacs: 0 }], ["gated (looped)", globalThis.__ampGated, { fullMacs: 0 }], ["wide (fully unrolled)", A.ampParseNam(wide), { fullMacs: 1e9 }]]);
+    check(/peek\(tv, j\)/.test(A.ampGenNam(cases[2][1]).body) && !/for \(o = /.test(A.ampGenNam(cases[1][1]).body) && A.ampWaveMacs(cases[1][1]) <= 3000,
+        "feather (every built-in) is generated fully unrolled, standard looped");
+    check(!/for \(o = /.test(A.ampGenNam(cases[1][1], { fullMacs: 1e9 }).body) && /for \(o = /.test(A.ampGenNam(cases[1][1], { fullMacs: 0 }).body), "fully unrolled: no output loops left");
+    for (const [name, m, opts] of cases) {
+        const g = A.ampGenNam(m, opts);
         const datas = [...g.decl.matchAll(/^Data (\w+)\((\d+)\);$/gm)].map((mm) => mm[1]);
         const assigned = new Set([...g.body.matchAll(/\b([a-z_]\w*)\s*(?:\+=|=(?!=))/gi)].map((mm) => mm[1]));
         const locals = [...assigned].filter((v) => !datas.includes(v) && !["nob", "nib"].includes(v));
@@ -120,7 +132,7 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
             + "var tanh = Math.tanh, exp = Math.exp, abs = Math.abs, floor = Math.floor, min = Math.min, max = Math.max, sqrt = Math.sqrt;\n"
             + "function clip(v, a, b) { return Math.min(b, Math.max(a, v)); }\n"
             + "return { reset: function () { [" + datas.filter((d) => /^(st|hs|cs)$/.test(d)).join(", ") + "].forEach(function (d) { d.fill(0); }); },\n"
-            + "step: function (w, wb, tp, ninit, nch, nib, nob) {\n" + g.body + "\n} };";
+            + "step: function (w, wb, tp, ninit, nch, nib, nob) {\nif (ninit > 0) { for (var jw = 0; jw < " + g.nWeights + "; jw++) wd[jw] = w[wb + jw]; }\n" + g.body + "\n} };";
         const net = new Function(src)();
         const W = Float64Array.from(m.weights), nib = new Float64Array(2), nob = new Float64Array(2);
         const n = 3000, xL = [], xR = [];

@@ -1,12 +1,15 @@
-// Amp gen core template. src/amp_config.js ampGenCode() fills //@NAM_DECL / //@NAM_BODY with the
-// generated network for one architecture, @@RF@@ with its receptive field and @@NLAYERS@@ with
-// its layer count. The engine writes the weights into buffer~ ---ampw (bank offset `wbase`), the
+// Amp gen core template. src/amp_config.js ampGenCode() fills //@NAM_DECL / //@NAM_LOCALS / //@NAM_BODY with
+// the generated network for one architecture, @@RF@@ with its receptive field, @@NLAYERS@@ with its
+// layer count and @@NW@@ with its weight count. The engine writes the weights into buffer~ ---ampw (bank offset `wbase`), the
 // tone stack / cab biquads into ---ampcf (slot 50 = 1 once valid) and reads ---ampscope.
 //
 // Signal: Mono = (in1 + in2) / 2, Stereo = in1 and in2 -> Gain -> gate (linked) -> [Pre-EQ: tone stack] -> model (once per
 // channel) -> Normalize -> DC block -> 10 biquads -> Volume -> Dry/Wet with the dry stereo input. Model or mode
-// switch: fade out 128 samples, take the new bank / mode, stay muted for the receptive field (so the
-// history is the new model's) and fade in.
+// switch: fade out 128 samples, take the new bank / mode, copy the bank into Data wd (128 weights per
+// sample, so no single sample copies a whole model), stay muted for the receptive field (so the history
+// is the new model's) and fade in.
+// Per-sample cost: everything that does not change per sample (gate / smoothing coefficients, dB targets,
+// biquad coefficients) is computed at control rate or copied once when the engine changes it.
 
 Param indb(0);
 Param gatedb(-100);
@@ -53,34 +56,59 @@ History xyc(0);
 History xyh(0);
 History oh(0);
 History tph(0);
+History cpN(-1);
+History cblk(0);
+History cRel(0);
+History cThr(0);
+History cGkO(0);
+History cGkC(0);
+History cIn(1);
+History cNrm(1);
+History cOut(1);
+History cfv(0);
 Data bz(40);
 Data nib(2);
 Data nob(2);
 Data yb(2);
 Data bzp(16);
 Data lsm(48);
+Data cfd(50);
 //@NAM_DECL
 
 dry1 = in1;
 dry2 = in2;
 // Test hook (the Live check): a 110 Hz tone with two harmonics, plucked every 1.5 s, replaces the input.
-tph = tph + 1 >= samplerate * 1.5 ? 0 : tph + 1;
-tsig = (sin(tph * 6.283185307 * 110 / samplerate) + 0.4 * sin(tph * 6.283185307 * 220 / samplerate) + 0.2 * sin(tph * 6.283185307 * 330 / samplerate)) * exp(-tph / samplerate * 1.5);
+tsig = 0;
+if (testamp > 0) {
+    tph = tph + 1 >= samplerate * 1.5 ? 0 : tph + 1;
+    tsig = (sin(tph * 6.283185307 * 110 / samplerate) + 0.4 * sin(tph * 6.283185307 * 220 / samplerate) + 0.2 * sin(tph * 6.283185307 * 330 / samplerate)) * exp(-tph / samplerate * 1.5);
+}
+// Control rate (every 32 samples, and on the first sample): coefficients and dB targets.
+if (cblk <= 0) {
+    cblk = 32;
+    cRel = exp(-1 / (0.03 * samplerate));
+    cThr = dbtoa(gatedb);
+    cGkO = 1 - exp(-1 / (0.001 * samplerate));
+    cGkC = 1 - exp(-1 / (0.06 * samplerate));
+    cIn = dbtoa(indb);
+    cNrm = dbtoa(normdb);
+    cOut = dbtoa(outdb);
+}
+cblk = cblk - 1;
 xm = (in1 + in2) * 0.5;
 xL = testamp > 0 ? testamp * tsig : (scur > 0.5 ? in1 : xm);
 xR = testamp > 0 ? testamp * tsig : (scur > 0.5 ? in2 : xm);
-inG = inG + (dbtoa(indb) - inG) * 0.002;
+inG = inG + (cIn - inG) * 0.002;
 xg = xL * inG;
 xgR = xR * inG;
 
 // Noise gate on the input (after Gain, linked across channels): peak follower, 6 dB hysteresis, 1 ms open, 60 ms close.
 ax = max(abs(xg), abs(xgR));
-relc = exp(-1 / (0.03 * samplerate));
-gEnv = ax > gEnv ? ax : gEnv * relc;
-thr = dbtoa(gatedb);
+gEnv = ax > gEnv ? ax : gEnv * cRel;
+thr = cThr;
 gOpen = gEnv > thr ? 1 : (gEnv < thr * 0.5 ? 0 : gOpen);
 gtgt = gatedb <= -99.9 ? 1 : gOpen;
-gk = gtgt > gGain ? 1 - exp(-1 / (0.001 * samplerate)) : 1 - exp(-1 / (0.06 * samplerate));
+gk = gtgt > gGain ? cGkO : cGkC;
 gGain = gGain + (gtgt - gGain) * gk;
 
 // Model switch.
@@ -97,11 +125,11 @@ if ((tgt != wcur) || (stp != scur) || (ep != ecur)) {
         scur = stp;
         ecur = ep;
         muteN = @@RF@@ + 512;
-        ninit = 1;
+        cpN = 0;
     }
 } else {
     if (muteN > 0) {
-        muteN = muteN - 1;
+        muteN = cpN >= 0 ? muteN : muteN - 1;
     } else {
         fadeG = min(1, fadeG + 1 / 256);
     }
@@ -116,23 +144,46 @@ nout = 0;
 nsat = 0;
 s = 0; c = 0; i = 0; o = 0; h = 0; j = 0; g = 0; pos = 0; acc = 0; sat = 0; wo = 0; rr = 0;
 zv = 0; av = 0; row = 0; pb = 0; gi = 0; gf = 0; gg = 0; go = 0; cc = 0; hh = 0;
-chn = 0; xin = 0; so = 0;
+chn = 0; xin = 0; so = 0; jj = 0;
+//@NAM_LOCALS
 nch = scur > 0.5 ? 2 : 1;
 cn = 0; q = 0; yy = 0; yq = 0; b0 = 0; b1 = 0; b2 = 0; a1 = 0; a2 = 0; z1 = 0; z2 = 0;
 poke(nib, nin, 0);
 poke(nib, ninR, 1);
-cfok = peek(cf, 50, 0);
+// Weight copy after a switch: 128 per sample from the bank into wd; the network starts (ninit) once it is done.
+if (cpN >= 0) {
+    for (j = 0; j < 128; j += 1) {
+        jj = cpN + j;
+        if (jj < @@NW@@) {
+            poke(wd, peek(w, wb + jj, 0), jj);
+        }
+    }
+    cpN = cpN + 128;
+    if (cpN >= @@NW@@) {
+        cpN = -1;
+        ninit = 1;
+    }
+}
+// Biquad coefficients: the engine bumps slot 50 (a counter, > 0.5 = valid) after writing them; copied once per change.
+cv = peek(cf, 50, 0);
+if (cv != cfv) {
+    cfv = cv;
+    for (q = 0; q < 50; q += 1) {
+        poke(cfd, peek(cf, q, 0), q);
+    }
+}
+cfok = cfv > 0.5;
 // Pre-EQ: the tone stack (biquads 0..3) runs on the model's input instead of its output, so it changes
 // how hard each band drives the model (a real amp's tone stack before its power stage).
 if ((ecur > 0.5) && (cfok > 0.5)) {
     for (cn = 0; cn < nch; cn += 1) {
         yy = peek(nib, cn);
         for (q = 0; q < 4; q += 1) {
-            b0 = peek(cf, q * 5, 0);
-            b1 = peek(cf, q * 5 + 1, 0);
-            b2 = peek(cf, q * 5 + 2, 0);
-            a1 = peek(cf, q * 5 + 3, 0);
-            a2 = peek(cf, q * 5 + 4, 0);
+            b0 = peek(cfd, q * 5);
+            b1 = peek(cfd, q * 5 + 1);
+            b2 = peek(cfd, q * 5 + 2);
+            a1 = peek(cfd, q * 5 + 3);
+            a2 = peek(cfd, q * 5 + 4);
             z1 = peek(bzp, cn * 8 + q * 2);
             z2 = peek(bzp, cn * 8 + q * 2 + 1);
             yq = b0 * yy + z1;
@@ -146,7 +197,7 @@ if ((ecur > 0.5) && (cfok > 0.5)) {
 poke(nob, 0, 0);
 poke(nob, 0, 1);
 tp = tpH;
-run = (mok > 0.5) && (wcur >= 0) && (asleep < 0.5);
+run = (mok > 0.5) && (wcur >= 0) && (asleep < 0.5) && (cpN < 0);
 if (run) {
 //@NAM_BODY
     tpH = tp + 1 >= 1048576 ? 0 : tp + 1;
@@ -154,7 +205,7 @@ if (run) {
 nout = clip(fixnan(peek(nob, 0)), -8, 8);
 noutR = scur > 0.5 ? clip(fixnan(peek(nob, 1)), -8, 8) : nout;
 yn = nout;
-nG = nG + (dbtoa(normdb) - nG) * 0.002;
+nG = nG + (cNrm - nG) * 0.002;
 nzL = nout * nG;
 nzR = noutR * nG;
 
@@ -170,11 +221,11 @@ if (cfok > 0.5) {
     for (cn = 0; cn < nch; cn += 1) {
         yy = peek(yb, cn);
         for (q = q0; q < 10; q += 1) {
-            b0 = peek(cf, q * 5, 0);
-            b1 = peek(cf, q * 5 + 1, 0);
-            b2 = peek(cf, q * 5 + 2, 0);
-            a1 = peek(cf, q * 5 + 3, 0);
-            a2 = peek(cf, q * 5 + 4, 0);
+            b0 = peek(cfd, q * 5);
+            b1 = peek(cfd, q * 5 + 1);
+            b2 = peek(cfd, q * 5 + 2);
+            a1 = peek(cfd, q * 5 + 3);
+            a2 = peek(cfd, q * 5 + 4);
             z1 = peek(bz, cn * 20 + q * 2);
             z2 = peek(bz, cn * 20 + q * 2 + 1);
             yq = b0 * yy + z1;
@@ -188,7 +239,7 @@ if (cfok > 0.5) {
 yL = fixnan(peek(yb, 0));
 yR = scur > 0.5 ? fixnan(peek(yb, 1)) : yL;
 
-outG = outG + (dbtoa(outdb) - outG) * 0.002;
+outG = outG + (cOut - outG) * 0.002;
 wet = clip(yL * outG * fadeG, -4, 4);
 wetR = clip(yR * outG * fadeG, -4, 4);
 mx = clip(mixamt, 0, 1);
@@ -241,7 +292,7 @@ if (blk >= 64) {
     poke(scope, pkNam, 10, 0);
     poke(scope, asleep ? 1 : 0, 11, 0);
     poke(scope, oh, 13, 0);
-    poke(scope, (tgt != wcur) || (muteN > 0) ? 1 : 0, 14, 0);
+    poke(scope, (tgt != wcur) || (muteN > 0) || (cpN >= 0) ? 1 : 0, 14, 0);
     poke(scope, alive, 15, 0);
     for (q = 0; q < @@NLAYERS@@; q += 1) {
         lv = peek(lsm, q) + (peek(lact, q) - peek(lsm, q)) * 0.3;

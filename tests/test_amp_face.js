@@ -125,7 +125,7 @@ function runDesign(slug) {
     try {
         const code = vm.runInContext("ampGenCode(AMP_TEMPLATE, ampParseNam(AMP_BUILTIN[1]))", sb);
         const lines = code.split("\n");
-        check(/^Param /.test(lines[0]) && lines.some((l) => /^Data wd\(\d+\);$/.test(l)) && lines.some((l) => /^for \(i = 0; i < 8; i \+= 1\)/.test(l))
+        check(/^Param /.test(lines[0]) && lines.some((l) => /^Data wd\(\d+\);$/.test(l)) && lines.some((l) => /^for \(o = 0; o < 8; o \+= 1\) \{$/.test(l)) && lines.some((l) => /^pk0 = 0; .*tq0 = 0;/.test(l))
             && !/@NAM|@@/.test(code),`${slug}: generated gen code is clean (declarations and body outside comments)`);
     } catch (err) { check(false, slug + ": ampGenCode: " + err.stack); }
     // setnames + a model through the engine (no Buffer data: exercises the load path)

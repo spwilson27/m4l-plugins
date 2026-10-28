@@ -387,41 +387,67 @@ function ampGenAct(name, x) {
 }
 
 /**
- * GenExpr for one architecture. Returns {decl, body}: `decl` goes where the template has
- * //@NAM_DECL (Data declarations), `body` where it has //@NAM_BODY. The body runs the network once per
- * channel (`nch` = 1 mono, 2 stereo): channel `chn` reads its input from Data `nib` and writes its
- * output into Data `nob`; the recurrent / history state is per channel (offset `so`), scratch is shared.
- * It also reads `wb` (bank offset), `tp` (sample counter), `ninit` (1 on the first sample after a model
+ * GenExpr for one architecture. Returns {decl, locals, body, layers, nWeights}: `decl` goes where the template has
+ * //@NAM_DECL (Data declarations), `locals` where it has //@NAM_LOCALS (top-level zero assignments of the
+ * unrolled temporaries, so they are visible inside every block), `body` where it has //@NAM_BODY. The body runs
+ * the network once per channel (`nch` = 1 mono, 2 stereo): channel `chn` reads its input from Data `nib` and
+ * writes its output into Data `nob`; the recurrent / history state is per channel (offset `so`), scratch is
+ * shared. It reads the weights from Data `wd` (the template copies the active bank of buffer~ ---ampw into it,
+ * a slice per sample, on a model switch), `tp` (sample counter), `ninit` (1 on the first sample after a model
  * switch) and assigns `nsat` (mean |activation| of the first layer array).
+ *
+ * Speed (the per-sample cost is almost all multiply-adds): small WaveNets (AMP_FULL_UNROLL_MACS) are fully
+ * unrolled, with constant weight indices, taps / activations in locals and the residual updated in place; bigger
+ * ones keep a loop per dot product (ampGenWaveLoop). LSTMs keep the gate loop and unroll its inner sums over the
+ * hidden state gathered into locals (8 x LSTM 1x16: 17.4 % -> 11.2 % adstatus cpu in the VM).
  * @param {any} m
+ * @param {{fullMacs?: number}} [opts] test hook: override AMP_FULL_UNROLL_MACS
  */
-function ampGenNam(m) {
-    var g = ampGenNamRaw(m);
-    // Weights are copied from buffer~ ---ampw into a Data once per model switch: Data peeks with
-    // constant offsets are much cheaper per sample than Buffer peeks at wb + offset.
-    /** @param {string} t */
-    function dataW(t) {
-        return t.split("peek(w, wb + ").join("peek(wd, ").split("peek(w, row").join("peek(wd, row")
-            .split("peek(w, wo").join("peek(wd, wo").split("row = wb + ").join("row = ").split("wo = wb + ").join("wo = ");
-    }
-    var copy = "if (ninit > 0) {\n  for (j = 0; j < " + m.nWeights + "; j += 1) { poke(wd, peek(w, wb + j), j); }\n}\n";
-    var body = copy + g.init + (g.init ? "\n" : "")
+function ampGenNam(m, opts) {
+    var g = ampGenNamRaw(m, opts);
+    var body = g.init + (g.init ? "\n" : "")
         + "for (chn = 0; chn < nch; chn += 1) {\n"
         + "xin = peek(nib, chn);\n"
         + "so = chn * " + g.state + ";\n"
-        + dataW(g.body) + "\n"
+        + g.body + "\n"
         + "poke(nob, nout, chn);\n"
         + "}";
-    return { decl: "Data wd(" + m.nWeights + ");\n" + g.decl, body: body, layers: g.layers };
+    return { decl: "Data wd(" + m.nWeights + ");\n" + g.decl, locals: g.locals, body: body, layers: g.layers, nWeights: m.nWeights };
+}
+
+/**
+ * WaveNets with at most this many multiply-adds per sample (Nano 656, Feather 2624: every built-in) are generated fully
+ * unrolled: every weight index a constant, the taps and activations in locals. Bigger ones (Lite 5904, Standard 12800)
+ * keep one loop per dot product (ampGenWaveLoop): a fully unrolled Standard (340 KB) did not compile.
+ * Measured (VM, real-time adstatus cpu, 8 Feather instances): looped 10.1 / 10.6 %, fully unrolled 6.8 / 4.8 %.
+ */
+var AMP_FULL_UNROLL_MACS = 3000;
+
+/** Multiply-adds per sample of a WaveNet's convolutions and 1x1s. @param {any} m */
+function ampWaveMacs(m) {
+    var n = 0;
+    m.layers.forEach(function (/** @type {any} */ A) {
+        var cz = A.gated ? 2 * A.ch : A.ch;
+        A.layers.forEach(function (/** @type {any} */ Ly) { n += cz * A.ch * Ly.k + A.ch * A.ch; });
+    });
+    return n;
 }
 
 /**
  * The network for one channel. `init` runs once per model switch (outside the channel loop, sets the
  * state of both channels), `body` once per channel; `state` = per-channel state size (Data offset `so`).
  * @param {any} m
+ * @param {{fullMacs?: number}} [opts] test hook: override AMP_FULL_UNROLL_MACS
  */
-function ampGenNamRaw(m) {
+function ampGenNamRaw(m, opts) {
     var D = [], B = [], I0 = [];
+    var fullMacs = opts && typeof opts.fullMacs === "number" ? opts.fullMacs : AMP_FULL_UNROLL_MACS;
+    /** @type {Object<string, number>} */
+    var loc = {};
+    /** @param {string} name */
+    function L(name) { loc[name] = 1; return name; }
+    /** @param {Array<string>} terms */
+    function sum(terms) { return terms.length ? terms.join(" + ") : "0"; }
     var nl = Math.min(ampLayerCount(m), AMP_MAX_LAYERS);
     D.push("Data lact(" + AMP_MAX_LAYERS + ");");
     if (m.kind === "LSTM") {
@@ -440,19 +466,22 @@ function ampGenNamRaw(m) {
         for (l = 0; l < NL; l++) {
             for (var half = 0; half < 2; half++) {
                 var off = half * SZ + l * H;
-                I0.push("  for (j = 0; j < " + H + "; j += 1) { poke(hs, peek(w, wb + " + cells[l].H0 + " + j), " + off + " + j); poke(cs, peek(w, wb + " + (cells[l].H0 + H) + " + j), " + off + " + j); }");
+                I0.push("  for (j = 0; j < " + H + "; j += 1) { poke(hs, peek(wd, " + cells[l].H0 + " + j), " + off + " + j); poke(cs, peek(wd, " + (cells[l].H0 + H) + " + j), " + off + " + j); }");
             }
         }
         I0.push("}");
         for (l = 0; l < NL; l++) {
-            var C = cells[l], stride = C.I + H;
+            var C = cells[l], stride = C.I + H, jj;
+            // The layer input (x or the previous layer's h) and this layer's h, gathered once.
+            if (l > 0) for (jj = 0; jj < H; jj++) B.push(L("xq" + jj) + " = peek(hin, " + jj + ");");
+            for (jj = 0; jj < H; jj++) B.push(L("hq" + jj) + " = peek(hs, so + " + (l * H + jj) + ");");
+            var terms = [];
+            if (l === 0) terms.push("peek(wd, row) * xin");
+            else for (jj = 0; jj < H; jj++) terms.push("peek(wd, row + " + jj + ") * xq" + jj);
+            for (jj = 0; jj < H; jj++) terms.push("peek(wd, row + " + (C.I + jj) + ") * hq" + jj);
             B.push("for (g = 0; g < " + (4 * H) + "; g += 1) {");
-            B.push("  s = peek(w, wb + " + C.B + " + g);");
-            B.push("  row = wb + " + C.W + " + g * " + stride + ";");
-            if (l === 0) B.push("  s += peek(w, row) * xin;");
-            else B.push("  for (j = 0; j < " + H + "; j += 1) { s += peek(w, row + j) * peek(hin, j); }");
-            B.push("  for (j = 0; j < " + H + "; j += 1) { s += peek(w, row + " + C.I + " + j) * peek(hs, so + " + (l * H) + " + j); }");
-            B.push("  poke(gz, s, g);");
+            B.push("  row = " + C.W + " + g * " + stride + ";");
+            B.push("  poke(gz, peek(wd, " + C.B + " + g) + " + sum(terms) + ", g);");
             B.push("}");
             B.push("acc = 0;");
             B.push("for (j = 0; j < " + H + "; j += 1) {");
@@ -468,11 +497,108 @@ function ampGenNamRaw(m) {
             if (l < AMP_MAX_LAYERS) B.push("poke(lact, acc / " + H + ", " + l + ");");
             if (l === 0) B.push("nsat = acc / " + H + ";");
         }
-        B.push("s = peek(w, wb + " + (p + H) + ");");
-        B.push("for (j = 0; j < " + H + "; j += 1) { s += peek(w, wb + " + p + " + j) * peek(hin, j); }");
-        B.push("nout = s;");
-        return { decl: D.join("\n"), init: I0.join("\n"), body: B.join("\n"), state: SZ, layers: nl };
+        var ht = [];
+        for (jj = 0; jj < H; jj++) ht.push("peek(wd, " + (p + jj) + ") * peek(hin, " + jj + ")");
+        B.push("nout = peek(wd, " + (p + H) + ") + " + sum(ht) + ";");
+        return { decl: D.join("\n"), locals: ampGenLocals(loc), init: I0.join("\n"), body: B.join("\n"), state: SZ, layers: nl };
     }
+    if (ampWaveMacs(m) > fullMacs) return ampGenWaveLoop(m, D, nl);
+    var maxCh = 1, ring = 0, li = 0;
+    m.layers.forEach(function (/** @type {any} */ A) { maxCh = Math.max(maxCh, A.gated ? 2 * A.ch : A.ch, A.head); });
+    D.push("Data va(" + maxCh + ");", "Data vh(" + maxCh + ");");
+    var ringDecl = D.length;
+    D.push("");
+    var q = 0, c2, i2, o2;
+    B.push("poke(va, xin, 0);");
+    for (var a = 0; a < m.layers.length; a++) {
+        var A = m.layers[a], ch = A.ch, cz = A.gated ? 2 * ch : ch;
+        // Rechannel (1x1, no bias) from the previous residual (or the input) into va.
+        if (A.inSize === 1) {
+            for (c2 = 0; c2 < ch; c2++) B.push("poke(va, peek(wd, " + (q + c2) + ") * xin, " + c2 + ");");
+        } else {
+            for (i2 = 0; i2 < A.inSize; i2++) B.push(L("hq" + i2) + " = peek(va, " + i2 + ");");
+            for (c2 = 0; c2 < ch; c2++) {
+                var rt = [];
+                for (i2 = 0; i2 < A.inSize; i2++) rt.push("peek(wd, " + (q + c2 * A.inSize + i2) + ") * hq" + i2);
+                B.push("poke(va, " + sum(rt) + ", " + c2 + ");");
+            }
+        }
+        if (a === 0) for (c2 = 0; c2 < ch; c2++) B.push("poke(vh, 0, " + c2 + ");");
+        q += A.inSize * ch;
+        if (a === 0) B.push("sat = 0;");
+        for (var l2 = 0; l2 < A.layers.length; l2++) {
+            var Ly = A.layers[l2], Lr = ampPow2((Ly.k - 1) * Ly.d + 1);
+            var conv = q, convB = q + cz * ch * Ly.k, mix = convB + cz, w1 = mix + cz, b1 = w1 + ch * ch;
+            q = b1 + ch;
+            var rb = ring;
+            ring += ch * Lr;
+            var nt = ch * Ly.k, k;
+            B.push("// array " + a + " layer " + l2 + " d " + Ly.d);
+            // No bitwise & in GenExpr (it kills the compile): pow2 modulo by floor, then one wrap per tap.
+            B.push("pos = tp - " + Lr + " * floor(tp * " + (1 / Lr) + ");");
+            for (i2 = 0; i2 < ch; i2++) B.push("poke(st, peek(va, " + i2 + "), so + " + (rb + i2 * Lr) + " + pos);");
+            // One wrapped read position per kernel tap, then the ch * k taps into locals.
+            for (k = 0; k < Ly.k; k++) {
+                var back = (Ly.k - 1 - k) * Ly.d;
+                if (back === 0) B.push(L("pk" + k) + " = so + pos;");
+                else B.push(L("pk" + k) + " = so + (pos < " + back + " ? pos + " + (Lr - back) + " : pos - " + back + ");");
+            }
+            for (i2 = 0; i2 < ch; i2++) {
+                for (k = 0; k < Ly.k; k++) B.push(L("tq" + (i2 * Ly.k + k)) + " = peek(st, pk" + k + " + " + (rb + i2 * Lr) + ");");
+            }
+            // The dilated convolution: one sum per output channel, every weight index a constant.
+            for (o2 = 0; o2 < cz; o2++) {
+                var ct = [];
+                for (var t2 = 0; t2 < nt; t2++) ct.push("peek(wd, " + (conv + o2 * nt + t2) + ") * tq" + t2);
+                B.push(L("zq" + o2) + " = peek(wd, " + (convB + o2) + ") + peek(wd, " + (mix + o2) + ") * xin + " + sum(ct) + ";");
+            }
+            // Activations into locals (the 1x1 below reads them as constants), the head sum, the layer activity.
+            var aa = [];
+            for (o2 = 0; o2 < ch; o2++) {
+                B.push(L("zv") + " = zq" + o2 + ";");
+                var av = ampGenAct(Ly.act, "zv");
+                if (A.gated) B.push(L("pq" + o2) + " = " + av + " / (1 + exp(-zq" + (o2 + ch) + "));");
+                else B.push(L("pq" + o2) + " = " + av + ";");
+                B.push("poke(vh, peek(vh, " + o2 + ") + pq" + o2 + ", " + o2 + ");");
+                aa.push("abs(pq" + o2 + ")");
+            }
+            B.push("acc = " + sum(aa) + ";");
+            if (li < AMP_MAX_LAYERS) B.push("poke(lact, acc / " + ch + ", " + li + ");");
+            if (a === 0) B.push("sat += acc / " + ch + ";");
+            // 1x1 + bias, added to the residual in place (output o only reads the activations and va[o]).
+            for (o2 = 0; o2 < ch; o2++) {
+                var pt = [];
+                for (i2 = 0; i2 < ch; i2++) pt.push("peek(wd, " + (w1 + o2 * ch + i2) + ") * pq" + i2);
+                B.push("poke(va, peek(va, " + o2 + ") + (peek(wd, " + (b1 + o2) + ") + " + sum(pt) + "), " + o2 + ");");
+            }
+            li++;
+        }
+        if (a === 0) B.push("nsat = sat / " + A.layers.length + ";");
+        // Head rechannel: vh (ch) -> vh (head), via locals.
+        var hw = q;
+        q += ch * A.head;
+        var hb = -1;
+        if (A.headBias) { hb = q; q += A.head; }
+        for (c2 = 0; c2 < ch; c2++) B.push(L("hq" + c2) + " = peek(vh, " + c2 + ");");
+        for (var h2 = 0; h2 < A.head; h2++) {
+            var hterms = hb >= 0 ? ["peek(wd, " + (hb + h2) + ")"] : [];
+            for (c2 = 0; c2 < ch; c2++) hterms.push("peek(wd, " + (hw + h2 * ch + c2) + ") * hq" + c2);
+            B.push("poke(vh, " + sum(hterms) + ", " + h2 + ");");
+        }
+    }
+    B.push("nout = peek(wd, " + q + ") * peek(vh, 0);");
+    D[ringDecl] = "Data st(" + Math.max(1, 2 * ring) + ");";
+    return { decl: D.join("\n"), locals: ampGenLocals(loc), init: "", body: B.join("\n"), state: Math.max(1, ring), layers: nl };
+}
+
+/**
+ * The looped WaveNet body (one loop per dot product, taps gathered into Data tv), used for models bigger than
+ * AMP_FULL_UNROLL_MACS. Measured in the VM (scripts/measure_amp_cpu.py mode=rt), unrolling only the inner loops
+ * of these was slower than this, not faster.
+ * @param {any} m @param {Array<string>} D declarations so far @param {number} nl
+ */
+function ampGenWaveLoop(m, D, nl) {
+    var B = [];
     var maxCh = 1, ring = 0, li = 0;
     m.layers.forEach(function (/** @type {any} */ A) { maxCh = Math.max(maxCh, A.gated ? 2 * A.ch : A.ch, A.head); });
     var maxTaps = 1;
@@ -488,8 +614,8 @@ function ampGenNamRaw(m) {
         // Rechannel (1x1, no bias) from the previous residual (or the input) into vt, then va.
         B.push("for (c = 0; c < " + ch + "; c += 1) {");
         B.push("  s = 0;");
-        if (A.inSize === 1) B.push("  s = peek(w, wb + " + q + " + c) * xin;");
-        else B.push("  for (i = 0; i < " + A.inSize + "; i += 1) { s += peek(w, wb + " + q + " + c * " + A.inSize + " + i) * peek(va, i); }");
+        if (A.inSize === 1) B.push("  s = peek(wd, " + q + " + c) * xin;");
+        else B.push("  for (i = 0; i < " + A.inSize + "; i += 1) { s += peek(wd, " + q + " + c * " + A.inSize + " + i) * peek(va, i); }");
         B.push("  poke(vt, s, c);");
         B.push("}");
         B.push("for (c = 0; c < " + ch + "; c += 1) { poke(va, peek(vt, c), c); " + (a === 0 ? "poke(vh, 0, c);" : "") + " }");
@@ -520,9 +646,9 @@ function ampGenNamRaw(m) {
             }
             B.push("}");
             B.push("for (o = 0; o < " + cz + "; o += 1) {");
-            B.push("  s = peek(w, wb + " + convB + " + o) + peek(w, wb + " + mix + " + o) * xin;");
-            B.push("  wo = wb + " + conv + " + o * " + nt + ";");
-            B.push("  for (j = 0; j < " + nt + "; j += 1) { s += peek(w, wo + j) * peek(tv, j); }");
+            B.push("  s = peek(wd, " + convB + " + o) + peek(wd, " + mix + " + o) * xin;");
+            B.push("  wo = " + conv + " + o * " + nt + ";");
+            B.push("  for (j = 0; j < " + nt + "; j += 1) { s += peek(wd, wo + j) * peek(tv, j); }");
             B.push("  poke(vz, s, o);");
             B.push("}");
             B.push("acc = 0;");
@@ -536,8 +662,8 @@ function ampGenNamRaw(m) {
             if (li < AMP_MAX_LAYERS) B.push("poke(lact, acc / " + ch + ", " + li + ");");
             if (a === 0) B.push("sat += acc / " + ch + ";");
             B.push("for (o = 0; o < " + ch + "; o += 1) {");
-            B.push("  s = peek(w, wb + " + b1 + " + o);");
-            B.push("  for (i = 0; i < " + ch + "; i += 1) { s += peek(w, wb + " + w1 + " + o * " + ch + " + i) * peek(vp, i); }");
+            B.push("  s = peek(wd, " + b1 + " + o);");
+            B.push("  for (i = 0; i < " + ch + "; i += 1) { s += peek(wd, " + w1 + " + o * " + ch + " + i) * peek(vp, i); }");
             B.push("  poke(vt, peek(va, o) + s, o);");
             B.push("}");
             B.push("for (o = 0; o < " + ch + "; o += 1) { poke(va, peek(vt, o), o); }");
@@ -550,28 +676,39 @@ function ampGenNamRaw(m) {
         var hb = -1;
         if (A.headBias) { hb = q; q += A.head; }
         B.push("for (h = 0; h < " + A.head + "; h += 1) {");
-        B.push("  s = " + (hb >= 0 ? "peek(w, wb + " + hb + " + h)" : "0") + ";");
-        B.push("  for (c = 0; c < " + ch + "; c += 1) { s += peek(w, wb + " + hw + " + h * " + ch + " + c) * peek(vh, c); }");
+        B.push("  s = " + (hb >= 0 ? "peek(wd, " + hb + " + h)" : "0") + ";");
+        B.push("  for (c = 0; c < " + ch + "; c += 1) { s += peek(wd, " + hw + " + h * " + ch + " + c) * peek(vh, c); }");
         B.push("  poke(vt, s, h);");
         B.push("}");
         B.push("for (h = 0; h < " + A.head + "; h += 1) { poke(vh, peek(vt, h), h); }");
     }
-    B.push("nout = peek(w, wb + " + q + ") * peek(vh, 0);");
+    B.push("nout = peek(wd, " + q + ") * peek(vh, 0);");
     D[ringDecl] = "Data st(" + Math.max(1, 2 * ring) + ");";
-    return { decl: D.join("\n"), init: "", body: B.join("\n"), state: Math.max(1, ring), layers: nl };
+    return { decl: D.join("\n"), locals: "", init: "", body: B.join("\n"), state: Math.max(1, ring), layers: nl };
+}
+
+/** Zero assignments of the generated locals, for the template's top level. @param {Object<string, number>} loc */
+function ampGenLocals(loc) {
+    var names = Object.keys(loc);
+    var out = [];
+    for (var i = 0; i < names.length; i += 16) out.push(names.slice(i, i + 16).map(function (n) { return n + " = 0;"; }).join(" "));
+    return out.join("\n");
 }
 
 /**
  * Full gen code for a model: the template with the NAM part filled in.
  * @param {string} template src/amp_core.genexpr (comments stripped by the build)
  * @param {any} m
+ * @param {{fullMacs?: number}} [opts] test hook: override AMP_FULL_UNROLL_MACS
  */
-function ampGenCode(template, m) {
-    var g = ampGenNam(m);
+function ampGenCode(template, m, opts) {
+    var g = ampGenNam(m, opts);
     // Placeholders only count on a line of their own (the template's comments mention them too).
     return template.replace(/^[ \t]*\/\/@NAM_DECL[ \t]*$/m, function () { return g.decl; })
+        .replace(/^[ \t]*\/\/@NAM_LOCALS[ \t]*$/m, function () { return g.locals; })
         .replace(/^[ \t]*\/\/@NAM_BODY[ \t]*$/m, function () { return g.body; })
-        .split("@@NLAYERS@@").join(String(g.layers)).split("@@RF@@").join(String(m.receptiveField || 1));
+        .split("@@NLAYERS@@").join(String(g.layers)).split("@@RF@@").join(String(m.receptiveField || 1))
+        .split("@@NW@@").join(String(g.nWeights));
 }
 
 /** The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON. @param {string} code */
@@ -689,7 +826,7 @@ var ampNodeModule = (typeof module !== "undefined") ? module : undefined;
 if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     AMP_VERSION: AMP_VERSION, AMP_WBANK: AMP_WBANK, AMP_SCOPE: AMP_SCOPE, AMP_PARAMS: AMP_PARAMS, AMP_PARAM_KEYS: AMP_PARAM_KEYS,
     AMP_NBQ: AMP_NBQ, AMP_CF_SAMPS: AMP_CF_SAMPS, AMP_CABS: AMP_CABS, AMP_MAX_LAYERS: AMP_MAX_LAYERS,
-    ampParseNam: ampParseNam, ampForward: ampForward, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampGendsp: ampGendsp,
+    ampParseNam: ampParseNam, ampForward: ampForward, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampWaveMacs: ampWaveMacs, ampGendsp: ampGendsp,
     ampArchKey: ampArchKey, ampArchLabel: ampArchLabel, ampRingSize: ampRingSize, ampLayerCount: ampLayerCount,
     ampHash: ampHash, ampBiquad: ampBiquad, ampToneBiquads: ampToneBiquads, ampResponseDb: ampResponseDb,
     ampNormDb: ampNormDb, AMP_FILE_INDEX: AMP_FILE_INDEX, ampGenValue: ampGenValue, ampAct: ampAct
