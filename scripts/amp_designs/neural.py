@@ -1,8 +1,9 @@
 """Neural Amp: laid out like Ableton's Amp. The v8ui at the top left is the display (the network the model runs:
 layers as node columns, dilated taps, a signal pulse, the input / output waveforms); it only draws, and an
-invisible .nam drop zone lies over it. Under it the model tabs (12 built-in captures + File, two rows) and the Load button,
-then the knob row with the Normalize and Pre-EQ switches in the gap; the right column holds Output mode, Cabinet, Volume and
-Dry/Wet. Every parameter is a native Live widget."""
+invisible .nam drop zone lies over it. Under it the model tabs (12 built-in captures + File, two rows), the Engine switch and
+the Load button; with Engine = Analog the Circuit tabs (16 modelled circuits) take the model tabs' place and the Speaker
+switch takes Load's (the engine shows / hides them, ampApplyLayout). Then the knob row with the Normalize and Pre-EQ switches
+in the gap; the right column holds Output mode, Cabinet, Volume and Dry/Wet. Every parameter is a native Live widget."""
 SLUG = "neural"
 DEVICE = "Neural Amp"
 WIDTH = 470
@@ -11,7 +12,7 @@ VIZ = [6, 4, 380, 78]
 VIZ_IGNORECLICK = True
 DROP = [6, 4, 380, 78]
 DROP_INVISIBLE = True
-LOAD = [348, 86, 38, 30]
+LOAD = [348, 102, 38, 14]
 
 
 def _dial(x, y):
@@ -20,6 +21,9 @@ def _dial(x, y):
 
 WIDGETS = {
     "model": {"kind": "tab", "rect": [6, 86, 338, 30], "rows": 2},
+    "circuit": {"kind": "tab", "rect": [6, 86, 338, 30], "rows": 2, "hidden": 1},
+    "engine": {"kind": "toggle", "rect": [348, 86, 38, 14], "text": "Neural", "texton": "Analog", "fontsize": 8.0},
+    "speaker": {"kind": "toggle", "rect": [348, 102, 38, 14], "text": "Speaker", "texton": "Speaker", "fontsize": 8.0, "hidden": 1},
     "gain": _dial(8, 119), "gate": _dial(60, 119),
     "normalize": {"kind": "toggle", "rect": [110, 125, 56, 15], "text": "Normalize", "texton": "Normalize"},
     "eqpos": {"kind": "toggle", "rect": [110, 145, 56, 15], "text": "Pre-EQ", "texton": "Pre-EQ"},

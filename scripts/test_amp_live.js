@@ -13,7 +13,7 @@
  * telemetry and the track's output meter). On the first device: Model Crunch -> Lead through the LOM
  * (same architecture: weight bank switch, no hot-load), a Standard WaveNet file (new architecture:
  * hot-load), an LSTM file, a broken file (error, previous model keeps playing), tone / cab / dry-wet
- * changes and the Mono / Stereo output mode through the LOM.
+ * changes and the Mono / Stereo output mode through the LOM; then the Analog engine (Engine / Circuit / Speaker).
  *
  *   node scripts/test_amp_live.js --port <tunnelled port> --vmdir /Users/admin/ableton-amp
  */
@@ -47,13 +47,13 @@ function evalLom(code, tries = 1) {
 }
 
 function hook(...a) {
-    evalLom(`messnamed("#0-amptest", ${a.map((v) => JSON.stringify(v)).join(", ")}); return 1;`);
+    evalLom(`messnamed("#0-amptest", ${a.map((v) => JSON.stringify(v)).join(", ")}); return 1;`, 4);   // a gen~ compile can hold Max's main thread for seconds
 }
 
 function report(face) {
     hook("test_report", face);
     sleep(150);
-    const s = evalLom(`return new Global("amp_test")["report_${face}"] || "";`);
+    const s = evalLom(`return new Global("amp_test")["report_${face}"] || "";`, 4);
     return s ? JSON.parse(s) : null;
 }
 
@@ -115,7 +115,10 @@ function maxOut(face, ms) {
 }
 
 // Start the transport so the track meters run; every device gets the test tone.
-evalLom(`new LiveAPI("live_set").call("start_playing"); return 1;`);
+// The first gen~ compile can block Max's main thread for a few seconds after the load: retry, and report how long.
+const tPlay = Date.now();
+evalLom(`new LiveAPI("live_set").call("start_playing"); return 1;`, 15);
+console.log(`INFO bridge answered start_playing after ${Date.now() - tPlay} ms`);
 hook("test_tone", "all", 0.4);
 for (const dev of devices) {
     const face = faceOf(dev.name);
@@ -200,6 +203,60 @@ setParam(dev, "Output", 0);
 sleep(1500);
 check(maxOut(face, 1500).rms > 0.002 && report(face).p.stereo === 0, "back to Mono, still playing");
 for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Normalize", 1], ["EQ Pos", 0], ["Model", 5]]) setParam(dev, n, v);
+// Analog engine: Engine -> Analog creates the second gen~ once (the circuits' gen is model-independent), the Circuit
+// tabs and the Speaker switch replace Model / Load, every circuit plays, Circuit changes switch table banks (no new
+// gen~), Speaker / tone knobs reach the analog coefficients, the supply sags at high gain, and back to Neural is a
+// crossfade (both gen~ stay).
+{
+    const trA = trace().length;
+    setParam(dev, "Engine", 1);
+    let ra = null;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 25000) { ra = report(face); if (ra && ra.dspA && ra.dspA.ready && ra.engine === "analog") break; sleep(500); }
+    check(!!(ra && ra.dspA.ready && ra.engine === "analog" && ra.analog.id === "twin"), `Engine -> Analog: analog gen~ running, circuit ${ra && ra.analog.id} (${ra && JSON.stringify(ra.dspA)})`);
+    check(/gen created analog/.test(trace().slice(trA)), "the Analog shell was created");
+    const lay = ra && ra.bi && ra.bi.layout || {};
+    check(lay.Model === 1 && lay.amp_load === 1 && lay.Circuit === 0 && lay.Speaker === 0, `layout swapped: ${JSON.stringify(lay)}`);
+    const tw = maxOut(face, 2500);
+    check(tw.rms > 0.002, `Twin (analog) plays (out rms ${tw.rms.toFixed(4)})`);
+    if (!(tw.rms > 0.002) && tw.r) console.log("DEBUG " + JSON.stringify({ tel: tw.r.tel, bi: tw.r.bi, meters: tw.r.meters, analog: tw.r.analog }).slice(0, 1500));
+    const CIRCUITS = ["tweed", "twin", "ac30", "plexi", "jcm", "modern", "svt", "hiwatt", "ts", "rat", "fuzz", "muff", "tape", "opto", "desk", "jc120"];
+    const trB = trace().length;
+    for (let i = 0; i < CIRCUITS.length; i++) {
+        setParam(dev, "Circuit", i);
+        sleep(900);
+        const ri = report(face), oi = maxOut(face, 900);
+        check(ri.analog.id === CIRCUITS[i] && oi.rms > 0.002, `analog ${CIRCUITS[i]}: loaded (bank ${ri.analog.bank}) and plays (out rms ${oi.rms.toFixed(4)})`);
+    }
+    check(!/gen created|hot-load/.test(trace().slice(trB)), "circuit changes: no new gen~, no hot-load");
+    setParam(dev, "Circuit", 3);
+    sleep(1200);
+    const on = maxOut(face, 1500).rms;
+    setParam(dev, "Speaker", 0);
+    sleep(1200);
+    const rs = report(face), off = maxOut(face, 1500).rms;
+    check(rs.analog.speaker === 0 && off > 0.002 && Math.abs(Math.log(off / Math.max(1e-9, on))) > 0.05, `Speaker Off: speaker ${rs.analog.speaker}, out rms ${on.toFixed(4)} -> ${off.toFixed(4)}`);
+    setParam(dev, "Speaker", 1);
+    const c0 = report(face).bi.cfa50;
+    setParam(dev, "Bass", 10);
+    sleep(400);
+    check(report(face).bi.cfa50 !== c0, "Bass rewrites the analog tone-stack coefficients");
+    setParam(dev, "Bass", 5);
+    setParam(dev, "Circuit", 0);
+    setParam(dev, "Gain", 12);
+    sleep(2500);
+    let sag = 0;
+    for (let i = 0; i < 8; i++) { sag = Math.max(sag, report(face).meters.sag || 0); sleep(250); }
+    check(sag > 0.002, `Tweed at Gain +12: the supply sags (meter ${sag.toFixed(4)})`);
+    setParam(dev, "Gain", 0);
+    const trC = trace().length;
+    setParam(dev, "Engine", 0);
+    sleep(2000);
+    const rn = report(face);
+    check(rn.engine === "neural" && !/gen created|hot-load/.test(trace().slice(trC)) && maxOut(face, 1500).rms > 0.002, "back to Neural: a crossfade (no new gen~), plays");
+    check(rn.bi && rn.bi.layout && rn.bi.layout.Model === 0 && rn.bi.layout.Circuit === 1, `layout back: ${JSON.stringify(rn.bi && rn.bi.layout)}`);
+    setParam(dev, "Circuit", 1);
+}
 // --shots <dir>: a host screenshot of the VM (scripts/vm_shot.sh) with each device's track selected, tone playing.
 const SHOTS = arg("--shots", "");
 if (SHOTS) {

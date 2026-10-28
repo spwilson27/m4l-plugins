@@ -4,6 +4,7 @@
     "src/types/max-extras.d.ts",
     "src/types/amp.d.ts",
     "src/amp_config.js",
+    "src/amp_analog.js",
     "src/amp_engine.js",
     "src/spectral_theme.js",
     "src/amp_face_neural.js"

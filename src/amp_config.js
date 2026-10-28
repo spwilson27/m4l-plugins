@@ -56,9 +56,14 @@ var AMP_PARAMS = {
     normalize: ["Normalize", "Normalize", 0, 1, 1, 2, 0, null, ["Off", "On"], "Level-match captures to -18 dB using the file's loudness metadata."],
     eqpos: ["EQ Position", "EQ Pos", 0, 1, 0, 2, 0, "eqpre", ["Post", "Pre"], "Post: the tone stack shapes the amp's output. Pre: it shapes the signal going into the model, so a boosted band also drives the amp harder."],
     volume: ["Volume", "Volume", -40, 12, 0, 0, 4, "outdb", null, "Output level after the amp and cab."],
-    mix: ["Dry/Wet", "Dry/Wet", 0, 100, 100, 0, 5, "mixamt", null, "Dry / amp blend."]
+    mix: ["Dry/Wet", "Dry/Wet", 0, 100, 100, 0, 5, "mixamt", null, "Dry / amp blend."],
+    // appended (order is forever): the Analog engine
+    engine: ["Engine", "Engine", 0, 1, 0, 2, 0, null, ["Neural", "Analog"], "Neural plays NAM captures (Model). Analog plays modelled circuits (Circuit): tubes with bias shift, grid blocking and power-supply sag, pedals, tape, transformers, compressors, a speaker that moves and a cab."],
+    circuit: ["Circuit", "Circuit", 0, 15, 1, 2, 0, null, ["Tweed", "Twin", "AC30", "Plexi", "JCM800", "Modern", "SVT", "Hiwatt", "TS", "RAT", "Fuzz", "Muff", "Tape", "Opto", "Desk", "JC120"], "Analog circuit. Amps: Tweed (5E3), Twin (blackface), AC30 (Top Boost), Plexi (1959), JCM800 (2203), Modern (5150 type), SVT (bass), Hiwatt (DR103). Pedals into an amp: TS (Tube Screamer into the Twin), RAT (into the Plexi), Fuzz (Fuzz Face into the AC30), Muff (Big Muff into the Tweed). Studio: Tape (15 ips machine), Opto (optical leveler), Desk (console channel and FET limiter), JC120 (solid state)."],
+    speaker: ["Speaker", "Speaker", 0, 1, 1, 2, 0, null, ["Off", "On"], "Analog: the circuit's speaker (a moving cone the amp drives) and its cab. Off: the amp drives a load resistor, the Cabinet voicing applies instead."]
 };
-var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix"];
+var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix", "engine", "circuit", "speaker"];
+var AMP_ENGINE = { NEURAL: 0, ANALOG: 1 };
 
 /** @param {string} key @param {number} v */
 function ampGenValue(key, v) {
@@ -710,6 +715,20 @@ function ampGenLocals(loc) {
     return out.join("\n");
 }
 
+var AMP_NAM_DRY = "dry1 = in1;\ndry2 = in2;";
+var AMP_NAM_Q0 = "q0 = ecur > 0.5 ? 4 : 0;";
+
+/** Replace the template's //@NAM_<name> lines (a placeholder only counts on a line of its own: the template's
+ * comments mention them too). @param {string} template @param {Object<string, string>} parts */
+function ampFillHooks(template, parts) {
+    var out = template;
+    for (var k in parts) {
+        var v = parts[k];
+        out = out.replace(new RegExp("^[ \\t]*\\/\\/@NAM_" + k + "[ \\t]*$", "m"), function () { return v; });
+    }
+    return out;
+}
+
 /**
  * Full gen code for a model: the template with the NAM part filled in.
  * @param {string} template src/amp_core.genexpr (comments stripped by the build)
@@ -719,9 +738,8 @@ function ampGenLocals(loc) {
 function ampGenCode(template, m, opts) {
     var g = ampGenNam(m, opts);
     // Placeholders only count on a line of their own (the template's comments mention them too).
-    return template.replace(/^[ \t]*\/\/@NAM_DECL[ \t]*$/m, function () { return g.decl; })
-        .replace(/^[ \t]*\/\/@NAM_LOCALS[ \t]*$/m, function () { return g.locals; })
-        .replace(/^[ \t]*\/\/@NAM_BODY[ \t]*$/m, function () { return g.body; })
+    return ampFillHooks(template, { DECL: g.decl, LOCALS: g.locals, BODY: g.body, DRY: AMP_NAM_DRY, Q0: AMP_NAM_Q0 })
+        .split("@@SLEEP@@").join("(" + (m.receptiveField || 1) + " + 8192)")
         .split("@@NLAYERS@@").join(String(g.layers)).split("@@RF@@").join(String(m.receptiveField || 1))
         .split("@@NW@@").join(String(g.nWeights));
 }
@@ -844,5 +862,5 @@ if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     ampParseNam: ampParseNam, ampForward: ampForward, ampFastTanh: ampFastTanh, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampWaveMacs: ampWaveMacs, ampGendsp: ampGendsp,
     ampArchKey: ampArchKey, ampArchLabel: ampArchLabel, ampRingSize: ampRingSize, ampLayerCount: ampLayerCount,
     ampHash: ampHash, ampBiquad: ampBiquad, ampToneBiquads: ampToneBiquads, ampResponseDb: ampResponseDb,
-    ampNormDb: ampNormDb, AMP_FILE_INDEX: AMP_FILE_INDEX, ampGenValue: ampGenValue, ampAct: ampAct
+    ampFillHooks: ampFillHooks, AMP_ENGINE: AMP_ENGINE, ampNormDb: ampNormDb, AMP_FILE_INDEX: AMP_FILE_INDEX, ampGenValue: ampGenValue, ampAct: ampAct
 };

@@ -207,10 +207,119 @@ function nrlNetwork() {
     if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w - 6, L.y + 10, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
 }
 
+// ---- Analog engine: the circuit's signal flow ------------------------------------------------------
+// One box per block of the chain (tube stages grouped, tone stack, power stage, speaker, pedal, tape, compressor,
+// transformer), lit by its stage activity; a glyph per kind; meters for supply sag, gain reduction and cone excursion.
+
+/** @param {string} kind @param {number} cx @param {number} cy @param {any} col @param {number} a */
+function nrlGlyph(kind, cx, cy, col, a) {
+    var al = 0.55 + 0.45 * a;
+    if (kind === "triode" || kind === "opamp") {
+        sptCurve([[cx - 4, cy - 4], [cx + 4, cy], [cx - 4, cy + 4], [cx - 4, cy - 4]], col, al);
+    } else if (kind === "pwr" || kind === "ss") {
+        sptCurve([[cx - 6, cy - 4], [cx, cy], [cx - 6, cy + 4], [cx - 6, cy - 4]], col, al);
+        sptCurve([[cx, cy - 4], [cx + 6, cy], [cx, cy + 4], [cx, cy - 4]], col, al);
+    } else if (kind === "tone") {
+        for (var i = -1; i <= 1; i++) { sptRgba(col, al); mgraphics.ellipse(cx + i * 5 - 1.5, cy - 1.5, 3, 3); mgraphics.fill(); }
+    } else if (kind === "spk") {
+        sptCurve([[cx - 5, cy - 2], [cx - 2, cy - 2], [cx + 4, cy - 6], [cx + 4, cy + 6], [cx - 2, cy + 2], [cx - 5, cy + 2], [cx - 5, cy - 2]], col, al);
+    } else if (kind === "ts" || kind === "rat" || kind === "muff" || kind === "fuzz") {
+        sptCurve([[cx - 5, cy - 4], [cx + 3, cy], [cx - 5, cy + 4], [cx - 5, cy - 4]], col, al);
+        sptCurve([[cx + 3, cy - 4], [cx + 3, cy + 4]], col, al);
+    } else if (kind === "tape") {
+        sptRgba(col, al); mgraphics.set_line_width(1);
+        mgraphics.ellipse(cx - 7, cy - 3.5, 7, 7); mgraphics.stroke();
+        mgraphics.ellipse(cx, cy - 3.5, 7, 7); mgraphics.stroke();
+    } else if (kind === "opto" || kind === "fet") {
+        sptRgba(col, al); mgraphics.set_line_width(1);
+        mgraphics.ellipse(cx - 4, cy - 4, 8, 8); mgraphics.stroke();
+        sptCurve([[cx - 2, cy + 2], [cx + 2, cy - 2]], col, al);
+    } else {
+        var pts = [];
+        for (var q = 0; q <= 16; q++) pts.push([cx - 6 + q * 0.75, cy + Math.sin(q * Math.PI / 4) * 3]);
+        sptCurve(pts, col, al);
+    }
+}
+
+function nrlAnalog() {
+    var L = NRL.lcd;
+    sptLcd(L.x, L.y, L.w, L.h, { xs: [], ys: [L.y + 30] });
+    var cyan = sptColor("live_display_line_two"), orange = sptColor("live_display_line_one");
+    var info = amp.analog.info || aaInfo(Math.round(Number(ampP.circuit) || 0));
+    var blocks = info.blocks, n = blocks.length;
+    var lv = ampLayers(), lvl = Math.min(1, (ampTel.out_rms || 0) * 5);
+    NRL.phase = (NRL.phase + 0.006 + 0.03 * Math.min(1, (ampTel.out_rms || 0) * 4)) % 1;
+    var x0 = NRL.px0, x1 = NRL.px1, gap = 5, bw = Math.min(46, (x1 - x0 - gap * (n - 1)) / Math.max(1, n));
+    var tot = n * bw + (n - 1) * gap, bx0 = (x0 + x1) / 2 - tot / 2, by = 10, bh = 34;
+    var mt = ampMeters(), spkOn = ampP.speaker > 0.5;
+    for (var i = 0; i < n; i++) {
+        var b = blocks[i], bx = bx0 + i * (bw + gap);
+        var a = 0;
+        for (var k = 0; k < b.slots.length; k++) a = Math.max(a, Number(lv[b.slots[k]]) || 0);
+        if (b.kind === "spk") a = Math.min(1, (mt.exc || 0) * 1.5 + lvl * 0.3);
+        if (b.kind === "pwr") a = Math.max(a, mt.sag * 4);
+        if (b.kind === "opto" || b.kind === "fet") a = Math.max(a, mt.gr);
+        var xp = x0 - 8 + NRL.phase * (x1 - x0 + 16), pulse = Math.exp(-Math.pow((bx + bw / 2 - xp) / 20, 2)) * (0.2 + 0.8 * lvl);
+        var aa = Math.max(0, Math.min(1, a * 1.3 + pulse * 0.5));
+        var off = b.kind === "spk" && !spkOn;
+        var col = b.kind === "spk" || b.kind === "pwr" || b.kind === "ss" ? cyan : orange;
+        if (i > 0) sptCurve([[bx - gap, by + bh / 2], [bx, by + bh / 2]], sptColor("live_lcd_frame"), 0.9);
+        sptRgba(sptMuted(col, off ? 0.08 : 0.12 + 0.45 * aa));
+        mgraphics.rectangle_rounded(bx, by, bw, bh, 4, 4);
+        mgraphics.fill();
+        sptRgba(sptMuted(col, 0.8), off ? 0.25 : 0.45 + 0.55 * aa);
+        mgraphics.set_line_width(1);
+        mgraphics.rectangle_rounded(bx + 0.5, by + 0.5, bw - 1, bh - 1, 4, 4);
+        mgraphics.stroke();
+        nrlGlyph(b.kind, bx + bw / 2, by + 12, col, off ? 0 : aa);
+        var nm = b.name + (b.n > 1 ? " x" + b.n : "");
+        sptText(nrlFit(off ? "off" : nm, bw - 4, SPT_SIZE_SMALL), bx + bw / 2, by + bh - 5, sptColor("live_lcd_title"), SPT_SIZE_SMALL, 1);
+    }
+    // meters: supply sag, gain reduction (compressors), cone excursion
+    // only the meters this circuit has: supply sag (tube power stage), gain reduction (compressor), cone excursion (speaker)
+    var meters = [];
+    var has = function (k) { for (var q = 0; q < blocks.length; q++) if (blocks[q].kind === k) return true; return false; };
+    if (has("pwr")) meters.push(["sag", Math.min(1, mt.sag * 4), orange]);
+    if (has("opto") || has("fet")) meters.push(["GR", Math.min(1, mt.gr), cyan]);
+    if (has("spk") && spkOn) meters.push(["cone", Math.min(1, mt.exc), cyan]);
+    var nm3 = Math.max(1, meters.length), mw = Math.min(120, (x1 - x0 - (nm3 - 1) * 10) / nm3), mx0 = (x0 + x1) / 2 - (nm3 * mw + (nm3 - 1) * 10) / 2;
+    for (var m = 0; m < meters.length; m++) {
+        var mx = mx0 + m * (mw + 10), my = 52;
+        sptText(meters[m][0], mx, my + 4, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+        var tx = mx + 22, tw = mw - 24;
+        sptRgba(sptMuted(cyan, 0.15));
+        mgraphics.rectangle(tx, my, tw, 4);
+        mgraphics.fill();
+        var v = Math.max(0, Math.min(1, Number(meters[m][1]) || 0));
+        if (v > 0.002) {
+            sptRgba(sptMuted(meters[m][2], 0.85));
+            mgraphics.rectangle(tx, my, tw * v, 4);
+            mgraphics.fill();
+        }
+    }
+    var wc = L.y + 30;
+    nrlWave(nrlWaveIn(), 4, NRL.px0 - 8, wc, 22, orange, 0.9);
+    nrlWave(nrlWaveOut(), NRL.px1 + 8, L.w - 4, wc, 22, cyan, 0.95);
+    sptCurve([[NRL.px0 - 5, L.y + 5], [NRL.px0 - 5, L.y + 60]], sptColor("live_lcd_frame"), 1);
+    sptCurve([[NRL.px1 + 5, L.y + 5], [NRL.px1 + 5, L.y + 60]], sptColor("live_lcd_frame"), 1);
+    sptText("in", 4, L.y + 62, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+    sptText("out", L.w - 4, L.y + 62, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
+    if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w - 6, L.y + 10, sptColor("live_alert"), SPT_SIZE_SMALL, 2);
+}
+
 function nrlLstmX(i, n) { return n === 1 ? (NRL.px0 + NRL.px1) / 2 : NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / (n - 1); }
 
 function nrlInfo() {
     var y = 74, m = amp.model, txt, col = sptColor("live_lcd_title");
+    if (ampIsAnalog()) {
+        var info = amp.analog.info || aaInfo(Math.round(Number(ampP.circuit) || 0));
+        if (amp.dspA.error) { txt = "DSP: " + amp.dspA.error; col = sptColor("live_alert"); }
+        else if (amp.analog.error) { txt = amp.analog.error; col = sptColor("live_alert"); }
+        else if (!amp.dspA.ready) { txt = "DSP loading…"; col = sptColor("live_control_selection"); }
+        else txt = info.label + "  ·  " + info.blurb + (ampP.stereo > 0.5 ? "  ·  stereo ×2" : "");
+        sptText(nrlFit(txt, NRL.W - 12, SPT_SIZE_SMALL), 6, y, col, SPT_SIZE_SMALL, 0);
+        return;
+    }
     if (amp.dsp.error) { txt = "DSP: " + amp.dsp.error; col = sptColor("live_alert"); }
     else if (m.error) { txt = m.error; col = sptColor("live_alert"); }
     else if (!amp.dsp.ready) { txt = "DSP loading…"; col = sptColor("live_control_selection"); }
@@ -224,7 +333,8 @@ function nrlInfo() {
 }
 
 function paint() {
-    nrlNetwork();
+    if (ampIsAnalog()) nrlAnalog();
+    else nrlNetwork();
     nrlInfo();
 }
 
@@ -234,7 +344,9 @@ function ampFaceChanged(what) { }
 // The canvas is ignoreclick (the .nam drop zone lies over it): no mouse handlers.
 
 function preview() {
-    ampPreviewSetup(0.75);
+    // M4L_AMP_PREVIEW_CIRCUIT (render_preview.py env passthrough, see build) renders the Analog face of that circuit
+    var pc = typeof AMP_PREVIEW_CIRCUIT === "number" ? AMP_PREVIEW_CIRCUIT : -1;
+    ampPreviewSetup(0.75, pc);
     NRL.phase = 0.35;
     for (var i = 0; i < 4; i++) nrlActivity(nrlLayerCount());
     ampP.gain = 4; ampP.bass = 6; ampP.mid = 4.5; ampP.treble = 6.5; ampP.presence = 5.5; ampP.cab = 2;

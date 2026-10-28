@@ -8,6 +8,10 @@
 // switch: fade out 128 samples, take the new bank / mode, copy the bank into Data wd (128 weights per
 // sample, so no single sample copies a whole model), stay muted for the receptive field (so the history
 // is the new model's) and fade in.
+// The same template carries the analog engine (src/amp_analog.js aaGenCode): its circuit functions are put in front, and
+// //@NAM_DRY (dry path; the analog chain's oversampling delays the wet by 23 samples), //@NAM_Q0 (first post biquad) and
+// the SLEEP token (silent samples before the model sleeps) are filled per engine. `active` crossfades between the
+// Neural and the Analog gen~, which sit side by side on the same plugout~ (the inactive one outputs zeros).
 // Per-sample cost: everything that does not change per sample (gate / smoothing coefficients, dB targets,
 // biquad coefficients) is computed at control rate or copied once when the engine changes it.
 
@@ -22,6 +26,7 @@ Param wbase(-1);
 Param mok(0);
 Param tapraw(0);
 Param testamp(0);
+Param active(1);
 Buffer w("ampw");
 Buffer cf("ampcf");
 Buffer scope("ampscope");
@@ -66,6 +71,7 @@ History cIn(1);
 History cNrm(1);
 History cOut(1);
 History cfv(0);
+History actG(0);
 Data bz(40);
 Data nib(2);
 Data nob(2);
@@ -75,8 +81,7 @@ Data lsm(48);
 Data cfd(50);
 //@NAM_DECL
 
-dry1 = in1;
-dry2 = in2;
+//@NAM_DRY
 // Test hook (the Live check): a 110 Hz tone with two harmonics, plucked every 1.5 s, replaces the input.
 tsig = 0;
 if (testamp > 0) {
@@ -138,7 +143,8 @@ wb = wcur < 0 ? 0 : wcur;
 
 // Idle sleep: input silent for longer than the receptive field.
 quiet = max(abs(nin), abs(ninR)) < 0.000001 ? min(quiet + 1, 10000000) : 0;
-asleep = (quiet > @@RF@@ + 8192) && (muteN <= 0) && (tgt == wcur) && (stp == scur) && (ep == ecur);
+actG = active > 0.5 ? min(1, actG + 1 / 1024) : max(0, actG - 1 / 1024);
+asleep = (quiet > @@SLEEP@@) && (muteN <= 0) && (tgt == wcur) && (stp == scur) && (ep == ecur);
 
 nout = 0;
 nsat = 0;
@@ -197,7 +203,7 @@ if ((ecur > 0.5) && (cfok > 0.5)) {
 poke(nob, 0, 0);
 poke(nob, 0, 1);
 tp = tpH;
-run = (mok > 0.5) && (wcur >= 0) && (asleep < 0.5) && (cpN < 0);
+run = (mok > 0.5) && (wcur >= 0) && (asleep < 0.5) && (cpN < 0) && ((actG > 0) || (active > 0.5));
 if (run) {
 //@NAM_BODY
     tpH = tp + 1 >= 1048576 ? 0 : tp + 1;
@@ -216,7 +222,7 @@ dcy2 = fixdenorm(nzR - dcx2 + 0.9995 * dcy2);
 dcx2 = nzR;
 poke(yb, dcy, 0);
 poke(yb, dcy2, 1);
-q0 = ecur > 0.5 ? 4 : 0;
+//@NAM_Q0
 if (cfok > 0.5) {
     for (cn = 0; cn < nch; cn += 1) {
         yy = peek(yb, cn);
@@ -243,8 +249,8 @@ outG = outG + (cOut - outG) * 0.002;
 wet = clip(yL * outG * fadeG, -4, 4);
 wetR = clip(yR * outG * fadeG, -4, 4);
 mx = clip(mixamt, 0, 1);
-o1 = dry1 * (1 - mx) + wet * mx;
-o2 = dry2 * (1 - mx) + wetR * mx;
+o1 = (dry1 * (1 - mx) + wet * mx) * actG;
+o2 = (dry2 * (1 - mx) + wetR * mx) * actG;
 // Test hook tapraw: 1 = out 2 is the raw (left) model output, 2 = out 1 / out 2 are the raw L / R outputs.
 out1 = tapraw > 1.5 ? nout : o1;
 out2 = tapraw > 1.5 ? noutR : (tapraw > 0.5 ? nout : o2);

@@ -17,6 +17,9 @@ code per reference model, its weights, a stimulus and the reference output of am
   chain          the full chain (gate, normalize, DC block, biquads, volume, dry/wet) stays finite and
                  audible with a model running, mono and stereo
   sleep          silent input puts the model to sleep (telemetry) and outputs exact zeros
+  an_cpu_<circuit> real-time CPU of an analog circuit (an_cpu_st_<circuit>: Stereo)
+  an_<circuit>   analog engine: the raw chain output (tapraw) equals the Node twin (tests/amp_analog_sim.js)
+                 running the same GenExpr on the same table (an_all = every circuit)
 
   python3 scripts/run_amp_audio_tests.py [case ...]
 """
@@ -101,6 +104,22 @@ def run(name, model, params, dur_ms, ref=True, src_params=None, code_name=None, 
                        settle_ms=SETTLE_MS, dur_ms=dur_ms, mode=mode)
 
 
+ANALOG = ["tweed", "twin", "ac30", "plexi", "jcm", "modern", "svt", "hiwatt", "ts", "rat", "fuzz", "muff", "tape", "opto", "desk", "jc120"]
+
+
+def analog_case(case):
+    r = run(case, case, "tapraw 1, mixamt 1", 1300, code_name="analog", cf=case + "_cf.wav")
+    rel = r["maxerr"] / max(1e-9, r["peakref"])
+    # Bit-near equality with the twin, or (for a circuit whose transients amplify libm-level differences: JCM800's
+    # cathode-follower / cold-clipper chain on plucks) an rms error 70 dB under the peak
+    rms_rel = r["rmserr"] / max(1e-9, r["peakref"])
+    ok = r["nans"] == 0 and (rel < 5e-3 or rms_rel < 3e-4) and r["peakraw"] > 0
+    if not ok:
+        print("DEBUG", {k: v for k, v in r.items() if k != "harness_dir"}, flush=True)
+    return check(ok,
+                 f"{case}: maxerr {r['maxerr']:.3g} (peak ref {r['peakref']:.3g}, rel {rel:.2g}), rms err {r['rmserr']:.3g} (rel {rms_rel:.2g}), modelok {r.get('modelok')}")
+
+
 def check(ok, msg):
     print(("PASS " if ok else "FAIL ") + msg, flush=True)
     return ok
@@ -143,6 +162,20 @@ def main():
             r = run(case, "feather", "tapraw 0, stmode 1, gatedb -60, outdb -3", 1300, ref=False, src_params="rgain 0.5")
             bad += not check(r["nans"] == 0 and 0.001 < r["peakout"] < 4 and 0.001 < r["peakraw"] < 4,
                              f"chain_stereo: peak L {r['peakout']:.3g}, R {r['peakraw']:.3g}")
+        elif case == "an_all":
+            for cid in ANALOG:
+                bad += not analog_case("an_" + cid)
+        elif case.startswith("an_cpu_") and case[7:].replace("st_", "") in ANALOG:
+            # real-time CPU of an analog circuit (cpu_st_ = Output mode Stereo, a chain per channel)
+            cid = case[7:]
+            extra = "tapraw 0"
+            if cid.startswith("st_"):
+                cid = cid[3:]
+                extra += ", stmode 1"
+            r = run(case, "an_" + cid, extra, 3000, ref="cpu", mode="audio_device", src_params="loop 1", code_name="analog", cf="an_" + cid + "_cf.wav")
+            print(f"INFO {case}: adstatus cpu avg {r['cpuavg']:.1f} %, max {r['cpumax']:.0f} % ({int(r['cpucount'])} readings)", flush=True)
+        elif case.startswith("an_") and case[3:] in ANALOG:
+            bad += not analog_case(case)
         elif case.startswith("dbg:"):
             r = run("dbg", "feather", "tapraw 1", 300, ref=False, code_name=case[4:])
             print("DEBUG", {k: v for k, v in r.items() if k != "harness_dir"}, flush=True)

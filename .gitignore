@@ -6,3 +6,5 @@ tests/out/xo_runtime/
 tests/out/amp/
 /deviate_test.als
 /build_cache/
+tests/out/amp_analog/*.wav
+tests/out/amp_analog/fingerprints.json

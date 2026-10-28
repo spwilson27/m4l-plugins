@@ -70,6 +70,34 @@ function preEqFixture() {
     };
 }
 
+// Analog engine fixtures: one gen for every circuit (analog.genexpr), per circuit its table (an_<id>_w.wav, bank 0),
+// its ---ampcfa content (tone stack at 0..17, presence at 18, identity cab biquads, valid flag at 50) and the twin's raw
+// output on the stimulus. The gen starts the chain on the sample the table copy completes (AA_NW / 128 - 1).
+function analogFixtures(x, template) {
+    const S = require("./amp_analog_sim.js");
+    const AA = S.AA;
+    const src = stripComments(fs.readFileSync(path.join(ROOT, "src", "amp_analog_core.genexpr"), "utf8"));
+    global.ampFillHooks = A.ampFillHooks;
+    fs.writeFileSync(path.join(OUT, "analog.genexpr"), AA.aaGenCode(template, src));
+    const start = AA.AA_NW / 128 - 1;
+    const ids = [];
+    AA.AMP_ANALOG.forEach((r, idx) => {
+        const tbl = AA.aaBank(idx, SR, 1);
+        wav32(path.join(OUT, `an_${r.id}_w.wav`), Array.from(tbl, Math.fround));
+        const cf = new Float64Array(A.AMP_CF_SAMPS);
+        AA.aaToneTable(idx, { bass: 5, mid: 5, treble: 5, presence: 5 }, SR).forEach((v, i) => { cf[i] = v; });
+        for (let q = 4; q < 10; q++) cf[q * 5] = 1;
+        cf[50] = 1;
+        wav32(path.join(OUT, `an_${r.id}_cf.wav`), cf);
+        const m = S.create(idx, { settle: false });
+        const y = new Float64Array(x.length);
+        for (let i = start; i < x.length; i++) y[i] = Math.max(-8, Math.min(8, m.raw(x[i])[0]));
+        wav32(path.join(OUT, `an_${r.id}_ref.wav`), y);
+        ids.push(r.id);
+    });
+    console.log("analog", ids.join(" "));
+}
+
 function main() {
     fs.mkdirSync(OUT, { recursive: true });
     const template = stripComments(fs.readFileSync(path.join(ROOT, "src", "amp_core.genexpr"), "utf8"));
@@ -77,6 +105,7 @@ function main() {
     const x = stimulus(n);
     wav32(path.join(OUT, "stim.wav"), x);
     const preEq = preEqFixture();
+    analogFixtures(x, template);
     const names = process.argv.slice(2).length ? process.argv.slice(2) : ["nano", "feather", "standard", "lstm", "lstm2"];
     for (const name of names) {
         const m = A.ampParseNam(fs.readFileSync(path.join(ROOT, "tests", "amp_ref", name + ".nam"), "utf8"));

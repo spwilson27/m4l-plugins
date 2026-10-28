@@ -173,6 +173,21 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
     check(!/ampSelectModel\(\d/.test(eng) && !/ampP\.model\)\s*[!=]==\s*\d/.test(eng) && !/"model",\s*\d/.test(eng), "engine: Model indices only through AMP_FILE_INDEX");
 }
 
+// 3d. Analog engine parameters: appended after the original 13 (Live stores parameters by order), 16 short circuit labels
+{
+    const orig = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix"];
+    check(orig.every((k, i) => A.AMP_PARAM_KEYS[i] === k) && A.AMP_PARAM_KEYS.slice(13).join() === "engine,circuit,speaker", "parameter order: the analog ones appended");
+    const labels = A.AMP_PARAMS.circuit[8];
+    check(labels.length === 16 && new Set(labels).size === 16 && labels.every((l) => l.length <= 6), `16 circuit labels, unique, <= 6 characters (${labels.join(" ")})`);
+    check(A.AMP_PARAMS.engine[8].join() === "Neural,Analog" && A.AMP_ENGINE.NEURAL === 0 && A.AMP_ENGINE.ANALOG === 1 && A.AMP_PARAMS.engine[4] === 0, "Engine: Neural (default) / Analog");
+    const eng = read("src/amp_engine.js");
+    check(!/"(?:engine|circuit)",\s*\d/.test(eng) && !/ampP\.(?:engine|circuit)\)?\s*[!=]==\s*\d/.test(eng), "engine: Engine / Circuit indices only through AMP_ENGINE");
+    // the analog circuit labels in the parameter are the recipes' labels, in order
+    global.ampFillHooks = A.ampFillHooks; global.ampBiquad = A.ampBiquad;
+    const AA = require("../src/amp_analog.js");
+    check(AA.AMP_ANALOG.map((r) => r.label).join() === labels.join(), "Circuit enum = the recipes in order");
+}
+
 // 4. built-in captures
 const BUILTINS = ["clean", "magna", "bass", "chime", "drive", "crunch", "splawn", "markiv", "lead", "metal", "fuzz", "ds1"];
 const GPL_BUILTINS = ["magna", "ds1", "splawn", "markiv"];
@@ -287,6 +302,15 @@ for (const f of designs) {
     check(p.openrect[3] === 169 && p.openinpresentation === 1, `${dev}: 169 px, presentation`);
     const viz = byId["obj-viz"];
     check(viz && /var AMP_BUILTIN/.test(viz.textfile.text) && /AMP_TEMPLATE/.test(viz.textfile.text), `${dev}: face embeds the template and the captures`);
+    // Analog engine: its own buffers, hub (gen messages "a <msg>" through route a), parameters appended after the original 13
+    for (const t of ["buffer~ ---ampscopea", "buffer~ ---ampa", "buffer~ ---ampcfa"]) check(boxes.some((b) => (b.text || "").startsWith(t)), `${dev}: ${t}`);
+    check(byId["obj-genin-a"] && byId["obj-genin-a"].text === "gate 1 1" && byId["obj-genin-a"].varname === "amp_genin_a" && byId["obj-genroute"].text === "route a", `${dev}: analog hub amp_genin_a behind route a`);
+    check(p.lines.some((l) => l.patchline.source[0] === "obj-viz" && l.patchline.source[1] === 1 && l.patchline.destination[0] === "obj-genroute")
+        && p.lines.some((l) => l.patchline.source[0] === "obj-genroute" && l.patchline.source[1] === 0 && l.patchline.destination[0] === "obj-genin-a" && l.patchline.destination[1] === 1)
+        && p.lines.some((l) => l.patchline.source[0] === "obj-genroute" && l.patchline.source[1] === 1 && l.patchline.destination[0] === "obj-genin" && l.patchline.destination[1] === 1), `${dev}: gen messages routed to both hubs`);
+    check(/^setnames ---ampscope ---ampw ---ampcf ---ampscopea ---ampa ---ampcfa$/.test(byId["obj-msg-names"].text), `${dev}: setnames carries the analog buffers`);
+    check(byId["obj-ctrl-circuit"].hidden === 1 && byId["obj-ctrl-speaker"].hidden === 1 && !byId["obj-ctrl-model"].hidden && !byId["obj-ctrl-engine"].hidden, `${dev}: saved state shows the Neural engine`);
+    check(/var AMP_ANALOG_SRC/.test(viz.textfile.text) && /function aaBank\(/.test(viz.textfile.text), `${dev}: face embeds the analog circuits`);
     // background panels are the last boxes
     const firstPanel = boxes.findIndex((b) => b.maxclass === "panel");
     check(firstPanel < 0 || boxes.slice(firstPanel).every((b) => b.maxclass === "panel"), `${dev}: panels last`);
@@ -295,5 +319,8 @@ for (const f of designs) {
 console.log(`test_amp: ${passes} passed, ${fails} failed`);
 try {
     execFileSync("node", [path.join(__dirname, "test_amp_face.js")], { stdio: "inherit" });
+} catch (e) { fails++; }
+try {
+    execFileSync("node", [path.join(__dirname, "test_amp_analog.js")], { stdio: "inherit" });
 } catch (e) { fails++; }
 process.exit(fails ? 1 : 0);

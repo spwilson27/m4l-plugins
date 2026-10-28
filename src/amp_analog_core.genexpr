@@ -1,0 +1,1100 @@
+// Analog engine of the Neural Amp: physically modelled amp / pedal / tape / compressor chains.
+// Plain functions over Data only (no top-level History / Param / Buffer), so tests/genexpr_functions.js
+// runs the exact DSP in Node (tests/amp_analog_sim.js). The engine (src/amp_analog.js aaBank) writes one
+// table per model into the analog shell's weight buffer; the template (src/amp_core.genexpr) copies it into
+// Data tb on a model switch and calls ac_sample once per sample.
+//
+// Units inside the circuits: V, mA, kOhm, uF, ms (R*C is ms, h/C*I is V). The output network (output
+// transformer + speaker) is SI: V, A, Ohm, H, kg, s.
+//
+// Table tb (AA_* constants in src/amp_analog.js must match):
+//   0 magic, 1 vref (V at full scale in), 2 out scale, 3 IR taps, 4 speaker on, 5 out kind (0 none, 1 tube, 2 SS)
+//   64 + 32 k: slot k (k = 0..11), field 0 = kind; slot 0 and 11 run at the base rate, 1..10 at 2x
+//   448..: output network (OT + speaker), 512..535: halfband taps (the 24 even taps), 1024..1535: cab IR,
+//   1536..1887: initial state of one channel (DC operating point)
+// State sv (per channel 352): slot k at 24 k, output network 288.., misc 320.. (rail, NFB, meters).
+// Kinds: 1 OPTO, 2 FET, 3 TAPE, 4 TS, 5 RAT, 6 MUFF, 7 FUZZ, 8 TRIODE, 9 TONE, 10 OPAMP, 11 XFMR,
+//        12 PWR (push-pull tube power stage), 13 SSPWR (solid-state power), 14 GAIN.
+// GenExpr rules kept here: one return per function at its end, helpers before use, no user call in poke()
+// or an if condition, every variable assigned before an if that might assign it, no e<digit> names.
+
+// Koren triode: writes Ip (mA), gm (mA/V), gp (mA/V) to rq[o..o+2], returns Ip.
+ac_kt(rq, o, vgk, vpk, mu, ex, kg1, kp, kvb) {
+    vp = max(vpk, 0.001);
+    sq = sqrt(kvb + vp * vp);
+    u = kp * (1 / mu + vgk / sq);
+    sp = u;
+    sg = 1;
+    if (u < 30) {
+        eu = exp(u);
+        sp = log(1 + eu);
+        sg = eu / (1 + eu);
+    }
+    ee = vp / kp * sp;
+    ip = 0;
+    di = 0;
+    if (ee > 0.0000001) {
+        ip = 2000 * exp(ex * log(ee)) / kg1;
+        di = ex * ip / ee;
+    }
+    poke(rq, ip, o);
+    poke(rq, di * vp * sg / sq, o + 1);
+    poke(rq, di * (sp / kp - sg * vgk * vp * vp / (sq * sq * sq)), o + 2);
+    return ip;
+}
+
+// Koren pentode at screen voltage vs2: writes Ip, gp (d Ip / d Vak), the grid-controlled base current.
+ac_kp(rq, o, vgk, vak, vs2, mu, ex, kg1, kp, kvb) {
+    vq = max(vs2, 1);
+    u = kp * (1 / mu + vgk / vq);
+    sp = u;
+    if (u < 30) {
+        sp = log(1 + exp(u));
+    }
+    ee = vq / kp * sp;
+    bs = 0;
+    if (ee > 0.0000001) {
+        bs = 2000 * exp(ex * log(ee)) / kg1;
+    }
+    va = max(vak, 0);
+    ip = bs * atan2(va, kvb);
+    poke(rq, ip, o);
+    poke(rq, bs * kvb / (kvb * kvb + va * va), o + 1);
+    poke(rq, bs, o + 2);
+    return ip;
+}
+
+// Grid node behind a coupling cap (cc > 0) or direct (cc = 0): source x through rs, leak rgl to vref,
+// grid-cathode conduction (soft diode, gg mS) -> the cap charges on positive peaks (blocking).
+// State: sv[ov] cap voltage, sv[og] grid voltage. Returns the grid voltage.
+ac_grid(sv, ov, og, x, vk, cc, rgl, rs, vref, gg, hh) {
+    vc = peek(sv, ov);
+    vg = peek(sv, og);
+    vsrc = x + vref;
+    gl = 0;
+    if (cc > 0) {
+        vsrc = x - vc;
+        gl = 1 / rgl;
+    }
+    // four Newton steps: a square wave jumps the grid by tens of volts, and an unconverged grid left a memory
+    // that locked hard-driven stages into slow subharmonic cycles
+    for (j = 0; j < 4; j += 1) {
+        dd = vg - vk;
+        ig = 0;
+        dig = 0;
+        if (dd > -1) {
+            zz = (dd + 0.2) * 10;
+            if (zz < 30) {
+                ez = exp(zz);
+                ig = gg * 0.1 * log(1 + ez);
+                dig = gg * ez / (1 + ez);
+            } else {
+                ig = gg * (dd + 0.2);
+                dig = gg;
+            }
+        }
+        ff = (vsrc - vg) / rs - gl * (vg - vref) - ig;
+        fp = -1 / rs - gl - dig;
+        vg = vg - ff / fp;
+    }
+    if (cc > 0) {
+        vc = vc + hh * (vsrc - vg) / rs / cc;
+    }
+    poke(sv, fixdenorm(vc), ov);
+    poke(sv, vg, og);
+    return vg;
+}
+
+// Two Newton steps on a triode's plate current with a linear cathode (vk = ka + kb Ip) and plate load rp. The current
+// is carried between the steps in rq[9] (a loop-carried scalar passed into a call kills the gen compile).
+ac_tip(rq, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb) {
+    poke(rq, ip, 9);
+    imax = bst / (rp + kb + 0.001);
+    for (j = 0; j < 2; j += 1) {
+        iq = peek(rq, 9);
+        vki = ka + kb * iq;
+        vgk = vg - vki;
+        vpk = bst - rp * iq - vki;
+        kv = ac_kt(rq, 3, vgk, vpk, mu, ex, kg1, kp, kvb);
+        gm = peek(rq, 4);
+        gp = peek(rq, 5);
+        poke(rq, clip(iq - (iq - kv) / (1 + gm * kb + gp * (rp + kb)), 0, imax), 9);
+    }
+    return peek(rq, 9);
+}
+
+// Common-cathode / cathode-follower triode stage with self-bias (bias shift), grid blocking, Miller pole
+// that follows the live stage gain, and B+ that sags with the power supply.
+ac_triode(tb, sv, rq, cb, sb, so, hh) {
+    x = peek(rq, 0);
+    mu = peek(tb, cb + 1);
+    ex = peek(tb, cb + 2);
+    kg1 = peek(tb, cb + 3);
+    kp = peek(tb, cb + 4);
+    kvb = peek(tb, cb + 5);
+    bn = peek(tb, cb + 6);
+    rp = peek(tb, cb + 7);
+    rk = peek(tb, cb + 8);
+    ck = peek(tb, cb + 9);
+    cc = peek(tb, cb + 10);
+    rgl = peek(tb, cb + 11);
+    rs = peek(tb, cb + 12);
+    vg0 = peek(tb, cb + 13);
+    om = peek(tb, cb + 14);
+    v0 = peek(tb, cb + 15);
+    cgk = peek(tb, cb + 16);
+    cgp = peek(tb, cb + 17);
+    osc = peek(tb, cb + 18);
+    rfr = peek(tb, cb + 19);
+    req = peek(tb, cb + 20);
+    gg = peek(tb, cb + 21);
+    ip0 = peek(tb, cb + 22);
+    vk = peek(sv, sb + 1);
+    ip = peek(sv, sb + 2);
+    lp = peek(sv, sb + 3);
+    am = peek(sv, sb + 5);
+    act = peek(sv, sb + 23);
+    rr = peek(sv, so + 326);
+    bst = bn * (1 - rfr + rfr * rr);
+    cm = cgk + cgp * (1 + am);
+    lp = lp + hh / (req * cm + hh) * (x - lp);
+    vg = ac_grid(sv, sb, sb + 4, lp, vk, cc, rgl, rs, vg0, gg, hh);
+    ka = 0;
+    kb = rk;
+    if (ck > 0) {
+        den = 1 + hh / (rk * ck);
+        ka = vk / den;
+        kb = hh / ck / den;
+    }
+    ip = ac_tip(rq, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb);
+    // A direct-coupled grid (cathode follower) is solved twice: grid current with the new cathode voltage, then the
+    // plate current again (a one-sample-late cathode in this tightly coupled loop turned a driven Plexi chaotic).
+    if (cc < 0.5) {
+        vg = ac_grid(sv, sb, sb + 4, lp, ka + kb * ip, cc, rgl, rs, vg0, gg, hh);
+        ip = ac_tip(rq, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb);
+    }
+    gm = peek(rq, 4);
+    gp = peek(rq, 5);
+    vk = ka + kb * ip;
+    am = am + 0.002 * (gm * rp / (1 + gp * rp + gm * kb) - am);
+    yy = om > 0.5 ? vk - v0 : bst - rp * ip - v0;
+    act = act + 0.002 * (abs(ip - ip0) / (ip0 + 0.01) - act);
+    poke(rq, yy * osc, 0);
+    poke(sv, fixdenorm(vk), sb + 1);
+    poke(sv, ip, sb + 2);
+    poke(sv, fixdenorm(lp), sb + 3);
+    poke(sv, am, sb + 5);
+    poke(sv, act, sb + 23);
+    return yy;
+}
+
+// Power supply: mains through the rectifier (Rsrc, drop vd) into the reservoir cap, loaded by the
+// power tubes, screens and preamp. railPre (preamp B+) and the screen supply follow through RC filters.
+ac_rail(tb, sv, cb, sb, so, hh) {
+    np = peek(tb, cb + 7);
+    vpk = peek(tb, cb + 8);
+    vd = peek(tb, cb + 9);
+    rsrc = peek(tb, cb + 10);
+    cres = peek(tb, cb + 11);
+    hz = peek(tb, cb + 12);
+    tscr = peek(tb, cb + 14);
+    ipre = peek(tb, cb + 28);
+    tpre = peek(tb, cb + 29);
+    bn = peek(tb, cb + 30);
+    vb = peek(sv, so + 320);
+    pre = peek(sv, so + 321);
+    ph = peek(sv, so + 322);
+    vsc = peek(sv, so + 323);
+    sag = peek(sv, so + 327);
+    il = (peek(sv, sb + 4) + peek(sv, sb + 5) + peek(sv, sb + 7)) * np + ipre;
+    ph = ph + hz * hh * 0.001;
+    ph = ph >= 1 ? ph - 1 : ph;
+    vr = vpk * abs(sin(6.283185307 * ph));
+    ich = max(0, vr - vd - vb) / rsrc;
+    vb = vb + hh * (ich - il) / cres;
+    pr1 = peek(sv, so + 339);
+    pr1 = pr1 + hh / (tpre + hh) * (vb - pr1);
+    pr2 = peek(sv, so + 340);
+    pr2 = pr2 + hh / (2 * tpre + hh) * (pr1 - pr2);
+    pre = pre + hh / (3 * tpre + hh) * (pr2 - pre);
+    sc1 = peek(sv, so + 343);
+    sc1 = sc1 + hh / (tscr + hh) * (vb - sc1);
+    vsc = vsc + hh / (tscr + hh) * (sc1 - vsc);
+    sag = sag + 0.0005 * (max(0, 1 - pre / bn) - sag);
+    poke(sv, vb, so + 320);
+    poke(sv, pre, so + 321);
+    poke(sv, pr1, so + 339);
+    poke(sv, pr2, so + 340);
+    poke(sv, ph, so + 322);
+    poke(sv, vsc, so + 323);
+    poke(sv, sc1, so + 343);
+    poke(sv, pre / bn, so + 326);
+    poke(sv, sag, so + 327);
+    return vb;
+}
+
+// Push-pull pentode pair (np pairs in parallel) into the output transformer: one Newton step on both
+// plate currents with the reflected speaker load (instantaneous resistance + history from the output network).
+ac_ptubes(tb, sv, rq, cb, sb, so, vb, ga, gb, vk) {
+    mu = peek(tb, cb + 1);
+    ex = peek(tb, cb + 2);
+    kg1 = peek(tb, cb + 3);
+    kp = peek(tb, cb + 4);
+    kvb = peek(tb, cb + 5);
+    k12 = peek(tb, cb + 6);
+    np = peek(tb, cb + 7);
+    rscr = peek(tb, cb + 13);
+    nt = peek(tb, 448);
+    rin = peek(sv, so + 333);
+    vh = peek(sv, so + 334);
+    im = peek(sv, so + 335);
+    i1 = peek(sv, sb + 4);
+    i2 = peek(sv, sb + 5);
+    ig2 = peek(sv, sb + 7);
+    vs2 = peek(sv, so + 323) - rscr * ig2 * np;
+    rr = nt * nt * rin * np * 0.00025;
+    vs = rin * (nt * np * (i1 - i2) * 0.0005 - im) + vh;
+    k1 = ac_kp(rq, 3, ga - vk, vb - 0.5 * nt * vs - vk, vs2, mu, ex, kg1, kp, kvb);
+    k2 = ac_kp(rq, 6, gb - vk, vb + 0.5 * nt * vs - vk, vs2, mu, ex, kg1, kp, kvb);
+    gp1 = peek(rq, 4);
+    gp2 = peek(rq, 7);
+    g1 = i1 - k1;
+    g2 = i2 - k2;
+    det = 1 + rr * (gp1 + gp2);
+    i1 = max(0, i1 - ((1 + gp2 * rr) * g1 + gp1 * rr * g2) / det);
+    i2 = max(0, i2 - (gp2 * rr * g1 + (1 + gp1 * rr) * g2) / det);
+    ig2 = (peek(rq, 5) + peek(rq, 8)) * k12;
+    iss = nt * np * (i1 - i2) * 0.0005 - im;
+    poke(sv, i1, sb + 4);
+    poke(sv, i2, sb + 5);
+    poke(sv, ig2, sb + 7);
+    poke(sv, iss, so + 332);
+    return iss;
+}
+
+// Tube power stage: global NFB (from the speaker terminal, presence shelf in the loop) -> long-tail phase
+// inverter -> coupling caps / grid leaks (power-tube blocking) -> fixed or cathode bias -> ac_ptubes.
+ac_pwr(tb, cq, sv, rq, cb, sb, so, hh) {
+    x = peek(rq, 0);
+    np = peek(tb, cb + 7);
+    bmode = peek(tb, cb + 15);
+    vbias = peek(tb, cb + 16);
+    rk = peek(tb, cb + 16);
+    ck = peek(tb, cb + 17);
+    gpi = peek(tb, cb + 18);
+    vsw = peek(tb, cb + 19);
+    cc = peek(tb, cb + 20);
+    rgl = peek(tb, cb + 21);
+    rs = peek(tb, cb + 22);
+    beta = peek(tb, cb + 24);
+    ta = peek(tb, cb + 25);
+    tbp = peek(tb, cb + 26);
+    pmax = peek(tb, cb + 27);
+    gg = peek(tb, cb + 31);
+    pres = peek(cq, 18);
+    fa = peek(sv, so + 324);
+    fb = peek(sv, so + 325);
+    vsl = peek(sv, so + 336);
+    vk = peek(sv, sb + 6);
+    act = peek(sv, sb + 23);
+    fz = peek(sv, so + 342);
+    fz = fz + hh / (ta + hh) * (vsl - fz);
+    fa = fa + hh / (ta + hh) * (fz - fa);
+    fb = fb + hh / (tbp + hh) * (fz - fb);
+    uu = gpi * x - beta * (fa - pres * pmax * (fa - fb));
+    dd = vsw * tanh(uu / vsw);
+    gref = bmode > 0.5 ? 0 : vbias;
+    vkk = bmode > 0.5 ? vk : 0;
+    ga = ac_grid(sv, sb, sb + 1, dd, vkk, cc, rgl, rs, gref, gg, hh);
+    gb = ac_grid(sv, sb + 2, sb + 3, 0 - dd, vkk, cc, rgl, rs, gref, gg, hh);
+    vb = ac_rail(tb, sv, cb, sb, so, hh);
+    ac_ptubes(tb, sv, rq, cb, sb, so, vb, ga, gb, vkk);
+    if (bmode > 0.5) {
+        it = (peek(sv, sb + 4) + peek(sv, sb + 5)) * np;
+        vk = (vk + hh / ck * it) / (1 + hh / (rk * ck));
+    }
+    act = act + 0.002 * (abs(dd) / vsw - act);
+    poke(sv, fixdenorm(fz), so + 342);
+    poke(sv, fixdenorm(fa), so + 324);
+    poke(sv, fixdenorm(fb), so + 325);
+    poke(sv, vk, sb + 6);
+    poke(sv, act, sb + 23);
+    poke(sv, abs(vk - peek(tb, cb + 23)) * 0.1 + abs(ga + gb - 2 * gref) * 0.02, so + 331);
+    return dd;
+}
+
+// Solid-state power amp: rail clip, a little crossover, voltage drive into the speaker.
+ac_sspwr(tb, sv, rq, cb, sb, so) {
+    x = peek(rq, 0);
+    gn = peek(tb, cb + 1);
+    vr = peek(tb, cb + 2);
+    vx = peek(tb, cb + 3);
+    cxa = peek(tb, cb + 4);
+    rout = peek(tb, cb + 5);
+    rin = peek(sv, so + 333);
+    vh = peek(sv, so + 334);
+    act = peek(sv, sb + 23);
+    vv = vr * tanh(gn * x / vr);
+    vv = vv - cxa * vx * tanh(vv / vx);
+    iss = (vv - vh) / (rout + rin);
+    act = act + 0.002 * (abs(vv) / vr - act);
+    poke(sv, iss, so + 332);
+    poke(sv, act, sb + 23);
+    return iss;
+}
+
+// Play operator hysteresis of a transformer core: flux lam, returns the magnetizing current.
+ac_play(sv, op, lam, wq, lm, lams, gr) {
+    pp = peek(sv, op);
+    pp = max(lam - wq, min(lam + wq, pp));
+    tt = pp / lams;
+    tt = tt * tt;
+    poke(sv, pp, op);
+    return pp / lm * (1 + tt * tt * tt) + (lam - pp) * gr;
+}
+
+// Output network after a power stage (SI): output transformer core (tube amps) and the lumped speaker
+// (voice coil Re + Le, motor Bl(x), suspension Kms(x), moving mass, losses), or a load resistor when the
+// speaker is off. Leaves the next instantaneous load / history voltage for the power stage solve.
+ac_out(tb, sv, rq, so, kind, hh) {
+    hs = hh * 0.001;
+    spk = peek(tb, 4);
+    iss = peek(sv, so + 332);
+    rin = peek(sv, so + 333);
+    vh = peek(sv, so + 334);
+    vs = rin * iss + vh;
+    im = peek(sv, so + 335);
+    if (kind < 12.5) {
+        lam = peek(sv, so + 288) + hs * vs;
+        pw = peek(tb, 451);
+        plm = peek(tb, 449);
+        pls = peek(tb, 450);
+        pgr = peek(tb, 452);
+        im = ac_play(sv, so + 289, lam, pw, plm, pls, pgr);
+        poke(sv, fixdenorm(lam), so + 288);
+    }
+    yy = vs * peek(tb, 465);
+    rnext = peek(tb, 453);
+    vnext = 0;
+    exm = peek(sv, so + 330);
+    if (spk > 0.5) {
+        re = peek(tb, 454);
+        le = peek(tb, 455);
+        bl0 = peek(tb, 456);
+        mms = peek(tb, 457);
+        rms = peek(tb, 458);
+        k0 = peek(tb, 459);
+        kx2 = peek(tb, 460);
+        bx2 = peek(tb, 461);
+        b1 = peek(tb, 462);
+        xx = peek(sv, so + 290);
+        vv = peek(sv, so + 291);
+        blx = bl0 * (1 + b1 * xx) / (1 + bx2 * xx * xx);
+        acc = (blx * iss - rms * vv - k0 * (1 + kx2 * xx * xx) * xx) / mms;
+        vv = vv + hs * acc;
+        xx = xx + hs * vv;
+        blx = bl0 * (1 + b1 * xx) / (1 + bx2 * xx * xx);
+        rnext = re + peek(tb, 466) + le / hs;
+        vnext = blx * vv - le / hs * iss;
+        yy = acc * peek(tb, 463);
+        exm = exm + 0.0005 * (abs(xx) * 300 - exm);
+        poke(sv, fixdenorm(xx), so + 290);
+        poke(sv, fixdenorm(vv), so + 291);
+    }
+    poke(sv, im, so + 335);
+    poke(sv, rnext, so + 333);
+    poke(sv, vnext, so + 334);
+    poke(sv, vs, so + 336);
+    poke(sv, exm, so + 330);
+    poke(rq, yy, 0);
+    return yy;
+}
+
+// 3rd-order passive tone stack (from the circuit's component values and the knobs, computed by the engine):
+// biquad + first-order section, coefficients smoothed per sample so knob moves do not click.
+ac_tone(tb, cq, sv, rq, cb, sb) {
+    x = peek(rq, 0);
+    base = peek(tb, cb + 1) * 9;
+    gn = peek(tb, cb + 2);
+    for (j = 0; j < 8; j += 1) {
+        cv = peek(sv, sb + 3 + j);
+        poke(sv, cv + 0.002 * (peek(cq, base + j) - cv), sb + 3 + j);
+    }
+    b0 = peek(sv, sb + 3);
+    b1 = peek(sv, sb + 4);
+    b2 = peek(sv, sb + 5);
+    a1 = peek(sv, sb + 6);
+    a2 = peek(sv, sb + 7);
+    c0 = peek(sv, sb + 8);
+    c1 = peek(sv, sb + 9);
+    d1 = peek(sv, sb + 10);
+    z1 = peek(sv, sb);
+    z2 = peek(sv, sb + 1);
+    z3 = peek(sv, sb + 2);
+    yq = b0 * x + z1;
+    poke(sv, fixdenorm(b1 * x - a1 * yq + z2), sb);
+    poke(sv, fixdenorm(b2 * x - a2 * yq), sb + 1);
+    yy = c0 * yq + z3;
+    poke(sv, fixdenorm(c1 * yq - d1 * yy), sb + 2);
+    poke(rq, fixnan(yy * gn), 0);
+    return yy;
+}
+
+// Linear utility: gain, coupling high-pass, low-pass (a "cut" low-pass follows the Presence knob reversed).
+ac_gain(tb, cq, sv, rq, cb, sb, hh) {
+    yy = peek(rq, 0);
+    gn = peek(tb, cb + 1);
+    th = peek(tb, cb + 2);
+    tl = peek(tb, cb + 3);
+    cut = peek(tb, cb + 4);
+    hl = peek(sv, sb);
+    ll = peek(sv, sb + 1);
+    if (th > 0) {
+        hl = hl + hh / (th + hh) * (yy - hl);
+        yy = yy - hl;
+    }
+    if (tl > 0) {
+        tt = cut > 0.5 ? tl * (0.05 + 0.95 * (1 - peek(cq, 18))) : tl;
+        ll = ll + hh / (tt + hh) * (yy - ll);
+        yy = ll;
+    }
+    poke(sv, fixdenorm(hl), sb);
+    poke(sv, fixdenorm(ll), sb + 1);
+    poke(rq, yy * gn, 0);
+    return yy;
+}
+
+// Discrete op-amp / transistor gain stage: gain-bandwidth pole, slew limit, soft rails, even-order asymmetry.
+ac_opamp(tb, sv, rq, cb, sb, hh) {
+    x = peek(rq, 0);
+    gn = peek(tb, cb + 1);
+    tg = peek(tb, cb + 2);
+    sr = peek(tb, cb + 3);
+    vr = peek(tb, cb + 4);
+    asy = peek(tb, cb + 5);
+    osc = peek(tb, cb + 6);
+    th = peek(tb, cb + 7);
+    lp = peek(sv, sb);
+    sl = peek(sv, sb + 1);
+    hl = peek(sv, sb + 2);
+    act = peek(sv, sb + 23);
+    lp = lp + hh / (tg + hh) * (gn * x - lp);
+    sl = sl + clip(lp - sl, 0 - sr * hh, sr * hh);
+    yy = vr * tanh(sl / vr);
+    yy = yy + asy * yy * yy / vr;
+    hl = hl + hh / (th + hh) * (yy - hl);
+    yy = yy - hl;
+    act = act + 0.002 * (abs(sl) / vr - act);
+    poke(sv, fixdenorm(lp), sb);
+    poke(sv, fixdenorm(sl), sb + 1);
+    poke(sv, fixdenorm(hl), sb + 2);
+    poke(sv, act, sb + 23);
+    poke(rq, yy * osc, 0);
+    return yy;
+}
+
+// Audio transformer: source resistance into the magnetizing inductance with play hysteresis (saturates
+// first at low frequencies, the flux is the integral of the voltage), leakage low-pass.
+ac_xfmr(tb, sv, rq, cb, sb, hh) {
+    x = peek(rq, 0) * peek(tb, cb + 6);
+    rs = peek(tb, cb + 1);
+    lm = peek(tb, cb + 2);
+    lams = peek(tb, cb + 3);
+    wq = peek(tb, cb + 4);
+    gr = peek(tb, cb + 5);
+    osc = peek(tb, cb + 7);
+    tl = peek(tb, cb + 8);
+    lam = peek(sv, sb);
+    im = peek(sv, sb + 2);
+    lp = peek(sv, sb + 3);
+    act = peek(sv, sb + 23);
+    vo = x - rs * im;
+    lam = lam + hh * vo;
+    im = ac_play(sv, sb + 1, lam, wq, lm, lams, gr);
+    lp = lp + hh / (tl + hh) * (vo - lp);
+    act = act + 0.002 * (abs(lam) / lams - act);
+    poke(sv, fixdenorm(lam), sb);
+    poke(sv, im, sb + 2);
+    poke(sv, fixdenorm(lp), sb + 3);
+    poke(sv, act, sb + 23);
+    poke(rq, lp * osc, 0);
+    return lp;
+}
+
+// Two diodes in anti-parallel: solves gl * v + gc * (v - vp) + 2 Is sinh(v / a) = i for v.
+ac_diode(i, vp, gl, gc, is2, a) {
+    rhs = i + gc * vp;
+    gtot = gl + gc;
+    vl = rhs / gtot;
+    zz = rhs / is2;
+    vd = a * log(abs(zz) + sqrt(zz * zz + 1));
+    vd = zz < 0 ? 0 - vd : vd;
+    vv = abs(vl) < abs(vd) ? vl : vd;
+    for (j = 0; j < 3; j += 1) {
+        xa = clip(vv / a, -40, 40);
+        ep = exp(xa);
+        en = 1 / ep;
+        ff = gtot * vv + 0.5 * is2 * (ep - en) - rhs;
+        vv = vv - ff / (gtot + 0.5 * is2 / a * (ep + en));
+    }
+    return vv;
+}
+
+// Tube Screamer: non-inverting op-amp, 720 Hz high-passed feedback current through Rf || Cf || 2 x 1N914,
+// op-amp gain-bandwidth pole, soft rails, tone low-pass, level.
+ac_ts(tb, sv, rq, cb, sb, hh) {
+    x = peek(rq, 0);
+    rgr = peek(tb, cb + 1);
+    cg = peek(tb, cb + 2);
+    rf = peek(tb, cb + 3);
+    cfb = peek(tb, cb + 4);
+    is2 = peek(tb, cb + 5);
+    a = peek(tb, cb + 6);
+    tg = peek(tb, cb + 7);
+    tt = peek(tb, cb + 8);
+    lvl = peek(tb, cb + 9);
+    vr = peek(tb, cb + 10);
+    vcg = peek(sv, sb);
+    vf = peek(sv, sb + 1);
+    lp = peek(sv, sb + 2);
+    tl = peek(sv, sb + 3);
+    act = peek(sv, sb + 23);
+    ii = (x - vcg) / rgr;
+    vcg = vcg + hh * ii / cg;
+    vf = ac_diode(ii, vf, 1 / rf, cfb / hh, 2 * is2, a);
+    lp = lp + hh / (tg + hh) * (x + vf - lp);
+    yy = vr * tanh(lp / vr);
+    tl = tl + hh / (tt + hh) * (yy - tl);
+    act = act + 0.002 * (abs(vf) / (4 * a) - act);
+    poke(sv, fixdenorm(vcg), sb);
+    poke(sv, vf, sb + 1);
+    poke(sv, fixdenorm(lp), sb + 2);
+    poke(sv, fixdenorm(tl), sb + 3);
+    poke(sv, act, sb + 23);
+    poke(rq, tl * lvl, 0);
+    return yy;
+}
+
+// RAT: op-amp with two frequency-shaping legs (gain rises above 60 Hz and 1.5 kHz), GBW pole, LM308 slew
+// limit, rails, 1k into 2 x 1N914 to ground, Filter low-pass, level.
+ac_rat(tb, sv, rq, cb, sb, hh) {
+    x = peek(rq, 0);
+    rd = peek(tb, cb + 1);
+    ra = peek(tb, cb + 2);
+    ca = peek(tb, cb + 3);
+    rb = peek(tb, cb + 4);
+    cbb = peek(tb, cb + 5);
+    tg = peek(tb, cb + 6);
+    sr = peek(tb, cb + 7);
+    vr = peek(tb, cb + 8);
+    is2 = peek(tb, cb + 9);
+    a = peek(tb, cb + 10);
+    tf = peek(tb, cb + 11);
+    lvl = peek(tb, cb + 12);
+    va = peek(sv, sb);
+    vb = peek(sv, sb + 1);
+    lp = peek(sv, sb + 2);
+    sl = peek(sv, sb + 3);
+    vd = peek(sv, sb + 4);
+    fl = peek(sv, sb + 5);
+    act = peek(sv, sb + 23);
+    ia = (x - va) / ra;
+    va = va + hh * ia / ca;
+    ib = (x - vb) / rb;
+    vb = vb + hh * ib / cbb;
+    lp = lp + hh / (tg + hh) * (x + rd * (ia + ib) - lp);
+    sl = sl + clip(lp - sl, 0 - sr * hh, sr * hh);
+    sl = clip(sl, 0 - vr, vr);
+    vd = ac_diode(sl, vd, 1, 0, 2 * is2, a);
+    fl = fl + hh / (tf + hh) * (vd - fl);
+    act = act + 0.002 * (abs(sl) / vr - act);
+    poke(sv, fixdenorm(va), sb);
+    poke(sv, fixdenorm(vb), sb + 1);
+    poke(sv, fixdenorm(lp), sb + 2);
+    poke(sv, sl, sb + 3);
+    poke(sv, vd, sb + 4);
+    poke(sv, fixdenorm(fl), sb + 5);
+    poke(sv, act, sb + 23);
+    poke(rq, fl * lvl, 0);
+    return fl;
+}
+
+// Big Muff: input transistor stage, two diode-feedback clipping stages with coupling high-passes and
+// feedback-cap low-passes, the passive blend tone (low-pass / high-pass mix, mid scoop), level.
+ac_muff(tb, sv, rq, cb, sb, hh) {
+    x = peek(rq, 0);
+    g1 = peek(tb, cb + 1);
+    vc = peek(tb, cb + 2);
+    gc = peek(tb, cb + 3);
+    th = peek(tb, cb + 4);
+    tl = peek(tb, cb + 5);
+    is2 = peek(tb, cb + 6);
+    a = peek(tb, cb + 7);
+    tlo = peek(tb, cb + 8);
+    thi = peek(tb, cb + 9);
+    tone = peek(tb, cb + 10);
+    lvl = peek(tb, cb + 11);
+    act = peek(sv, sb + 23);
+    yy = vc * tanh(g1 * x / vc + 0.15) - vc * tanh(0.15);
+    hl = peek(sv, sb + 1);
+    hl = hl + hh / (th + hh) * (yy - hl);
+    uu = gc * (yy - hl);
+    vp = peek(sv, sb + 1 + 1);
+    vd = ac_diode(uu, vp, 1, 0, 2 * is2, a);
+    lp = peek(sv, sb + 1 + 2);
+    lp = lp + hh / (tl + hh) * (vd - lp);
+    poke(sv, fixdenorm(hl), sb + 1);
+    poke(sv, vd, sb + 1 + 1);
+    poke(sv, fixdenorm(lp), sb + 1 + 2);
+    yy = 0 - lp;
+    hl = peek(sv, sb + 4);
+    hl = hl + hh / (th + hh) * (yy - hl);
+    uu = gc * (yy - hl);
+    vp = peek(sv, sb + 4 + 1);
+    vd = ac_diode(uu, vp, 1, 0, 2 * is2, a);
+    lp = peek(sv, sb + 4 + 2);
+    lp = lp + hh / (tl + hh) * (vd - lp);
+    poke(sv, fixdenorm(hl), sb + 4);
+    poke(sv, vd, sb + 4 + 1);
+    poke(sv, fixdenorm(lp), sb + 4 + 2);
+    yy = 0 - lp;
+    l1 = peek(sv, sb + 7) + hh / (tlo + hh) * (yy - peek(sv, sb + 7));
+    l2 = peek(sv, sb + 8) + hh / (thi + hh) * (yy - peek(sv, sb + 8));
+    act = act + 0.002 * (abs(yy) / (3 * a) - act);
+    poke(sv, fixdenorm(l1), sb + 7);
+    poke(sv, fixdenorm(l2), sb + 8);
+    poke(sv, act, sb + 23);
+    poke(rq, ((1 - tone) * l1 + tone * (yy - l2)) * lvl, 0);
+    return yy;
+}
+
+// Fuzz Face Q2: the collector current from Q1's collector voltage (Newton on the current, log domain), the Fuzz
+// pot's bypassed emitter, soft saturation. Writes vbe / emitter cap / ve2 / ic2, returns the collector voltage.
+ac_fuzzq2(sv, sb, vc1, vcc, vcp, vbe, is2, a, rc2, re2, ce2, rpot, hh) {
+    dq = 1 + hh / (rpot * ce2);
+    aq = vcp / dq;
+    bq = hh / ce2 / dq;
+    ic2 = max(0, is2 * (exp(min(vbe, 0.6) / a) - 1));
+    for (j = 0; j < 4; j += 1) {
+        ff = a * log(1 + ic2 / is2) - vc1 + aq + (re2 + bq) * ic2;
+        ic2 = max(0, ic2 - ff / (a / (is2 + ic2) + re2 + bq));
+    }
+    vbe = a * log(1 + ic2 / is2);
+    vcp = aq + bq * ic2;
+    poke(sv, vbe, sb + 3);
+    poke(sv, fixdenorm(vcp), sb + 6);
+    ve2 = ic2 * re2 + vcp;
+    vc2 = vcc - rc2 * ic2;
+    zq = (vc2 - ve2) / 0.05;
+    vc2 = zq > 30 ? vc2 : ve2 + 0.05 * log(1 + exp(max(zq, -40)));
+    poke(sv, ve2, sb + 9);
+    poke(sv, ic2, sb + 10);
+    return vc2;
+}
+
+// Fuzz Face (germanium pair, mirrored to NPN): the pickup (inductance + resistance) drives the input cap
+// into Q1's base, whose input impedance drops as it conducts (treble loss and gating that depend on level),
+// Q2-emitter-to-Q1-base bias feedback (100k), Q2 with the Fuzz pot as its emitter resistor (the bypassed part
+// sets the gain), battery that sags with the current.
+ac_fuzz(tb, sv, rq, cb, sb, hh) {
+    x = peek(rq, 0);
+    lpu = peek(tb, cb + 1);
+    rpu = peek(tb, cb + 2);
+    cin = peek(tb, cb + 3);
+    rf = peek(tb, cb + 4);
+    is1 = peek(tb, cb + 5);
+    a = peek(tb, cb + 6);
+    bt1 = peek(tb, cb + 7);
+    rc1 = peek(tb, cb + 8);
+    is2 = peek(tb, cb + 9);
+    rc2 = peek(tb, cb + 11);
+    re2 = peek(tb, cb + 12);
+    ce2 = peek(tb, cb + 13);
+    rpot = peek(tb, cb + 14);
+    il = peek(sv, sb);
+    vci = peek(sv, sb + 1);
+    vb1 = peek(sv, sb + 2);
+    vbe = peek(sv, sb + 3);
+    vc2 = peek(sv, sb + 4);
+    vcc = peek(sv, sb + 5);
+    vcp = peek(sv, sb + 6);
+    ve2p = peek(sv, sb + 9);
+    ic2p = peek(sv, sb + 10);
+    lh = lpu / hh;
+    den = lh + rpu + hh / cin;
+    a0 = (il * lh + x - vci) / den;
+    a1 = 1 / den;
+    // The bias loop (Q1 base -> Q2 emitter -> 100k back) is solved semi-implicitly: Q2's emitter follows Q1's base
+    // with the small-signal gain of the previous sample (a one-sample delay in this high-gain loop oscillates).
+    vb1p = vb1;
+    dq0 = 1 + hh / (rpot * ce2);
+    gm2e = 1 / (a / max(ic2p, 0.000001) + re2 + hh / ce2 / dq0);
+    kfb = 0 - (re2 + hh / ce2 / dq0) * gm2e * rc1 * bt1 * is1 / a * exp(min(vb1p, 0.7) / a);
+    // Newton on the base current (log domain: v = a ln(1 + i / Is) stays bounded where exp(v / a) would not)
+    ib = max(0 - 0.999 * is1, is1 * (exp(min(vb1, 0.6) / a) - 1));
+    for (j = 0; j < 4; j += 1) {
+        vv = a * log(1 + ib / is1);
+        ff = a0 - a1 * vv + (ve2p + kfb * (vv - vb1p) - vv) / rf - ib;
+        dv = a / (is1 + ib);
+        ib = max(0 - 0.999 * is1, ib - ff / ((0 - a1 + (kfb - 1) / rf) * dv - 1));
+    }
+    vb1 = a * log(1 + ib / is1);
+    il = a0 - a1 * vb1;
+    vci = vci + hh * il / cin;
+    ic1 = bt1 * ib + peek(tb, cb + 17);
+    vc1 = vcc - rc1 * ic1;
+    zq = vc1 / 0.05;
+    vc1 = zq > 30 ? vc1 : 0.05 * log(1 + exp(max(zq, -40)));
+    vc2 = ac_fuzzq2(sv, sb, vc1, vcc, vcp, vbe, is2, a, rc2, re2, ce2, rpot, hh);
+    ic2 = peek(sv, sb + 10);
+    ve2 = peek(sv, sb + 9);
+    vcc = vcc + hh / (peek(tb, cb + 20) + hh) * (peek(tb, cb + 15) - peek(tb, cb + 16) * (ic1 + ic2) - vcc);
+    ho = peek(sv, sb + 7);
+    ho = ho + hh / (50 + hh) * (vc2 - ho);
+    act = peek(sv, sb + 23) + 0.002 * (abs(vc2 - ho) / 2 - peek(sv, sb + 23));
+    poke(sv, il, sb);
+    poke(sv, fixdenorm(vci), sb + 1);
+    poke(sv, vb1, sb + 2);
+    poke(sv, vc2, sb + 4);
+    poke(sv, vcc, sb + 5);
+    poke(sv, ho, sb + 7);
+    poke(sv, act, sb + 23);
+    poke(rq, (vc2 - ho) * peek(tb, cb + 18), 0);
+    return vc2;
+}
+
+// Jiles-Atherton magnetization step (Ms = 1): dM for a field step dh at (hv, mv).
+ac_ja(hv, mv, dh, a, kk, c, al) {
+    qq = clip((hv + al * mv) / a, -30, 30);
+    lq = qq / 3;
+    dl = 0.3333333333;
+    if (abs(qq) > 0.001) {
+        ez = exp(2 * qq);
+        lq = (ez + 1) / (ez - 1) - 1 / qq;
+        dl = 1 / (qq * qq) - 4 * ez / ((ez - 1) * (ez - 1));
+    }
+    dm = lq - mv;
+    sd = dh >= 0 ? 1 : -1;
+    dmm = sd * dm > 0 ? 1 : 0;
+    den = (1 - c) * sd * kk - al * dm;
+    den = abs(den) < 0.000001 ? 0.000001 : den;
+    num = (1 - c) * dmm * dm / den + c / a * dl;
+    return num / (1 - c * al / a * dl) * dh;
+}
+
+// Tape machine: record pre-emphasis, Jiles-Atherton hysteresis (RK2), gap-loss low-pass, head bump,
+// playback de-emphasis, wow and flutter (random speed drift reading a short ring).
+ac_tape(tb, sv, rq, tq, cb, sb, ch, hh) {
+    x = peek(rq, 0);
+    drv = peek(tb, cb + 1);
+    tpe = peek(tb, cb + 2);
+    pe = peek(tb, cb + 3);
+    a = peek(tb, cb + 4);
+    kk = peek(tb, cb + 5);
+    c = peek(tb, cb + 6);
+    al = peek(tb, cb + 7);
+    tgap = peek(tb, cb + 8);
+    osc = peek(tb, cb + 14);
+    hp = peek(sv, sb);
+    mv = peek(sv, sb + 1);
+    pl = peek(sv, sb + 2);
+    gl = peek(sv, sb + 3);
+    act = peek(sv, sb + 23);
+    pl = pl + hh / (tpe + hh) * (x - pl);
+    hv = drv * (x + pe * (x - pl));
+    dh = hv - hp;
+    k1 = ac_ja(hp, mv, dh, a, kk, c, al);
+    k2 = ac_ja(hp + 0.5 * dh, mv + 0.5 * k1, dh, a, kk, c, al);
+    mv = clip(mv + k2, -1, 1);
+    gl = gl + hh / (tgap + hh) * (mv - gl);
+    z1 = peek(sv, sb + 4);
+    z2 = peek(sv, sb + 5);
+    yq = peek(tb, cb + 9) * gl + z1;
+    poke(sv, fixdenorm(peek(tb, cb + 10) * gl - peek(tb, cb + 12) * yq + z2), sb + 4);
+    poke(sv, fixdenorm(peek(tb, cb + 11) * gl - peek(tb, cb + 13) * yq), sb + 5);
+    dl = peek(sv, sb + 6);
+    dl = dl + hh / (tpe + hh) * (yq - dl);
+    yy = dl + (yq - dl) / (1 + pe);
+    act = act + 0.002 * (abs(hv) - act);
+    poke(sv, hv, sb);
+    poke(sv, mv, sb + 1);
+    poke(sv, fixdenorm(pl), sb + 2);
+    poke(sv, fixdenorm(gl), sb + 3);
+    poke(sv, fixdenorm(dl), sb + 6);
+    poke(sv, act, sb + 23);
+    poke(rq, yy * osc, 0);
+    return yy;
+}
+
+// Wow and flutter of the tape transport: two sample-and-glide random speed drifts (Data-state LCG) move the
+// read point of a 2048-sample ring (linear interpolation).
+ac_wow(tb, sv, rq, tq, cb, sb, ch, hh) {
+    x = peek(rq, 0);
+    base = peek(tb, cb + 15);
+    dwow = peek(tb, cb + 16);
+    dflt = peek(tb, cb + 17);
+    rng = peek(sv, sb + 7);
+    wt = peek(sv, sb + 8);
+    ws = peek(sv, sb + 9);
+    ft = peek(sv, sb + 10);
+    fs = peek(sv, sb + 11);
+    wc = peek(sv, sb + 12) - hh;
+    fc = peek(sv, sb + 13) - hh;
+    pos = peek(sv, sb + 14);
+    if (wc <= 0) {
+        rng = rng * 16807 - 2147483647 * floor(rng * 16807 / 2147483647);
+        wt = rng / 2147483647 * 2 - 1;
+        wc = 350;
+    }
+    if (fc <= 0) {
+        rng = rng * 16807 - 2147483647 * floor(rng * 16807 / 2147483647);
+        ft = rng / 2147483647 * 2 - 1;
+        fc = 45;
+    }
+    ws = ws + hh / (250 + hh) * (wt - ws);
+    fs = fs + hh / (12 + hh) * (ft - fs);
+    off = ch * 2048;
+    poke(tq, x, off + pos);
+    dd = clip((base + dwow * ws + dflt * fs) / hh, 2, 2040);
+    rp = pos - dd;
+    rp = rp < 0 ? rp + 2048 : rp;
+    i0 = floor(rp);
+    fr = rp - i0;
+    i1 = i0 + 1 >= 2048 ? 0 : i0 + 1;
+    yy = peek(tq, off + i0) * (1 - fr) + peek(tq, off + i1) * fr;
+    pos = pos + 1 >= 2048 ? 0 : pos + 1;
+    poke(sv, rng, sb + 7);
+    poke(sv, wt, sb + 8);
+    poke(sv, ws, sb + 9);
+    poke(sv, ft, sb + 10);
+    poke(sv, fs, sb + 11);
+    poke(sv, wc, sb + 12);
+    poke(sv, fc, sb + 13);
+    poke(sv, pos, sb + 14);
+    poke(rq, yy, 0);
+    return yy;
+}
+
+// Optical leveler (T4 cell): detector -> light state (fast) -> memory state (slow, charges with long
+// programme) -> gain (1 + k L)^-p. Release gets slower the longer the gain reduction lasted.
+ac_opto(tb, sv, rq, cb, sb, so, hh) {
+    x = peek(rq, 0);
+    kin = peek(tb, cb + 1);
+    tat = peek(tb, cb + 2);
+    trl = peek(tb, cb + 3);
+    tlu = peek(tb, cb + 4);
+    tld = peek(tb, cb + 5);
+    tmc = peek(tb, cb + 6);
+    tmd = peek(tb, cb + 7);
+    mw = peek(tb, cb + 8);
+    kl = peek(tb, cb + 9);
+    pw = peek(tb, cb + 10);
+    mk = peek(tb, cb + 11);
+    th = peek(tb, cb + 12);
+    hl = peek(sv, sb);
+    ev = peek(sv, sb + 1);
+    ll = peek(sv, sb + 2);
+    mm = peek(sv, sb + 3);
+    hl = hl + hh / (th + hh) * (x - hl);
+    ax = abs(x - hl);
+    ev = ev + (ax > ev ? hh / (tat + hh) : hh / (trl + hh)) * (ax - ev);
+    tg = ev * kin;
+    ll = ll + (tg > ll ? hh / (tlu + hh) : hh / (tld + hh)) * (tg - ll);
+    mm = mm + (ll > mm ? hh / (tmc + hh) : hh / (tmd + hh)) * (ll - mm);
+    gg = exp(0 - pw * log(1 + kl * (ll + mw * mm)));
+    poke(sv, fixdenorm(hl), sb);
+    poke(sv, fixdenorm(ev), sb + 1);
+    poke(sv, fixdenorm(ll), sb + 2);
+    poke(sv, fixdenorm(mm), sb + 3);
+    poke(sv, 1 - gg, sb + 23);
+    poke(sv, 1 - gg, so + 341);
+    poke(rq, x * gg * mk, 0);
+    return gg;
+}
+
+// FET limiter (1176 style, feed-forward): peak detector in dB, soft knee, ratio, attack 20-800 us,
+// programme-dependent release, second harmonic that grows with the gain reduction.
+ac_fet(tb, sv, rq, cb, sb, so, hh) {
+    x = peek(rq, 0) * peek(tb, cb + 9);
+    thr = peek(tb, cb + 1);
+    ratio = peek(tb, cb + 2);
+    kw = peek(tb, cb + 3);
+    tat = peek(tb, cb + 4);
+    trl = peek(tb, cb + 5);
+    mk = peek(tb, cb + 6);
+    dst = peek(tb, cb + 7);
+    th = peek(tb, cb + 8);
+    hl = peek(sv, sb);
+    ev = peek(sv, sb + 1);
+    gs = peek(sv, sb + 2);
+    hl = hl + hh / (th + hh) * (x - hl);
+    ax = abs(x - hl);
+    ev = ax > ev ? ax : ev + hh / (trl * 0.5 + hh) * (ax - ev);
+    ov = 20 * log10(ev + 0.000000001) - thr;
+    sl = 1 - 1 / ratio;
+    gr = ov > 0.5 * kw ? ov * sl : (ov > -0.5 * kw ? sl * (ov + 0.5 * kw) * (ov + 0.5 * kw) / (2 * kw) : 0);
+    gs = gs + (gr > gs ? hh / (tat + hh) : hh / (trl / (1 + 0.05 * gs) + hh)) * (gr - gs);
+    gg = exp(-0.1151292546 * gs);
+    yy = gg * x + dst * (1 - gg) * gg * x * x;
+    poke(sv, fixdenorm(hl), sb);
+    poke(sv, fixdenorm(ev), sb + 1);
+    poke(sv, fixdenorm(gs), sb + 2);
+    poke(sv, 1 - gg, sb + 23);
+    poke(sv, 1 - gg, so + 341);
+    poke(rq, yy * mk, 0);
+    return yy;
+}
+
+// One slot: dispatch on its kind (each helper has exactly one call site, here).
+ac_step(k, so, ch, tb, cq, sv, rq, tq, hh) {
+    cb = 64 + k * 32;
+    sb = so + k * 24;
+    kind = peek(tb, cb);
+    if (kind > 0.5) {
+        if (kind < 1.5) {
+            ac_opto(tb, sv, rq, cb, sb, so, hh);
+        } else if (kind < 2.5) {
+            ac_fet(tb, sv, rq, cb, sb, so, hh);
+        } else if (kind < 3.5) {
+            ac_tape(tb, sv, rq, tq, cb, sb, ch, hh);
+            ac_wow(tb, sv, rq, tq, cb, sb, ch, hh);
+        } else if (kind < 4.5) {
+            ac_ts(tb, sv, rq, cb, sb, hh);
+        } else if (kind < 5.5) {
+            ac_rat(tb, sv, rq, cb, sb, hh);
+        } else if (kind < 6.5) {
+            ac_muff(tb, sv, rq, cb, sb, hh);
+        } else if (kind < 7.5) {
+            ac_fuzz(tb, sv, rq, cb, sb, hh);
+        } else if (kind < 8.5) {
+            ac_triode(tb, sv, rq, cb, sb, so, hh);
+        } else if (kind < 9.5) {
+            ac_tone(tb, cq, sv, rq, cb, sb);
+        } else if (kind < 10.5) {
+            ac_opamp(tb, sv, rq, cb, sb, hh);
+        } else if (kind < 11.5) {
+            ac_xfmr(tb, sv, rq, cb, sb, hh);
+        } else if (kind < 12.5) {
+            ac_pwr(tb, cq, sv, rq, cb, sb, so, hh);
+        } else if (kind < 13.5) {
+            ac_sspwr(tb, sv, rq, cb, sb, so);
+        } else {
+            ac_gain(tb, cq, sv, rq, cb, sb, hh);
+        }
+        if (kind > 11.5) {
+            if (kind < 13.5) {
+                ac_out(tb, sv, rq, so, kind, hh);
+            }
+        }
+    }
+    return kind;
+}
+
+// Halfband upsampler (2x): even output = 24-tap polyphase FIR, odd output = the input 11 samples ago.
+// Ring of the last 32 inputs, written twice so reads need no wrap. rq[0] = even, rq[1] = odd.
+ac_up(rq, hq, ch, tb) {
+    hbo = ch * 192;
+    pos = peek(hq, hbo + 160);
+    x = peek(rq, 0);
+    poke(hq, x, hbo + pos);
+    poke(hq, x, hbo + pos + 32);
+    acc = 0;
+    for (j = 0; j < 24; j += 1) {
+        acc = acc + peek(tb, 512 + j) * peek(hq, hbo + pos + 32 - j);
+    }
+    poke(rq, 2 * acc, 0);
+    poke(rq, peek(hq, hbo + pos + 32 - 11), 1);
+    poke(hq, pos + 1 >= 32 ? 0 : pos + 1, hbo + 160);
+    return acc;
+}
+
+// Halfband downsampler, centred on the even phase (total up + down delay: exactly 23 samples):
+// z = sum h[2i] w0[n - i] + 0.5 w1[n - 12] (w0 / w1 = the two 2x outputs of this sample).
+// w0 ring: 32 doubled at 64.., w1 ring: 16 doubled at 128..; positions at 161 / 162.
+ac_dn(rq, hq, ch, tb) {
+    hbo = ch * 192;
+    pos = peek(hq, hbo + 161);
+    p0 = peek(hq, hbo + 162);
+    w0 = peek(rq, 2);
+    w1 = peek(rq, 0);
+    poke(hq, w0, hbo + 64 + pos);
+    poke(hq, w0, hbo + 96 + pos);
+    poke(hq, w1, hbo + 128 + p0);
+    poke(hq, w1, hbo + 144 + p0);
+    acc = 0;
+    for (j = 0; j < 24; j += 1) {
+        acc = acc + peek(tb, 512 + j) * peek(hq, hbo + 96 + pos - j);
+    }
+    acc = acc + 0.5 * peek(hq, hbo + 144 + p0 - 12);
+    poke(rq, acc, 0);
+    poke(hq, pos + 1 >= 32 ? 0 : pos + 1, hbo + 161);
+    poke(hq, p0 + 1 >= 16 ? 0 : p0 + 1, hbo + 162);
+    return acc;
+}
+
+// One sample of the whole chain for every channel. xi / xo: the template's input / output per channel.
+ac_sample(xi, xo, nch, ninit, tb, cq, sv, rq, hq, cr, tq, la, sr) {
+    hh = 500 / sr;
+    if (ninit > 0.5) {
+        for (j = 0; j < 352; j += 1) {
+            poke(sv, peek(tb, 1536 + j), j);
+            poke(sv, peek(tb, 1536 + j), 352 + j);
+        }
+        for (j = 0; j < 384; j += 1) {
+            poke(hq, 0, j);
+        }
+        for (j = 0; j < 2048; j += 1) {
+            poke(cr, 0, j);
+        }
+        for (j = 0; j < 4096; j += 1) {
+            poke(tq, 0, j);
+        }
+    }
+    vref = peek(tb, 1);
+    osc = peek(tb, 2);
+    irn = peek(tb, 3);
+    spk = peek(tb, 4);
+    yy = 0;
+    for (ch = 0; ch < nch; ch += 1) {
+        so = ch * 352;
+        poke(rq, peek(xi, ch) * vref, 0);
+        for (it = 0; it < 22; it += 1) {
+            if (it == 1) {
+                ac_up(rq, hq, ch, tb);
+            }
+            if (it == 11) {
+                poke(rq, peek(rq, 0), 2);
+                poke(rq, peek(rq, 1), 0);
+            }
+            if (it == 21) {
+                ac_dn(rq, hq, ch, tb);
+            }
+            kk = it < 1 ? 0 : (it < 11 ? it : (it < 21 ? it - 10 : 11));
+            ac_step(kk, so, ch, tb, cq, sv, rq, tq, it < 1 ? 2 * hh : (it > 20 ? 2 * hh : hh));
+        }
+        yy = peek(rq, 0);
+        if (spk > 0.5) {
+            if (irn > 0.5) {
+                co = ch * 1024;
+                cp = peek(sv, so + 338);
+                poke(cr, yy, co + cp);
+                poke(cr, yy, co + cp + 512);
+                acc = 0;
+                for (j = 0; j < irn; j += 1) {
+                    acc = acc + peek(tb, 1024 + j) * peek(cr, co + cp + 512 - j);
+                }
+                yy = acc;
+                poke(sv, cp + 1 >= 512 ? 0 : cp + 1, so + 338);
+            }
+        }
+        poke(xo, fixnan(yy * osc), ch);
+    }
+    for (j = 0; j < 12; j += 1) {
+        poke(la, peek(sv, j * 24 + 23), j);
+    }
+    poke(la, peek(sv, 327), 40);
+    poke(la, peek(sv, 341), 41);
+    poke(la, peek(sv, 330), 42);
+    poke(la, peek(sv, 331), 43);
+    return yy;
+}

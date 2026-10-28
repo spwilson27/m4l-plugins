@@ -109,6 +109,16 @@ function runDesign(slug) {
             if (m) onFace.add(m[1]);
         }
     }
+    // Engine-swapped widgets: Circuit / Speaker are hidden in the saved state and take the place of Model / Load when
+    // Engine = Analog (ampApplyLayout): reachable if they share the rect of the control they replace.
+    const sameRect = (a, b) => a && b && a.every((v, i) => Math.abs(v - b[i]) < 0.01);
+    const byIdF = Object.fromEntries(boxes.map((b) => [b.id, b]));
+    for (const [k, other] of [["circuit", "obj-ctrl-model"], ["speaker", "obj-load-btn"]]) {
+        const b = byIdF["obj-ctrl-" + k], o = byIdF[other];
+        if (!b) continue;
+        check(b.hidden === 1 && o && !o.hidden && sameRect(b.presentation_rect, o.presentation_rect), `${slug}: ${k} is hidden on ${other}'s rect (shown by the Engine switch)`);
+        if (b.presentation && sameRect(b.presentation_rect, o && o.presentation_rect)) onFace.add(k);
+    }
     // Script.
     const code = viz.textfile.text;
     const { sb, rec, outs } = makeSandbox(vw, vh);

@@ -50,14 +50,15 @@ BUILTIN = ["clean", "magna", "bass", "chime", "drive", "crunch", "splawn",
 
 def amp_params():
     out = subprocess.run(["node", "-e", "const A=require('./src/amp_config.js');"
-                          "console.log(JSON.stringify({p:A.AMP_PARAMS,k:A.AMP_PARAM_KEYS,s:A.AMP_SCOPE,w:A.AMP_WBANK,c:A.AMP_CF_SAMPS}))"],
+                          "global.ampFillHooks=A.ampFillHooks;global.ampBiquad=A.ampBiquad;const AA=require('./src/amp_analog.js');"
+                          "console.log(JSON.stringify({p:A.AMP_PARAMS,k:A.AMP_PARAM_KEYS,s:A.AMP_SCOPE,w:A.AMP_WBANK,c:A.AMP_CF_SAMPS,a:AA.AA_BANK}))"],
                          cwd=ROOT, capture_output=True, text=True, check=True)
     return json.loads(out.stdout)
 
 
-def template_text():
+def template_text(name="amp_core.genexpr"):
     lines = []
-    for ln in sc.read(os.path.join(SRC, "amp_core.genexpr")).split("\n"):
+    for ln in sc.read(os.path.join(SRC, name)).split("\n"):
         if ln.strip().startswith("//@NAM_"):   # the placeholders; a comment that only mentions them is dropped
             lines.append(ln.strip())
             continue
@@ -91,7 +92,8 @@ def all_slugs():
 
 
 def face_code(design, header):
-    parts = [header, sc.read(os.path.join(SRC, "amp_config.js")), sc.read(os.path.join(SRC, "amp_engine.js"))]
+    parts = [header, sc.read(os.path.join(SRC, "amp_config.js")), sc.read(os.path.join(SRC, "amp_analog.js")),
+             sc.read(os.path.join(SRC, "amp_engine.js"))]
     for f in design.FACE_FILES:
         parts.append(sc.read(os.path.join(SRC, f)))
     return "\n".join(p.rstrip() + "\n" for p in parts)
@@ -210,6 +212,17 @@ def build(design, meta, header):
     if getattr(design, "VIZ_IGNORECLICK", False):
         boxes[0]["box"]["ignoreclick"] = 1
     lines = []
+    # Preview builds (AMP_PREVIEW_CIRCUIT=<index> AMP_PREVIEW_OUT=<file>): the saved state shows the Analog face of that
+    # circuit (render_preview.py draws the saved layout and initial values only). Never for the shipped device.
+    pc = os.environ.get("AMP_PREVIEW_CIRCUIT")
+    if pc is not None:
+        widgets = {k: dict(v) for k, v in widgets.items()}
+        widgets["model"]["hidden"] = 1
+        widgets["circuit"]["hidden"] = 0
+        widgets["speaker"]["hidden"] = 0
+        P = dict(P)
+        P["engine"] = list(P["engine"]); P["engine"][4] = 1
+        P["circuit"] = list(P["circuit"]); P["circuit"][4] = int(pc)
     for i, key in enumerate(keys):
         boxes.append(widget(key, P[key], widgets.get(key), i))
         boxes.append(sc.newobj(f"obj-ui-{key}", f"prepend set_{key}", 640, 40 + 22 * i, 120))
@@ -218,6 +231,8 @@ def build(design, meta, header):
     boxes.append(drop_box(getattr(design, "DROP", None), getattr(design, "DROP_INVISIBLE", False)))
     if getattr(design, "LOAD", None):
         boxes.append(load_button(design.LOAD))
+        if pc is not None:
+            boxes[-1]["box"]["hidden"] = 1
         lines.append(sc.line("obj-load-btn", 0, "obj-opendialog"))
     for lb in getattr(design, "LABELS", []) or []:
         boxes.append(label(lb[0], lb[1], lb[2], lb[3] if len(lb) > 3 else 9.0, lb[4] if len(lb) > 4 else None,
@@ -226,14 +241,19 @@ def build(design, meta, header):
         sc.newobj("obj-plugin", "plugin~", 20, 420, 60, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
         sc.newobj("obj-plugout", "plugout~", 20, 560, 70, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
         sc.newobj("obj-genin", "gate 1 1", 160, 420, 60, numinlets=2, numoutlets=1, outlettype=[""]),
+        sc.newobj("obj-genin-a", "gate 1 1", 240, 420, 60, numinlets=2, numoutlets=1, outlettype=[""]),
+        sc.newobj("obj-genroute", "route a", 160, 390, 60, numoutlets=2, outlettype=["", ""]),
         sc.newobj("obj-thisdevice", "live.thisdevice", 300, 20, 100, numoutlets=2, outlettype=["bang", "int"]),
         sc.message("obj-msg-init", "init_dsp", 300, 50, 60),
         sc.newobj("obj-t-init", "t b b", 300, 35, 40, numoutlets=2, outlettype=["bang", "bang"]),
         sc.newobj("obj-loadbang", "loadbang", 420, 20, 60, numoutlets=1, outlettype=["bang"]),
-        sc.message("obj-msg-names", "setnames ---ampscope ---ampw ---ampcf", 420, 50, 230),
+        sc.message("obj-msg-names", "setnames ---ampscope ---ampw ---ampcf ---ampscopea ---ampa ---ampcfa", 420, 50, 330),
         sc.newobj("obj-buf-scope", f"buffer~ ---ampscope @samps {meta['s']['SAMPS']}", 700, 20, 220, numoutlets=2, outlettype=["float", "bang"]),
         sc.newobj("obj-buf-w", f"buffer~ ---ampw @samps {2 * meta['w']}", 700, 50, 220, numoutlets=2, outlettype=["float", "bang"]),
         sc.newobj("obj-buf-cf", f"buffer~ ---ampcf @samps {meta['c']}", 700, 80, 220, numoutlets=2, outlettype=["float", "bang"]),
+        sc.newobj("obj-buf-scope-a", f"buffer~ ---ampscopea @samps {meta['s']['SAMPS']}", 940, 20, 220, numoutlets=2, outlettype=["float", "bang"]),
+        sc.newobj("obj-buf-a", f"buffer~ ---ampa @samps {2 * meta['a']}", 940, 50, 220, numoutlets=2, outlettype=["float", "bang"]),
+        sc.newobj("obj-buf-cf-a", f"buffer~ ---ampcfa @samps {meta['c']}", 940, 80, 220, numoutlets=2, outlettype=["float", "bang"]),
         sc.newobj("obj-route-out", "route param browse dropset", 160, 260, 170, numoutlets=4, outlettype=["", "", "", ""]),
         sc.newobj("obj-route-key", "route " + " ".join(keys), 160, 300, 400, numoutlets=len(keys) + 1, outlettype=[""] * (len(keys) + 1)),
         sc.newobj("obj-opendialog", "opendialog", 360, 300, 80, numoutlets=2, outlettype=["", "bang"]),
@@ -242,7 +262,7 @@ def build(design, meta, header):
         sc.newobj("obj-prep-dropfile", "prepend dropfile", 1300, 80, 100),
         sc.newobj("obj-testhook", "r #0-amptest", 300, 90, 90, numinlets=0, numoutlets=1, outlettype=[""]),
     ]
-    for oid, name in (("obj-plugin", "amp_plugin"), ("obj-plugout", "amp_plugout"), ("obj-genin", "amp_genin")):
+    for oid, name in (("obj-plugin", "amp_plugin"), ("obj-plugout", "amp_plugout"), ("obj-genin", "amp_genin"), ("obj-genin-a", "amp_genin_a")):
         for b in boxes:
             if b["box"]["id"] == oid:
                 b["box"]["varname"] = name
@@ -253,7 +273,10 @@ def build(design, meta, header):
         sc.line("obj-t-init", 0, "obj-msg-init"), sc.line("obj-msg-init", 0, "obj-viz"),
         sc.line("obj-loadbang", 0, "obj-msg-names"), sc.line("obj-msg-names", 0, "obj-viz"),
         sc.line("obj-testhook", 0, "obj-viz"),
-        sc.line("obj-viz", 1, "obj-genin", 1),
+        # gen messages: "a <msg>" go to the Analog shell's hub, the rest to the Neural shell's
+        sc.line("obj-viz", 1, "obj-genroute"),
+        sc.line("obj-genroute", 0, "obj-genin-a", 1),
+        sc.line("obj-genroute", 1, "obj-genin", 1),
         sc.line("obj-viz", 0, "obj-route-out"),
         sc.line("obj-route-out", 0, "obj-route-key"),
         sc.line("obj-route-out", 1, "obj-opendialog"),
@@ -269,16 +292,19 @@ def build(design, meta, header):
     doc = sc.patcher(boxes, lines, design.WIDTH, design.DESCRIPTION,
                      "Neural amp (NAM / Tone 3000 .nam captures) with tone stack, cab and gate.",
                      "audio, amp, neural, nam, guitar", 0)
-    sc.write_amxd(doc, os.path.join(ROOT, "devices", design.DEVICE + ".amxd"))
+    out = os.environ.get("AMP_PREVIEW_OUT") or os.path.join(ROOT, "devices", design.DEVICE + ".amxd")
+    sc.write_amxd(doc, out)
 
 
 def main():
     meta = amp_params()
     header = ("var AMP_TEMPLATE = " + json.dumps(template_text()) + ";\n"
+              + "var AMP_ANALOG_SRC = " + json.dumps(template_text("amp_analog_core.genexpr")) + ";\n"
               + "var AMP_BUILTIN = " + json.dumps(builtin_models(), separators=(",", ":")) + ";\n")
     for slug in sys.argv[1:] or all_slugs():
         design = load_design(slug)
-        build(design, meta, header + f'var AMP_FACE = "{design.SLUG}";\n')
+        pc = os.environ.get("AMP_PREVIEW_CIRCUIT")
+        build(design, meta, header + f'var AMP_FACE = "{design.SLUG}";\n' + (f"var AMP_PREVIEW_CIRCUIT = {int(pc)};\n" if pc is not None else ""))
 
 
 if __name__ == "__main__":
