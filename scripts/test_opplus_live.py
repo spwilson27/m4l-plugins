@@ -8,6 +8,8 @@ dsp    : Operator+'s deferred gen~ reports ready (Global opplus_trace).
 params : Operator+'s parameter list in Live holds every one of Operator's parameters (names, ranges).
 ab     : A/B: the same patch set on both through the LOM, the same clip on both tracks, both outputs captured at once;
          fundamental, harmonic levels and the 10 ms envelope must agree (gates below).
+plus   : Operator+ additions: oscillator types (spectra; Wavetable Shape 0 = Operator's sine), telemetry (voices, meters,
+         LFO phase, modulated cutoff), the filter display's spectrum, screenshots tests/out/opplus_live/plus_*.png.
 shots  : click every section of Operator+ (the same screen points as Operator's) and save crops to tests/out/opplus_live/,
          then scripts/opplus_compare.py --live builds previews/opplus_compare/.
 """
@@ -246,10 +248,102 @@ def shots():
     print("UI Section after clicks:", sel)
 
 
+PLUS = [
+    # name, Operator+ patch (on top of BASE), check
+    ("wt_sine", {"Osc-A Type": 1, "Osc-A Shape": 0.0}, "ref"),                     # Wavetable at Shape 0 = Operator's sine
+    ("pwm25", {"Osc-A Type": 3, "Osc-A Shape": (0.25 - 0.02) / 0.96 * 100}, "pwm25"),
+    ("ssaw100", {"Osc-A Type": 2, "Osc-A Shape": 100.0}, "spread"),
+]
+
+
+def diag(region="main"):
+    ov.js("messnamed('opplus_test', 'diag'); return 1;")
+    time.sleep(0.25)
+    return json.loads(ov.js("return String(new Global('opplus_diag').%s || '{}');" % region) or "{}")
+
+
+def hook(*args):
+    ov.js("messnamed('opplus_test', %s); return 1;" % ", ".join(json.dumps(a) for a in args))
+    time.sleep(0.3)
+
+
+def plus():
+    """Operator+ additions in Live: the new oscillator types (spectra, Wavetable Shape 0 against Operator's sine), telemetry
+    (voices, operator meters, LFO phase, modulated cutoff), the filter display's spectrum, and screenshots of the new views."""
+    note, f0 = 57, 220.0
+    for name, patch, kind in PLUS:
+        vals = dict(BASE)
+        ov.live(SET % json.dumps(vals))
+        ov.live(RESET % json.dumps(patch))
+        time.sleep(0.3)
+        ov.live(CLIP % (3.5, json.dumps([note])))
+        time.sleep(0.25)
+        cap = ov.capture(["OP REF", "OP PLUS"], 1.0)
+        ov.live("song.stop_playing()\nresult = 1")
+        time.sleep(0.4)
+        a, b = cap["OP REF"][0], cap["OP PLUS"][0]
+        ha, hb = harmonics(a, f0), harmonics(b, f0)
+        if kind == "ref":
+            errs = ["h%d %.1f/%.1f dB" % (k + 1, db(ha[k]), db(hb[k])) for k in range(4) if max(ha[k], hb[k]) > max(ha) * 0.1 and abs(db(ha[k]) - db(hb[k])) > 1.0]
+            check(not errs and abs(ov.rms(a[2400:]) - ov.rms(b[2400:])) < 0.05 * ov.rms(a[2400:]), "plus %-8s equals Operator's sine (rms %.4f / %.4f) %s" % (name, ov.rms(a[2400:]), ov.rms(b[2400:]), errs))
+        elif kind == "pwm25":
+            check(abs(hb[1] / hb[0] - 0.7071) < 0.04 and hb[3] / hb[0] < 0.04, "plus %-8s h2/h1 %.3f (0.707), h4/h1 %.3f (0)" % (name, hb[1] / hb[0], hb[3] / hb[0]))
+        else:
+            seg = b[2400:2400 + 33600]
+            frac = ov.goertzel(seg, f0) / max(ov.rms(seg) * 2 ** 0.5, 1e-9)
+            check(frac < 0.6 and ov.rms(seg) > 0.01, "plus %-8s fundamental spread over the detuned saws (%.2f of the level at f0, rms %.4f)" % (name, frac, ov.rms(seg)))
+    ov.live(RESET % json.dumps({"Osc-A Type": 0}))
+
+    # telemetry with a held chord: LFO on, filter with an envelope, Filter display open
+    vals = dict(BASE)
+    vals.update({"LFO On": 1, "LFO Rate": 90, "LFO Amt": 0.3, "Osc-A < LFO": 1, "Osc-A Wave": 9, "Filter On": 1, "Filter Freq": 0.45,
+                 "Fe Amount": 60, "Fe Decay": 0.55, "Fe Sustain": 0.2})
+    ov.live(SET % json.dumps(vals))
+    hook("test_set", "ui_section", 5)
+    hook("test_set", "ui_view_filter", 1)
+    ov.live(CLIP % (7.5, json.dumps([note, 64, 69])))
+    time.sleep(0.6)
+    d1 = diag()
+    g1 = diag("graph")
+    time.sleep(0.4)
+    d2 = diag()
+    g2 = diag("graph")
+    t1, t2, gt = d1.get("tel", {}), d2.get("tel", {}), g2.get("tel", {})
+    check(t1.get("n", 0) >= 3, "telemetry: %s sounding voices (3 notes)" % t1.get("n"))
+    check((t1.get("meter") or [0])[0] > 0.3, "telemetry: operator A meter %.2f" % (t1.get("meter") or [0])[0])
+    check(abs(t1.get("lph", 0) - t2.get("lph", 0)) > 1e-3, "telemetry: the LFO phase moves (%.3f -> %.3f)" % (t1.get("lph", 0), t2.get("lph", 0)))
+    base = 30 * (18500 / 30) ** 0.45
+    check(t1.get("fc", 0) > 0 and abs(math.log(max(t1.get("fc", 1), 1) / base)) > 0.05, "telemetry: modulated cutoff %.0f Hz (set %.0f Hz)" % (t1.get("fc", 0), base))
+    sp = gt.get("spec") or {}
+    check(bool(sp) and 150 < sp.get("peakHz", 0) < 700, "filter display: spectrum peak %.0f Hz %.1f dBFS (post %.1f)" % (sp.get("peakHz", 0), sp.get("peakDb", 0), sp.get("postDb", 0)))
+    os.makedirs(OUT, exist_ok=True)
+    ov.live("song.view.selected_track = song.tracks[1]\nsong.view.select_device(song.tracks[1].devices[0])\nresult = 1")
+    time.sleep(1.0)
+    shot("plus_filter")
+    hook("test_set", "ui_section", 4)
+    hook("test_set", "ui_view_lfo", 1)
+    time.sleep(0.5)
+    shot("plus_lfo")
+    hook("test_set", "ui_section", 0)
+    hook("test_set", "ui_view_a", 0)
+    time.sleep(0.5)
+    shot("plus_env")
+    ov.live(RESET % json.dumps({"Osc-A Type": 2, "Osc-A Shape": 70.0}))
+    hook("test_set", "ui_view_a", 1)
+    time.sleep(0.5)
+    shot("plus_osc")
+    ov.live("song.stop_playing()\nresult = 1")
+    ov.live(RESET % json.dumps({"Osc-A Type": 0, "Osc-A Shape": 50.0}))
+    hook("test_set", "ui_view_a", 0)
+    print("plus screenshots in", OUT, "(plus_*.png)")
+    print("diag", json.dumps(d1)[:400])
+    print("graph", json.dumps(g1.get("tel"))[:300])
+
+
 def main(argv):
     what = argv[1:] or ["all"]
     if "all" in what:
-        what = ["setup", "dsp", "params", "ab", "shots"]
+        what = ["setup", "dsp", "params", "ab", "plus", "shots"]
     for w in what:
         globals()[w]()
     print("%d failed" % len(fails))

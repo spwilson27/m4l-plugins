@@ -2,7 +2,8 @@
 """Build devices/Operator+.amxd: a Max for Live recreation of Ableton Operator (AGENTS.md section "Operator+").
 
   python3 scripts/build_opplus.py [--out <file.amxd>]
-Env (previews only): OP_SECTION=<0..7> / OP_VIEW=<0|1> save that section / view as the initial UI state.
+Env (previews only): OP_SECTION=<0..7> / OP_VIEW=<0|1> save that section / view as the initial UI state; OP_INIT='{"key": v}'
+overrides parameter initial values; OP_TEL=1 makes preview() draw fake telemetry (3 sounding voices, a spectrum).
 
 Structure (Max Instrument, 725 x 169):
   obj-face  v8ui "main"  (whole face, ignoreclick: draws every control; engine: cfg, wavetables, voices, deferred gen~)
@@ -26,7 +27,8 @@ import opplus_spec  # noqa: E402
 ROOT = sc.ROOT_DIR
 OUT = os.path.join(ROOT, "devices", "Operator+.amxd")
 W, H = L.W, L.H
-BUF = {"cfg": ("---opcfg", 448), "voices": ("---opvoices", 32 * 8), "waves": ("---opwaves", 26 * 8 * 2049), "scope": ("---opscope", 528)}
+OP_NTAB, OP_SCOPE_SIZE = 34, 776 + 2 * 2048   # = OP_NTAB / OP_SCOPE_SIZE in src/opplus_config.js (tests/test_opplus.js checks)
+BUF = {"cfg": ("---opcfg", 448), "voices": ("---opvoices", 32 * 8), "waves": ("---opwaves", OP_NTAB * 8 * 2049), "scope": ("---opscope", OP_SCOPE_SIZE)}
 
 CLEAR = [0.0, 0.0, 0.0, 0.0]
 FACE_COLORS = {
@@ -111,6 +113,10 @@ def visible_initial(it, sel):
         return True
     P = {p["key"]: p for p in opplus_spec.spec()}
     v = lambda k: P[k]["init"]  # noqa: E731
+    if c[:-1] == "wave":
+        return v("osc_%s_type" % c[-1].lower()) < 0.5
+    if c[:-1] == "shape":
+        return v("osc_%s_type" % c[-1].lower()) > 0.5
     if c.startswith("nofix"):
         return v(c[5].lower() + "_fix_on") < 0.5
     if c.startswith("fix"):
@@ -154,6 +160,8 @@ def face_script(region, layout, ubnames, params):
         pre.append("var OP_PREVIEW_SECTION = %d;" % int(os.environ["OP_SECTION"]))
     if os.environ.get("OP_VIEW"):
         pre.append("var OP_PREVIEW_VIEW = %d;" % int(os.environ["OP_VIEW"]))
+    if os.environ.get("OP_TEL"):
+        pre.append("var OP_PREVIEW_TEL = 1;")
     parts = ["\n".join(pre) + "\n", sc.read(os.path.join(ROOT, "src", "spectral_theme.js")),
              sc.read(os.path.join(ROOT, "src", "opplus_config.js")), sc.read(os.path.join(ROOT, "src", "opplus_ui.js"))]
     return "\n".join(parts)
@@ -162,6 +170,8 @@ def face_script(region, layout, ubnames, params):
 def build(out=OUT):
     params = opplus_spec.spec()
     P = {p["key"]: p for p in params}
+    for k, v in json.loads(os.environ.get("OP_INIT") or "{}").items():
+        P[k]["init"] = v
     sel = int(os.environ.get("OP_SECTION", "0"))
     if os.environ.get("OP_SECTION"):
         P["ui_section"]["init"] = sel

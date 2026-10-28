@@ -120,8 +120,13 @@ def items():
     for i, L in enumerate("ABCD"):
         g, l = "s%d" % i, L.lower()
         env_grid(l + "e", g, vel_key="osc_%s_lev_lt_vel" % l, key_key="osc_%s_lev_lt_key" % l)
-        it.append(_menu("osc_%s_wave" % l, COL[4], VAL_Y[0] - 6.0, 40.0, g, label="Wave", ly=LBL_Y[0], style="lcdalt"))
-        it.append({"key": None, "t": "waveicon", "x": 460.5, "y": 80.0, "w": 36.0, "h": 17.0, "osc": i, "g": g})
+        it.append(_menu("osc_%s_wave" % l, COL[4], VAL_Y[0] - 6.0, 40.0, g, label="Wave", ly=LBL_Y[0], style="lcdalt", cond="wave" + L))
+        it.append({"key": None, "t": "waveicon", "x": 460.5, "y": 80.0, "w": 36.0, "h": 17.0, "osc": i, "g": g, "cond": "wave" + L})
+        # Operator+: oscillator Type in the free End slot of the oscillator envelope grid; Shape / Shape<LFO replace Wave and
+        # its icon while the Type is not Operator
+        it.append(_menu("osc_%s_type" % l, COL[2], VAL_Y[2] - 6.0, 41.0, g, label="Type", ly=LBL_Y[2], style="lcdalt"))
+        it.append(_lcd("osc_%s_shape" % l, 4, 0, "Shape", g, cond="shape" + L))
+        it.append(_lcd("osc_%s_shp_lt_lfo" % l, 5, 0, "Shp<LFO", g, cond="shape" + L))
         it.append(_lcd("osc_%s_feedb" % l, 4, 1, "Feedback", g))
         it.append(_menu("osc_%s_repeat" % l, COL[5], VAL_Y[1] - 6.0, 44.0, g, label="Repeat", ly=LBL_Y[1]))
         it.append(_sq("osc_%s_retrig" % l, COL[4], VAL_Y[2] - 5.0, 10.0, g, text="R", style="rbox"))

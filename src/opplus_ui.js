@@ -24,7 +24,9 @@ var opUser = [opDefaultUser(), opDefaultUser(), opDefaultUser(), opDefaultUser()
 var opUserN = [64, 64, 64, 64];   // partials shown in the harmonics editor (16 / 32 / 64)
 var opRt = { bpm: 120, playing: 0, bend: 0, mw: 0, at: 0 };
 var opSr = 48000, opWavesSr = 0;
-var opTel = { stage: [0, 0, 0, 0, 0, 0, 0], lvl: [0, 0, 0, 0, 0, 0, 0], active: 0, lfo: 0, fc: 0, frame: -1 };
+var opTel = { stage: [0, 0, 0, 0, 0, 0, 0], lvl: [0, 0, 0, 0, 0, 0, 0], active: 0, lfo: 0, fc: 0, k: 1, lph: 0, frame: -1,
+    voices: [], meter: [0, 0, 0, 0], lfoHist: [], spec: null };
+var opMainDrawn = 0;   // Date.now() of the last telemetry redraw of the main face (throttled to ~15 fps)
 var opAlloc = opCreateAllocator();
 var opHidden = {};
 var opGraphH = 61;
@@ -64,6 +66,8 @@ function opCond(c) {
     var m;
     if ((m = /^nofix([A-D])$/.exec(c))) return opVals[m[1].toLowerCase() + "_fix_on"] < 0.5;
     if ((m = /^fix([A-D])$/.exec(c))) return opVals[m[1].toLowerCase() + "_fix_on"] > 0.5;
+    if ((m = /^wave([A-D])$/.exec(c))) return Math.round(opVals["osc_" + m[1].toLowerCase() + "_type"]) === 0;
+    if ((m = /^shape([A-D])$/.exec(c))) return Math.round(opVals["osc_" + m[1].toLowerCase() + "_type"]) > 0;
     if (c === "lfosync") return Math.round(opVals.lfo_range) === 2;
     if (c === "lfonosync") return Math.round(opVals.lfo_range) !== 2;
     if (c === "lphp") return Math.round(opVals.filter_type) <= 1;
@@ -99,7 +103,7 @@ function pv(key, v) {
     opVals[key] = n;
     if (OP_IS_MAIN) {
         opWriteCfg();
-        if (/^ui_|_fix_on$|^lfo_range$|^filter_type$|^filter_circuit|_mode$/.test(key)) opApplyVisibility();
+        if (/^ui_|_fix_on$|^lfo_range$|^filter_type$|^filter_circuit|_mode$|_type$/.test(key)) opApplyVisibility();
         if (/^osc_[abcd]_wave$/.test(key) && Math.round(n) === 22) opWriteUser("abcd".indexOf(key.charAt(4)));
     }
     mgraphics.redraw();
@@ -145,6 +149,11 @@ function opBuildWaves() {
             try { b.poke(1, (w * OP_NMIP + m) * (N + 1), t); } catch (e) { return false; }
         }
     }
+    for (w = OP_WT0; w < OP_WT0 + 8; w++) {
+        for (m = 0; m < OP_NMIP; m++) {
+            try { b.poke(1, (w * OP_NMIP + m) * (N + 1), opFastTable(w, m, opSr, null)); } catch (e) { return false; }
+        }
+    }
     for (var o = 0; o < 4; o++) opWriteUser(o);
     opWavesSr = opSr;
     return true;
@@ -152,7 +161,7 @@ function opBuildWaves() {
 
 /** opWaveTable with a sine lookup table (the build of all 22 x 8 tables takes a few ms). */
 function opFastTable(w, m, sr, user) {
-    var N = OP_TBL, h = w >= 22 ? user : opWaveHarmonics(w);
+    var N = OP_TBL, h = (w >= 22 && w < OP_WT0) ? user : opWaveHarmonics(w);
     if (!h) return opWaveTable(w, m, sr, user, 12345 + w);
     var lim = Math.max(1, Math.floor((sr * 0.5) / (40 * Math.pow(2, m)) - 0.0001));
     var out = new Array(N + 1), i, n;
@@ -266,8 +275,17 @@ function diag() {
     var g = new Global("opplus_diag");
     var d = { ready: opDsp.ready, error: opDsp.error, createdAt: opDsp.createdAt, retries: opDsp.retries };
     g[OP_IS_MAIN ? "main" : "graph"] = JSON.stringify({ dsp: d, names: opNames, inits: opInits, err: opInitErr, sec: opSel(),
-        alive: opAlive(), click: opLastClick, sr: opSr, wavesSr: opWavesSr, active: opTel.active });
+        alive: opAlive(), click: opLastClick, sr: opSr, wavesSr: opWavesSr, active: opTel.active, tel: opTelSummary() });
 }
+function opTelSummary() {
+    var sp = opTel.spec, pk = -1, pv2 = -200;
+    if (sp) for (var i = 0; i < sp.pre.length; i++) if (sp.pre[i] > pv2) { pv2 = sp.pre[i]; pk = i; }
+    return { n: opTel.voices.length, meter: opTel.meter, fc: opTel.fc, lph: opTel.lph, lfo: opTel.lfo,
+        stage: opTel.stage, spec: sp ? { peakHz: 20 * Math.pow(1000, (pk + 0.5) / OP_SPEC_PTS), peakDb: pv2,
+            postDb: sp.post[pk] } : null };
+}
+/** Test hook (receive opplus_test): test_set <key> <value> changes a parameter as the face does (through its live.* object). */
+function test_set(key, v) { if (OP_IS_MAIN) opSet(String(key), Number(v)); }
 
 // ---------------- deferred DSP (AGENTS.md 1d; pattern of src/spectral_dsp.js) ----------------
 var opDsp = { ready: 0, error: "", createdAt: 0, c0: -1, task: null, conf: null, retries: 0 };
@@ -469,19 +487,107 @@ function opPollTel() {
     var b = opBuf(opNames.scope);
     if (!b) return;
     var h;
-    try { h = b.peek(1, 0, 4); } catch (e) { return; }
+    try { h = b.peek(1, 0, 5); } catch (e) { return; }
     var act = Number(h[2]) || 0;
     if (!act && !opTel.active) return;
     opTel.active = act;
-    var v = opAlloc.newest();
-    if (!OP_IS_MAIN) v = opTelVoice;
     var a;
-    try { a = b.peek(1, 8 + v * 16, 16); } catch (e) { return; }
-    for (var e = 0; e < 7; e++) { opTel.lvl[e] = Number(a[e]); opTel.stage[e] = Number(a[7 + e]); }
-    opTel.lfo = Number(a[14]);
-    opTel.fc = Number(a[15]);
-    if (OP_IS_MAIN && v !== opTelVoiceSent) { opTelVoiceSent = v; outlet(1, "telvoice", v); }
-    if (!OP_IS_MAIN) mgraphics.redraw();
+    try { a = b.peek(1, OP_SCOPE.V, 32 * OP_SCOPE.VS); } catch (e) { return; }
+    opTelParse(a, OP_IS_MAIN ? opAlloc.newest() : opTelVoice);
+    if (OP_IS_MAIN) {
+        var v = opAlloc.newest();
+        if (v !== opTelVoiceSent) { opTelVoiceSent = v; outlet(1, "telvoice", v); }
+        var now = Date.now();
+        if (now - opMainDrawn > 66 || !act) { opMainDrawn = now; mgraphics.redraw(); }
+        return;
+    }
+    if (opSel() === 5 && opView(5) === 1 && act) opSpecUpdate(b, Number(h[4]) || 0);
+    mgraphics.redraw();
+}
+
+/** Telemetry blocks (OP_SCOPE) -> opTel: every sounding voice, the focus voice (newest) and the operator meters. */
+function opTelParse(a, focus) {
+    var S = OP_SCOPE, vs = [], e, k;
+    for (var v = 0; v < 32; v++) {
+        var o = v * S.VS;
+        if (!(Number(a[o + S.ON]) > 0.5)) continue;
+        var V = { v: v, lvl: [], stage: [], lfo: Number(a[o + S.LFO]), fc: Number(a[o + S.FC]), amp: [], lph: Number(a[o + S.LPH]),
+            note: Number(a[o + S.NOTE]), k: Number(a[o + S.K]) };
+        for (e = 0; e < 7; e++) { V.lvl.push(Number(a[o + S.LVL + e])); V.stage.push(Number(a[o + S.STG + e])); }
+        for (k = 0; k < 4; k++) V.amp.push(Number(a[o + S.AMP + k]));
+        if (v === focus) V.focus = 1;
+        vs.push(V);
+    }
+    opTel.voices = vs;
+    var F = null;
+    for (var i = 0; i < vs.length; i++) if (vs[i].focus) F = vs[i];
+    if (!F && vs.length) F = vs[vs.length - 1];
+    if (F) {
+        opTel.lvl = F.lvl; opTel.stage = F.stage; opTel.lfo = F.lfo; opTel.fc = F.fc; opTel.k = F.k; opTel.lph = F.lph;
+        opTel.lfoHist.push(F.lfo);
+        if (opTel.lfoHist.length > 90) opTel.lfoHist.shift();
+    }
+    for (k = 0; k < 4; k++) {
+        var mx = 0;
+        for (i = 0; i < vs.length; i++) mx = Math.max(mx, vs[i].amp[k] || 0);
+        var db = mx > 1e-6 ? 20 * Math.log(mx) / Math.LN10 : -99;
+        var n = Math.max(0, Math.min(1, (db + 60) / 60));
+        opTel.meter[k] = n >= opTel.meter[k] ? n : Math.max(n, opTel.meter[k] - 0.06);
+    }
+    if (!vs.length) { opTel.active = 0; opTel.meter = [0, 0, 0, 0]; opTel.lfoHist = []; }
+}
+
+// ---------------- spectrum of the filter's input / output (graph region, filter display only) ----------------
+var OP_SPEC_PTS = 96;
+function opFFT(re, im) {
+    var n = re.length, i, j, k, t;
+    for (i = 1, j = 0; i < n; i++) {
+        var bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (var len = 2; len <= n; len <<= 1) {
+        var ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+        for (i = 0; i < n; i += len) {
+            var cr = 1, ci = 0;
+            for (k = 0; k < len / 2; k++) {
+                var ur = re[i + k], ui = im[i + k];
+                var vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci, vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+                re[i + k] = ur + vr; im[i + k] = ui + vi;
+                re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+                t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+            }
+        }
+    }
+}
+/** Magnitudes in dBFS at OP_SPEC_PTS log-spaced points 20 Hz..20 kHz of ring x (Hann, oldest sample first). */
+function opSpectrumDb(x, sr) {
+    var N = x.length, re = new Array(N), im = new Array(N), i;
+    for (i = 0; i < N; i++) { re[i] = x[i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N)); im[i] = 0; }
+    opFFT(re, im);
+    var out = [];
+    for (var p = 0; p < OP_SPEC_PTS; p++) {
+        var f0 = 20 * Math.pow(1000, p / OP_SPEC_PTS), f1 = 20 * Math.pow(1000, (p + 1) / OP_SPEC_PTS);
+        var b0 = Math.max(1, Math.floor(f0 * N / sr)), b1 = Math.max(b0, Math.min(N / 2 - 1, Math.floor(f1 * N / sr)));
+        var m = 0;
+        for (var bi = b0; bi <= b1; bi++) m = Math.max(m, re[bi] * re[bi] + im[bi] * im[bi]);
+        out.push(10 * Math.log(Math.max(m, 1e-20)) / Math.LN10 + 20 * Math.log(4 / N) / Math.LN10);   // Hann: a 0 dBFS sine reads 0 dB
+    }
+    return out;
+}
+function opSpecUpdate(b, head) {
+    var S = OP_SCOPE, raw;
+    try { raw = b.peek(1, S.SPEC, 2 * S.SPECN); } catch (e) { return; }
+    var pre = [], post = [], st = (head + 1) % S.SPECN;
+    for (var i = 0; i < S.SPECN; i++) { var j = (st + i) % S.SPECN; pre.push(Number(raw[j]) || 0); post.push(Number(raw[S.SPECN + j]) || 0); }
+    var sr = opSr || 48000, a = opSpectrumDb(pre, sr), c = opSpectrumDb(post, sr);
+    var o = opTel.spec;
+    if (!o) o = opTel.spec = { pre: a.slice(), post: c.slice() };
+    for (i = 0; i < OP_SPEC_PTS; i++) {
+        o.pre[i] = a[i] >= o.pre[i] ? a[i] : o.pre[i] - 3;
+        o.post[i] = c[i] >= o.post[i] ? c[i] : o.post[i] - 3;
+    }
 }
 var opTelVoice = 0, opTelVoiceSent = -1;
 function telvoice(v) { opTelVoice = Math.round(Number(v)) || 0; }
@@ -526,6 +632,7 @@ function opMenuText(key, v) {
     var p = OP_BY_KEY[key], i = Math.round(v);
     if (/^osc_[abcd]_wave$/.test(key)) return OP_WAVE_SHORT[i] || "";
     if (key === "lfo_range") return ["L", "H", "S"][i] || "";
+    if (/^osc_[abcd]_type$/.test(key)) return ["FM", "Table", "Super", "PWM"][i] || "";
     if (key === "lfo_type") return ["Sine", "Square", "Triangle", "Saw Up", "Saw Down", "S&H", "Noise"][i] || p.items[i];
     return p.items[i] || "";
 }
@@ -609,7 +716,9 @@ function opTab(it, on) {
 
 function opLcd(it, on) {
     var p = OP_BY_KEY[it.key], v = opVals[it.key];
-    if (it.label) opT(it.label, it.lx, it.ly, opDisp(sptColor("live_lcd_title"), on), 9.5);
+    var lab = it.label;
+    if (/^osc_[abcd]_shape$/.test(it.key)) lab = ["Shape", "Position", "Detune", "Width"][Math.round(opVals["osc_" + it.key.charAt(4) + "_type"])] || lab;
+    if (lab) opT(lab, it.lx, it.ly, opDisp(sptColor("live_lcd_title"), on), 9.5);
     var col = it.style === "alt" ? opOrange() : (it.style === "dim" ? sptColor("live_lcd_title") : opCyan());
     if (/^osc_[abcd]_(phase)$/.test(it.key) || /^[abcd]_freq_lt_vel$/.test(it.key)) col = opOrange();
     var dim = !on;
@@ -675,14 +784,15 @@ function opWaveIcon(it, on) {
 }
 var opIconCache = {};
 function opFastTableCached(w, o) {
-    var key = w + ":" + (w >= 22 ? o + ":" + opUser[o].join(",") : "");
+    var key = w + ":" + ((w >= 22 && w < OP_WT0) ? o + ":" + opUser[o].join(",") : "");
     if (!opIconCache[key]) {
         if (!opSinTab) { opSinTab = []; for (var i = 0; i < OP_TBL; i++) opSinTab.push(Math.sin(2 * Math.PI * i / OP_TBL)); }
-        opIconCache = {};
+        if (++opIconCacheN > 24) { opIconCache = {}; opIconCacheN = 1; }
         opIconCache[key] = opFastTable(w, 0, 48000, opUser[o]);
     }
     return opIconCache[key];
 }
+var opIconCacheN = 0;
 
 function opHeaders() {
     var s = opSel();
@@ -695,7 +805,7 @@ function opHeaders() {
     var on = opSectionOn(s);
     var v = opView(s);
     var right = ["Oscillator", "Oscillator", "Oscillator", "Oscillator", "LFO", "Filter", "Aux"][s];
-    var hasView = s < 4 || s === 5;
+    var hasView = s < 6;   // Operator+: the LFO section has a second view too (its waveform with live phases)
     var tc = opDisp(sptColor("live_lcd_title"), on);
     var lc = sptColor("live_lcd_frame");
     // left: Envelope
@@ -745,7 +855,44 @@ function opPaintMain() {
         }
     }
     opHeaders();
+    opShellLive();
     opDspPill();
+}
+
+/** Operator+ live indicators in the shell panels: an output meter per operator (right edge of its row), the LFO's waveform
+ * with a phase dot per voice (LFO panel), the modulated cutoff of the newest voice on the Freq dial. */
+function opShellLive() {
+    var k, act = opTel.active && opTel.voices.length;
+    for (k = 0; k < 4; k++) {
+        var y = [129, 86, 43, 0][k] + 4, h = 32, n = act ? opTel.meter[k] : 0;
+        opRect(205, y, 3, h, sptMix(sptColor("live_control_bg"), [0, 0, 0, 1], 0.35));
+        if (n > 0.01) opRect(205, y + h * (1 - n), 3, h * n, opVals["osc_" + "abcd"[k] + "_on"] > 0.5 ? OP_OSC_COL[k] : opOff());
+    }
+    // LFO panel: one cycle of the LFO waveform with the voices' phases
+    var lon = opVals.lfo_on > 0.5, ty = Math.round(opVals.lfo_type), x0 = 565, w = 40, ym = 11, ha = 5.5;
+    sptRgba(opDim(sptMix(opLabelCol(), sptColor("live_surface_bg"), 0.3), lon));
+    mgraphics.set_line_width(1);
+    for (var i = 0; i <= 40; i++) {
+        var yy = ym - opLfoWave(ty, i / 40) * ha;
+        if (i === 0) mgraphics.move_to(x0, yy); else mgraphics.line_to(x0 + i * w / 40, yy);
+    }
+    mgraphics.stroke();
+    if (lon && act) {
+        var amt = Math.max(1e-3, opVals.lfo_amt * opVals.lfo_amt);
+        for (i = 0; i < opTel.voices.length; i++) {
+            var V = opTel.voices[i], wv = ty >= 5 ? Math.max(-1, Math.min(1, V.lfo / amt)) : opLfoWave(ty, V.lph);
+            sptRgba(V.focus ? opCyan() : sptMix(opCyan(), sptColor("live_surface_bg"), 0.5));
+            mgraphics.arc(x0 + w * V.lph, ym - wv * ha, V.focus ? 2 : 1.4, 0, Math.PI * 2);
+            mgraphics.fill();
+        }
+    }
+    // Freq dial: the newest voice's modulated cutoff as a dot on the arc
+    if (act && opVals.filter_on > 0.5 && opTel.fc > 0) {
+        var n2 = Math.max(0, Math.min(1, Math.log(opTel.fc / 30) / Math.log(18500 / 30))), ang = Math.PI * 0.5 + Math.PI * 1.5 * n2;
+        sptRgba(sptColor("live_display_handle_two"));
+        mgraphics.arc(625.5 + Math.cos(ang) * 8.5, 43 + 24.5 + Math.sin(ang) * 8.5, 1.9, 0, Math.PI * 2);
+        mgraphics.fill();
+    }
 }
 
 /** Shell dials dim with their section's on switch (LFO: Rate / Amount, Filter: Freq / Res, Pitch: Pitch Env); other shell controls do not. */
@@ -830,17 +977,16 @@ function opDrawEnv(s, on) {
         mgraphics.rectangle(G.x[i] - 2.5, G.y[i] - 2.5, 5, 5);
         mgraphics.stroke();
     }
-    // playing position of the newest voice
-    if (opTel.active && on) {
-        var st = opTel.stage[s], stg = Math.floor(st), fr = st - stg;
-        if (stg >= 1 && stg <= 4) {
-            var xa = stg === 3 ? G.x[2] + (G.x[3] - G.x[2]) * 0.5 : G.x[stg - 1] + (G.x[stg === 4 ? 4 : stg] - G.x[stg === 4 ? 3 : stg - 1]) * fr;
-            if (stg === 4) xa = G.x[3] + (G.x[4] - G.x[3]) * fr;
-            var yy2 = opEnvLevelY(s, opTel.lvl[s], G);
-            sptRgba(sptColor("live_display_handle_two"));
-            mgraphics.arc(xa, yy2, 2.2, 0, Math.PI * 2);
-            mgraphics.fill();
-        }
+    // playing positions: one dot per sounding voice, the newest brightest
+    for (i = 0; i < opTel.voices.length && on; i++) {
+        var V = opTel.voices[i], st = V.stage[s], stg = Math.floor(st), fr = st - stg;
+        if (stg < 1 || stg > 4) continue;
+        var xa = stg === 3 ? G.x[2] + (G.x[3] - G.x[2]) * 0.5 : G.x[stg - 1] + (G.x[stg] - G.x[stg - 1]) * fr;
+        if (stg === 4) xa = G.x[3] + (G.x[4] - G.x[3]) * fr;
+        var yy2 = opEnvLevelY(s, V.lvl[s], G);
+        sptRgba(V.focus ? sptColor("live_display_handle_two") : sptMix(sptColor("live_display_handle_two"), sptColor("live_lcd_bg"), 0.45));
+        mgraphics.arc(xa, yy2, V.focus ? 2.4 : 1.7, 0, Math.PI * 2);
+        mgraphics.fill();
     }
 }
 function opEnvLevelY(s, lvl, G) {
@@ -876,40 +1022,63 @@ function opDrawHarmonics(o, on) {
     }
 }
 
-/** Magnitude response (dB) of the current filter at frequency f (approximation of the SVF, used for display only). */
-function opFilterDb(f) {
-    var fc = opFilterHz(opNorm(OP_BY_KEY.filter_freq, opVals.filter_freq));
-    var res = opVals.filter_res;
-    var lq = res < 0.5 ? -0.693 + res * 2.25 : (res < 0.9 ? 0.432 + (res - 0.5) * 1.15 : (res < 1 ? 0.892 + (res - 0.9) * 4.16 : 1.308 + (res - 1) * 7.65));
-    var k = 1 / Math.exp(lq);
-    var t = Math.round(opVals.filter_type), w = f / fc, ns = opVals.filter_slope > 0.5 ? 2 : 1;
-    var re = 1 - w * w, im = k * w, den = Math.sqrt(re * re + im * im);
-    var lp = 1 / den, hp = w * w / den, bp = k * w / den, nt = Math.abs(1 - w * w) / den;
-    var m = opVals.filter_morph * 4, seg = Math.min(Math.floor(m), 3), fr = m - seg;
-    var arr = [lp, bp, hp, nt, lp];
-    var g = t === 0 ? lp : (t === 1 ? hp : (t === 2 ? bp : (t === 3 ? nt : arr[seg] + (arr[seg + 1] - arr[seg]) * fr)));
-    return 20 * Math.log(Math.max(Math.pow(g, ns), 1e-6)) / Math.LN10;
-}
+/** Magnitude response (dB) of the current filter at frequency f (set cutoff, no modulation). */
+function opFilterDb(f) { return opFilterDbAt(f, opFilterHz(opNorm(OP_BY_KEY.filter_freq, opVals.filter_freq)), opFilterK()); }
 
 function opDrawFilter(on) {
     var gc = sptColor("live_lcd_frame"), x0 = 6, x1 = OP_GW - 6;
     var fx = function (f) { return x0 + (Math.log(f / 20) / Math.log(1000)) * (x1 - x0); };
     var dy = function (d) { return 8 + (24 - Math.max(-36, Math.min(24, d))) / 60 * (OP_GH - 16); };
-    var fs = [100, 1000, 10000];
-    for (var i = 0; i < fs.length; i++) {
+    var sy = function (d) { return OP_GH - 2 - Math.max(0, Math.min(1, (d + 90) / 90)) * (OP_GH - 6); };   // spectrum: -90..0 dBFS
+    var fs = [100, 1000, 10000], i, f;
+    for (i = 0; i < fs.length; i++) {
         opRect(fx(fs[i]), 2, 1, OP_GH - 4, gc);
         opT(["100", "1k", "10k"][i], fx(fs[i]) + 2, OP_GH - 8, sptColor("live_display_scale_text"), 8);
     }
     for (var d = -24; d <= 12; d += 12) opRect(x0, dy(d), x1 - x0, 1, gc);
-    sptRgba(opDisp(sptColor("live_display_line_two"), on));
-    mgraphics.set_line_width(1.5);
+    // spectrum of the filter's input (filled) and output (line) while notes sound
+    var S = opTel.spec, P = OP_SPEC_PTS;
+    if (S && opTel.active) {
+        sptRgba(sptMix(sptColor("live_lcd_title"), sptColor("live_lcd_bg"), 0.7));
+        mgraphics.move_to(x0, OP_GH - 2);
+        for (i = 0; i < P; i++) mgraphics.line_to(x0 + (i + 0.5) / P * (x1 - x0), sy(S.pre[i]));
+        mgraphics.line_to(x1, OP_GH - 2);
+        mgraphics.close_path();
+        mgraphics.fill();
+        sptRgba(sptMix(sptColor("live_display_line_one"), sptColor("live_lcd_bg"), 0.25));
+        mgraphics.set_line_width(1);
+        for (i = 0; i < P; i++) {
+            var yy = sy(S.post[i]), xx = x0 + (i + 0.5) / P * (x1 - x0);
+            if (i === 0) mgraphics.move_to(xx, yy); else mgraphics.line_to(xx, yy);
+        }
+        mgraphics.stroke();
+    }
+    var fc = opFilterHz(opNorm(OP_BY_KEY.filter_freq, opVals.filter_freq)), k = opFilterK();
+    var live = opTel.active && on && opTel.fc > 0 && Math.abs(Math.log(opTel.fc / fc)) + Math.abs(opTel.k - k) > 0.01;
+    // the set response (dim while a modulated one is shown) and the live response of the newest voice
+    sptRgba(opDisp(live ? sptMix(sptColor("live_display_line_two"), sptColor("live_lcd_bg"), 0.55) : sptColor("live_display_line_two"), on));
+    mgraphics.set_line_width(live ? 1 : 1.5);
     for (i = 0; i <= 120; i++) {
-        var f = 20 * Math.pow(1000, i / 120), y = dy(opFilterDb(f));
-        if (i === 0) mgraphics.move_to(fx(f), y); else mgraphics.line_to(fx(f), y);
+        f = 20 * Math.pow(1000, i / 120);
+        if (i === 0) mgraphics.move_to(fx(f), dy(opFilterDbAt(f, fc, k))); else mgraphics.line_to(fx(f), dy(opFilterDbAt(f, fc, k)));
     }
     mgraphics.stroke();
-    var fc = opFilterHz(opNorm(OP_BY_KEY.filter_freq, opVals.filter_freq));
-    var hy = dy(Math.min(24, opFilterDb(fc)));
+    if (live) {
+        sptRgba(sptColor("live_display_line_two"));
+        mgraphics.set_line_width(1.5);
+        for (i = 0; i <= 120; i++) {
+            f = 20 * Math.pow(1000, i / 120);
+            if (i === 0) mgraphics.move_to(fx(f), dy(opFilterDbAt(f, opTel.fc, opTel.k))); else mgraphics.line_to(fx(f), dy(opFilterDbAt(f, opTel.fc, opTel.k)));
+        }
+        mgraphics.stroke();
+        for (i = 0; i < opTel.voices.length; i++) {
+            var V = opTel.voices[i];
+            sptRgba(V.focus ? sptColor("live_display_handle_two") : sptMix(sptColor("live_display_handle_two"), sptColor("live_lcd_bg"), 0.45));
+            mgraphics.arc(fx(Math.max(20, Math.min(20000, V.fc))), dy(Math.min(24, opFilterDbAt(V.fc, V.fc, V.k))), V.focus ? 2.4 : 1.7, 0, Math.PI * 2);
+            mgraphics.fill();
+        }
+    }
+    var hy = dy(Math.min(24, opFilterDbAt(fc, fc, k)));
     sptRgba(opDisp(sptColor("live_display_handle_one"), on));
     mgraphics.set_line_width(1.5);
     mgraphics.arc(fx(fc), hy, 4, 0, Math.PI * 2);
@@ -959,13 +1128,156 @@ function opPaintGraph() {
     opRect(0, 0, OP_GW, OP_GH, sptColor("live_lcd_bg"));
     var s = opSel(), on = opSectionOn(s);
     if (s === 7) { opDrawAlgos(); return; }
-    if (s < 4 && opView(s) === 1) { opDrawHarmonics(s, on); return; }
+    if (s < 4 && opView(s) === 1) {
+        var oty = Math.round(opVals["osc_" + "abcd"[s] + "_type"]);
+        if (oty > 0) opDrawOscType(s, oty, on); else opDrawHarmonics(s, on);
+        return;
+    }
+    if (s === 4 && opView(s) === 1) { opDrawLfo(on); return; }
     if (s === 5 && opView(s) === 1) { opDrawFilter(on); return; }
     opDrawEnv(s, on);
 }
 
 function paint() {
     if (OP_IS_MAIN) opPaintMain(); else opPaintGraph();
+}
+
+// ---------------- Operator+ displays: LFO, live filter, oscillator types ----------------
+/** LFO waveform (-1..1) of type ty at phase ph, as op_lfo computes it (S&H / Noise: a fixed random pattern for drawing). */
+function opLfoWave(ty, ph) {
+    ph = ph - Math.floor(ph);
+    if (ty === 0) return Math.sin(ph * 2 * Math.PI);
+    if (ty === 1) return ph < 0.5 ? 1 : -1;
+    if (ty === 2) return 1 - 4 * Math.abs(ph - 0.5);
+    if (ty === 3) return 2 * ph - 1;
+    if (ty === 4) return 1 - 2 * ph;
+    var st = ty === 5 ? Math.floor(ph * 8) : Math.floor(ph * 48);
+    var r = Math.sin(st * 12.9898 + ty * 78.233) * 43758.5453;
+    return (r - Math.floor(r)) * 2 - 1;
+}
+
+/** One LFO cycle with a dot per sounding voice at its phase; on the right the recent output of the newest voice. */
+function opDrawLfo(on) {
+    var ty = Math.round(opVals.lfo_type), x0 = 8, x1 = OP_GW - 70, y0 = 6, y1 = OP_GH - 6, ym = (y0 + y1) * 0.5, ha = (y1 - y0) * 0.5;
+    var gc = sptColor("live_lcd_frame");
+    opRect(x0, ym, x1 - x0, 1, gc);
+    opRect(x1 + 6, y0, 1, y1 - y0, gc);
+    sptRgba(opDisp(sptColor("live_display_line_two"), on));
+    mgraphics.set_line_width(1.5);
+    for (var i = 0; i <= 96; i++) {
+        var y = ym - opLfoWave(ty, i / 96) * ha * 0.92;
+        if (i === 0) mgraphics.move_to(x0, y); else mgraphics.line_to(x0 + (x1 - x0) * i / 96, y);
+    }
+    mgraphics.stroke();
+    var amt = Math.max(1e-3, opVals.lfo_amt * opVals.lfo_amt);
+    for (i = 0; i < opTel.voices.length && on; i++) {
+        var V = opTel.voices[i], wv = ty >= 5 ? Math.max(-1, Math.min(1, V.lfo / amt)) : opLfoWave(ty, V.lph);
+        sptRgba(V.focus ? sptColor("live_display_handle_two") : sptMix(sptColor("live_display_handle_two"), sptColor("live_lcd_bg"), 0.45));
+        mgraphics.arc(x0 + (x1 - x0) * V.lph, ym - wv * ha * 0.92, V.focus ? 2.6 : 1.8, 0, Math.PI * 2);
+        mgraphics.fill();
+    }
+    // output history (with amount, envelope and Amt<Vel), newest on the right
+    var Hs = opTel.lfoHist, hx0 = x1 + 10, hx1 = OP_GW - 6;
+    if (Hs.length > 1 && on) {
+        sptRgba(sptColor("live_display_line_one"));
+        mgraphics.set_line_width(1);
+        for (i = 0; i < Hs.length; i++) {
+            var hy = ym - Math.max(-1, Math.min(1, Hs[i])) * ha * 0.92, hx = hx1 - (Hs.length - 1 - i) * (hx1 - hx0) / 89;
+            if (i === 0) mgraphics.move_to(hx, hy); else mgraphics.line_to(hx, hy);
+        }
+        mgraphics.stroke();
+    }
+    opT("out", hx1 - 14, y0 + 3, sptColor("live_display_scale_text"), 7.5);
+}
+
+/** Magnitude (dB) of the filter at frequency f for cutoff fc and damping k (the SVF's analog prototype; display only). */
+function opFilterDbAt(f, fc, k) {
+    var t = Math.round(opVals.filter_type), w = f / fc, ns = opVals.filter_slope > 0.5 ? 2 : 1;
+    var re = 1 - w * w, im = k * w, den = Math.sqrt(re * re + im * im);
+    var lp = 1 / den, hp = w * w / den, bp = k * w / den, nt = Math.abs(1 - w * w) / den;
+    var m = opVals.filter_morph * 4, seg = Math.min(Math.floor(m), 3), fr = m - seg;
+    var arr = [lp, bp, hp, nt, lp];
+    var g = t === 0 ? lp : (t === 1 ? hp : (t === 2 ? bp : (t === 3 ? nt : arr[seg] + (arr[seg + 1] - arr[seg]) * fr)));
+    return 20 * Math.log(Math.max(Math.pow(g, ns), 1e-6)) / Math.LN10;
+}
+function opFilterK() {
+    var res = opVals.filter_res;
+    var lq = res < 0.5 ? -0.693 + res * 2.25 : (res < 0.9 ? 0.432 + (res - 0.5) * 1.15 : (res < 1 ? 0.892 + (res - 0.9) * 4.16 : 1.308 + (res - 1) * 7.65));
+    return 1 / Math.exp(lq);
+}
+
+/** Effective Shape (0..1) of oscillator o for the newest voice: Shape + LFO x Shape<LFO, as op_ops computes it. */
+function opShapeNow(o) {
+    var l = "abcd"[o], sh = opVals["osc_" + l + "_shape"] / 100;
+    if (opTel.active) sh += opTel.lfo * opVals["osc_" + l + "_shp_lt_lfo"] / 100;
+    return Math.max(0, Math.min(1, sh));
+}
+
+/** Oscillator view for Type Wavetable / Supersaw / PWM: the waveform the Shape gives (drag sideways to set the Shape). */
+function opDrawOscType(o, ty, on) {
+    var x0 = 8, x1 = OP_GW - 8, y0 = 7, y1 = OP_GH - 7, ym = (y0 + y1) * 0.5, ha = (y1 - y0) * 0.5;
+    var sh = opVals["osc_" + "abcd"[o] + "_shape"] / 100, live = opShapeNow(o);
+    var lc = opDisp(sptColor("live_display_line_two"), on), dc = opDisp(sptMix(sptColor("live_lcd_title"), sptColor("live_lcd_bg"), 0.55), on);
+    var i, j, f, t;
+    opRect(x0, ym, x1 - x0, 1, sptColor("live_lcd_frame"));
+    if (ty === 1) {
+        // the 8 frames, stacked back to front, the frame at the Shape bright
+        for (f = 7; f >= 0; f--) {
+            t = opFastTableCached(OP_WT0 + f, o);
+            var dx = f * 7, dy = -f * 2.6;
+            sptRgba(dc);
+            mgraphics.set_line_width(1);
+            for (i = 0; i <= 64; i++) {
+                var yy = ym + 9 + dy - t[Math.floor(i / 64 * (OP_TBL - 1))] * ha * 0.42;
+                if (i === 0) mgraphics.move_to(x0 + dx, yy); else mgraphics.line_to(x0 + dx + i * (x1 - x0 - 56) / 64, yy);
+            }
+            mgraphics.stroke();
+        }
+        var pos = live * 7, f0 = Math.min(6, Math.floor(pos)), fr = pos - f0;
+        var ta = opFastTableCached(OP_WT0 + f0, o), tb = opFastTableCached(OP_WT0 + f0 + 1, o);
+        sptRgba(lc);
+        mgraphics.set_line_width(1.6);
+        for (i = 0; i <= 96; i++) {
+            var q = Math.floor(i / 96 * (OP_TBL - 1)), v = ta[q] + (tb[q] - ta[q]) * fr;
+            var yv = ym + 9 - pos * 2.6 - v * ha * 0.42;
+            if (i === 0) mgraphics.move_to(x0 + pos * 7, yv); else mgraphics.line_to(x0 + pos * 7 + i * (x1 - x0 - 56) / 96, yv);
+        }
+        mgraphics.stroke();
+        opT(OP_WT_NAMES[f0] + (fr > 0.05 ? " > " + OP_WT_NAMES[f0 + 1] : ""), x1 - 2, y0 + 3, sptColor("live_display_scale_text"), 7.5, 2);
+    } else if (ty === 2) {
+        // the 7 saws over two cycles of the centre saw, side saws dim
+        var offs = opSsOffsets(live);
+        for (j = -1; j < 6; j++) {
+            var r = j < 0 ? 1 : 1 + offs[j], ph = j < 0 ? 0 : (j * 0.37) % 1;
+            sptRgba(j < 0 ? lc : dc);
+            mgraphics.set_line_width(j < 0 ? 1.6 : 1);
+            var prev = null;
+            for (i = 0; i <= 120; i++) {
+                var u = (i / 120 * 2 * r + ph) % 1, x = x0 + i * (x1 - x0) / 120, y = ym - (1 - 2 * u) * ha * 0.8;
+                if (prev === null || u < prev) mgraphics.move_to(x, y); else mgraphics.line_to(x, y);
+                prev = u;
+            }
+            mgraphics.stroke();
+        }
+        opT("Detune " + Math.round(live * 100) + " %", x1 - 2, y0 + 3, sptColor("live_display_scale_text"), 7.5, 2);
+    } else {
+        var pw = opPwmWidth(live), cw = (x1 - x0) / 2;
+        sptRgba(lc);
+        mgraphics.set_line_width(1.6);
+        mgraphics.move_to(x0, ym);
+        for (j = 0; j < 2; j++) {
+            var xs = x0 + j * cw;
+            mgraphics.line_to(xs, y0 + 4); mgraphics.line_to(xs + cw * pw, y0 + 4);
+            mgraphics.line_to(xs + cw * pw, y1 - 4); mgraphics.line_to(xs + cw, y1 - 4);
+        }
+        mgraphics.line_to(x1, ym);
+        mgraphics.stroke();
+        opT("Width " + Math.round(pw * 100) + " %", x1 - 2, y0 + 3, sptColor("live_display_scale_text"), 7.5, 2);
+    }
+    // the Shape (static) and, while modulated, its live value
+    var sx = x0 + sh * (x1 - x0), lx = x0 + live * (x1 - x0);
+    opRect(sx - 0.5, y1 + 1, 1, 5, opDisp(sptColor("live_display_handle_one"), on));
+    if (Math.abs(lx - sx) > 0.5) opRect(lx - 1, y1 + 2, 2, 3, sptColor("live_display_handle_two"));
 }
 
 // ---------------- graph interaction ----------------
@@ -982,6 +1294,8 @@ function opHit(x, y) {
         }
         return bd < 12 ? { kind: "alg", a: best } : null;
     }
+    if (s < 4 && opView(s) === 1 && Math.round(opVals["osc_" + "abcd"[s] + "_type"]) > 0) return { kind: "shape", o: s };
+    if (s === 4 && opView(s) === 1) return null;
     if (s < 4 && opView(s) === 1) {
         if (x > OP_GW - 28) {
             var i = Math.floor((y - 20) / 11);
@@ -1043,6 +1357,10 @@ function ondrag(x, y, but, cmd, shift) {
         mgraphics.redraw();
         return;
     }
+    if (h.kind === "shape") {
+        opSet("osc_" + "abcd"[h.o] + "_shape", Math.max(0, Math.min(1, (x - 8) / (OP_GW - 16))) * 100);
+        return;
+    }
     if (h.kind === "filt") {
         var f = 20 * Math.pow(1000, Math.max(0, Math.min(1, (x - 6) / (OP_GW - 12))));
         opSet("filter_freq", Math.log(Math.max(30, f) / 30) / Math.log(18500 / 30));
@@ -1072,7 +1390,30 @@ function preview() {
     if (typeof OP_PREVIEW_SECTION !== "undefined") opVals.ui_section = OP_PREVIEW_SECTION;
     if (typeof OP_PREVIEW_VIEW !== "undefined") { var k = opSecKey(opSel()); if (k) opVals["ui_view_" + k] = OP_PREVIEW_VIEW; }
     opDsp.ready = 1;
+    if (typeof OP_PREVIEW_TEL !== "undefined") opPreviewTel();
     mgraphics.redraw();
+}
+/** Fake telemetry for previews: three voices in attack / sustain / release, LFO phases, a saw spectrum through the filter. */
+function opPreviewTel() {
+    var a = [], S = OP_SCOPE, V = [[0, 1.5, 0.15, 900, 0.9], [4, 3.0, 0.45, 1500, 0.5], [9, 4.4, 0.8, 2600, 0.2]];
+    for (var i = 0; i < 32 * S.VS; i++) a.push(0);
+    for (i = 0; i < V.length; i++) {
+        var o = V[i][0] * S.VS;
+        for (var e = 0; e < 7; e++) { a[o + S.LVL + e] = e === 6 ? 0 : (e === 5 ? 0.5 : V[i][4]); a[o + S.STG + e] = V[i][1]; }
+        a[o + S.LFO] = Math.sin(V[i][2] * 2 * Math.PI) * 0.4; a[o + S.FC] = V[i][3]; a[o + S.LPH] = V[i][2];
+        a[o + S.ON] = 1; a[o + S.NOTE] = 60; a[o + S.K] = 0.8;
+        for (var k = 0; k < 4; k++) a[o + S.AMP + k] = V[i][4] * [1, 0.5, 0.2, 0.05][k];
+    }
+    opTel.active = 3;
+    for (i = 0; i < 90; i++) opTel.lfoHist.push(Math.sin(i / 90 * 4 * Math.PI) * 0.4);
+    opTelParse(a, 9);
+    var pre = [], post = [];
+    for (i = 0; i < OP_SPEC_PTS; i++) {
+        var f = 20 * Math.pow(1000, (i + 0.5) / OP_SPEC_PTS), h = Math.max(0, f / 110), lv = -20 - 20 * Math.log(Math.max(1, h)) / Math.LN10;
+        pre.push(lv - 6 * Math.abs(Math.sin(i * 0.9)));
+        post.push(pre[i] + opFilterDbAt(f, opTel.fc, opTel.k));
+    }
+    opTel.spec = { pre: pre, post: post };
 }
 
 sptThemeWatch(function () { mgraphics.redraw(); });
