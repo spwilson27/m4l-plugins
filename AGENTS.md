@@ -86,6 +86,10 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Deviate (section 31; one build writes all five faces: Roulette, Constellation, Lanes, Tube, Matrix; Read previews/deviate_<face>{,_idle,_extreme}.png)
      npm run -s typecheck && python3 scripts/build_deviate.py && for t in tests/test_deviate*.js; do node $t || break; done && node tests/test_parameter_info.js && python3 scripts/render_deviate_previews.py
      scripts/vm_deviate.sh audio && M4L_LIVE_LOCK_WAIT=7200 scripts/vm_deviate.sh run   # Max suite, then Live (five devices, one Set, screenshots), in the VM (section 1a)
+
+     # Operator+ (section 33; look at previews/operator.png and, after a Live run, previews/opplus_compare/*.png)
+     npm run -s typecheck && python3 scripts/build_opplus.py && node tests/test_opplus.js && python3 scripts/render_preview.py "devices/Operator+.amxd"
+     scripts/vm_opplus.sh audio && M4L_LIVE_LOCK_WAIT=7200 scripts/vm_opplus.sh run && python3 scripts/opplus_compare.py --live tests/out/opplus_live   # Max suite, then Live A/B vs Operator + screenshots
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -2131,3 +2135,35 @@ M4L_LIVE_LOCK_WAIT=7200 scripts/vm_deviate.sh run                           # Li
 ## 32. EQ+ (`devices/EQ+.amxd`)
 
 Per-instance buffers are `---eqpluscfg`, `---eqplusspec`, `---eqplusir` (Live expands `---` per instance; `#0-` is not expanded in a top-level device). Max audio: `scripts/vm_eqplus.sh audio [case ...]` (host-generated coefficients in `scripts/eqplus_audio_fixtures.json`, replayed in the VM which has no node; the runner re-records them when node is present, `run_eqplus_audio_tests.py --fixtures`).
+
+---
+
+## 33. Architecture of `devices/Operator+.amxd` (a recreation of Ableton Operator)
+
+A Max Instrument (725 x 169) that copies Live 12's Operator: the same parameters (names, ranges, enum items, defaults, LOM order), the same display strings and the same face, as the starting point for Operator+'s own additions. Ground truth is the real Operator in the VM's Live 12.4.7: everything below marked "measured" came from it.
+
+### Spec from the real Operator
+- `scripts/opplus_ref_params.json` / `opplus_ref_curves.json`: a LOM dump of Operator (every `DeviceParameter`: name, min, max, quantised items, the default patch's value, and `str_for_value` at 65 points). `scripts/opplus_spec.py` turns them into `scripts/opplus_params.json` (194 parameters in Operator's order, then the stored-only extras Operator keeps out of the LOM: `Osc-X Repeat`, `Voices` (1..32 list), `Retrigger`, `Interpolation`, `Antialias`, the MIDI matrix (`Vel/Key/AT/PB/MW Dst/Amt`), and UI state `UI Section`, `UI View <sec>`, `UI Slope Fe/Pe`). ORDER IS FOREVER: append only.
+- Display strings (`opFormat` in `src/opplus_config.js`) equal Operator's at all 65 points of every continuous parameter. Live rounds half-to-even, except the parameters in `TRUNC` (spec), which it truncates toward zero. Curves: attack `0.1 ms x 200000^x` (0 at x 0), decay / release `1 ms x 60000^x`, loop `0.2 ms x 100000^x`, glide `0.1 ms x 100000^x`, fixed frequency `10 Hz x 200^x` x {0.0001, 0.001, 0.01, 0.1, 1, 10}, filter `30 Hz x (18500/30)^x`. dB levels come from the dumped table (`-inf` is stored as -999).
+- Algorithms (`OP_ALGOS`) were decoded from the Global display's thumbnails (`tests/out/opplus_ref/sec_Global.png`); every edge goes from a higher letter to a lower one.
+
+### Sound (measured, `src/opplus_core.genexpr`)
+- Phase modulation: index = 4 pi x modulator amplitude (`OP_FMK` 2 cycles), the same for every ratio and note, and the modulation is **subtracted** (a ratio-2 modulator only fits with the sign inverted). Coarse x Fine ratio = `coarse x (1 + fine / 1000)` (coarse 0 = 0.5). Feedback = 0.65 cycles at 100 % on `(y[n-1] + y[n-2]) / 2`, only for operators nothing modulates. A 0 dB operator at Volume -18 dB peaks at 0.1259; centre pan is unity on both sides.
+- Filter: TPT state-variable, 12 dB = one stage, 24 dB = two. Q per stage from the noise measurements: Res 0 = 0.5 (critically damped, -12 dB at the cutoff for 24 dB), 0.5 = 1.54, 0.9 = 2.44, 1.0 = 3.7 (ln Q interpolated). `Filt < Key` 100 % = one octave per octave around MIDI 70. Circuits OSR / MS2 / SMP / PRD are approximations (clip / tanh placements), not models.
+- LFO pitch depth = +-30.8 semitones x Amount^2. Rate: Low `0.02 Hz x 1500^(rate/127)`, High `8 Hz x 1500^(rate/127)` (6.3 Hz at 100: Operator measured 6.2..7.3).
+- Tone: no measurable effect inside the audio band on Operator (saw 64 up to 13 kHz), so it is a bypass.
+- Envelopes: 7 per voice (A..D, LFO, Filter, Pitch), fixed-duration segments with Operator's slope convention (osc envelopes use slope 1 = exponential decay / release), loop modes None / Loop / Beat / Sync / Trigger, Time / Time<Key / R<Vel scaling. Control rate every 16 samples.
+- Engine: 32 voices in one loop, per-voice state in `Data vsd` (192 floats per voice), band-limited wavetables (22 built-in + 4 user tables x 8 mips, written by the face), deferred gen~ (hub `op_genin`, `op_phasor` = plugphasor~ for Beat / Sync, `op_plugout`), cfg block `---opcfg` (`OP_CFG` layout), voices `---opvoices`, telemetry `---opscope`.
+- GenExpr gotchas hit here (both linted by `tests/test_opplus.js`): a loop variable named `e` is Euler's constant and silently killed the compile; `peek(...)` passed straight into a user function call killed it too (assign to a local first). Function parameters named like a global Data / Buffer must be avoided (globals are `cfd`, `vsd`, `wtab`).
+
+### Face
+- One ignoreclick v8ui (`obj-face`, OP_REGION "main") draws everything; one interactive v8ui (`obj-graph`) is the display's graph strip (envelope handles, harmonics editor, filter curve, algorithm picker; 61 px high, 23 px in Global so it never covers the matrix menus). Every parameter is a transparent `live.*` object over the control the face draws (rule 4 exception), shown / hidden per section by the face; transparent `ubutton`s select sections (whole shell panels) and the display views. The face brings the graph, the click zones and the parameter objects to the front at 0.4 / 1.5 / 4 s (Live draws v8uis over live.* boxes).
+- Geometry (`scripts/opplus_layout.py`) and fonts were measured from 2x screenshots (device x = (crop x - 19) / 2, y = (crop y - 41) / 2). Operator's display reaches 14 px into the title bar; an M4L device cannot draw there, so the graph strip is 14 px shorter.
+- Test hook: `r opplus_test` (global) -> `diag` writes `Global("opplus_diag").main / graph` (DSP state, buffer names, section, last click); `note <pitch> <vel>`. Load trace `Global("opplus_trace")`.
+
+### Validation
+- `node tests/test_opplus.js`: parameter table vs the dump, display strings (65 points each), algorithms, cfg, allocator, the gen functions run in Node as a one-voice synth against Operator's measurements (level, ratio, FM index, feedback, envelope, pitch envelope, filter), layout overlaps per section, device structure.
+- `scripts/vm_opplus.sh audio` (`scripts/run_opplus_audio_tests.py`, probe `tests/opplus_probe.js`, v8): 14 cases in real Max, all pass (FM harmonics within 0.01 of Operator).
+- `scripts/vm_opplus.sh run` (`scripts/test_opplus_live.py`): Operator and Operator+ on twin tracks with the OpCap probe (`scripts/build_opplus_probe.py`), the same patch set through the LOM on both, the same clip; harmonics within 1.5 dB and the envelope within 10 % for 12 of 15 patches; then section screenshots (`tests/out/opplus_live`) -> `python3 scripts/opplus_compare.py --live tests/out/opplus_live` writes `previews/opplus_compare/<section>.png` (Operator over Operator+).
+- `scripts/vm_smoke.sh "devices/Operator+.amxd"`: PASS (194 parameters swept, isolation, meters).
+- **Known differences** (`KNOWN` in the Live test): algorithm 4 (two modulators into one carrier) differs by up to ~10 dB on some harmonics (index law, signs, topology and start phases were fitted without closing it); a resonant lowpass differs by ~3 dB 1.5 octaves above the cutoff; HP / BP / circuits are approximations; LFO rate is within the measurement's resolution only; CPU not measured.
