@@ -1,6 +1,6 @@
 // Operator+ gen core: a polyphonic 4-operator phase-modulation voice engine (AGENTS.md section "Operator+").
 // The face (src/opplus_engine.js) owns every parameter and writes engineering values into buffer ---opcfg (layout:
-// OP_CFG in src/opplus_config.js; copied into Data cf a few floats per sample), the voice table ---opvoices (8 floats
+// OP_CFG in src/opplus_config.js; copied into Data cfd a few floats per sample), the voice table ---opvoices (8 floats
 // per voice: gate, note, vel 0..127, trigger counter, glide-from note, random 0..1, legato counter, 0) and the band-limited
 // wavetables ---opwaves (OP_NWAVE tables x OP_NMIP mip levels x 2049 samples). in1 = plugphasor~ (song beat phase 0..1).
 // Telemetry ---opscope: OP_SCOPE in the config. Every big helper has ONE call site inside a loop (AGENTS.md 1d).
@@ -18,9 +18,9 @@ op_slope(u, s) {
 // One envelope (e 0..3 = osc A..D, 4 LFO, 5 Filter, 6 Pitch) advanced by one control block of dt seconds.
 // State per envelope at vb0 + 96 + e * 6: stage (0 idle, 1 attack, 2 decay, 3 sustain, 4 release), progress,
 // level, segment start level, loop timer, last song-grid index.
-op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid) {
-	eb = 192 + e * 24;
-	sb = vb0 + 96 + e * 6;
+op_env(vs, cf, vb0, ei, dt, gt, bdt, sgrid) {
+	eb = 192 + ei * 24;
+	sb = vb0 + 96 + ei * 6;
 	st = peek(vs, sb);
 	u = peek(vs, sb + 1);
 	lv = peek(vs, sb + 2);
@@ -61,7 +61,9 @@ op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid) {
 	if (st == 1) {
 		at = peek(cf, eb) * fac;
 		u = at > 0.00001 ? u + dt / at : 1;
-		lv = s0 + (pk - s0) * op_slope(min(u, 1), peek(cf, eb + 7));
+		sa = peek(cf, eb + 7);
+		ua = min(u, 1);
+		lv = s0 + (pk - s0) * op_slope(ua, sa);
 		if (u >= 1) {
 			st = 2;
 			u = 0;
@@ -71,7 +73,9 @@ op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid) {
 	} else if (st == 2) {
 		dc = peek(cf, eb + 1) * fac;
 		u = u + dt / max(dc, 0.0001);
-		lv = su + (s0 - su) * (1 - op_slope(min(u, 1), peek(cf, eb + 8)));
+		sd = peek(cf, eb + 8);
+		ud = min(u, 1);
+		lv = su + (s0 - su) * (1 - op_slope(ud, sd));
 		if (u >= 1) {
 			st = md == 4 ? 4 : 3;
 			u = 0;
@@ -84,7 +88,9 @@ op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid) {
 	} else if (st == 4) {
 		rl = peek(cf, eb + 2) * fac;
 		u = u + dt / max(rl, 0.0001);
-		lv = en + (s0 - en) * (1 - op_slope(min(u, 1), peek(cf, eb + 9)));
+		sr9 = peek(cf, eb + 9);
+		ur = min(u, 1);
+		lv = en + (s0 - en) * (1 - op_slope(ur, sr9));
 		if (u >= 1) {
 			st = 0;
 			lv = en;
@@ -112,13 +118,13 @@ op_on(vs, cf, vb0, note, vel, rnd, gfrom) {
 	poke(vs, rnd, vb0 + 5);
 	tf = peek(cf, 11) * exp2(-peek(cf, 12) * (note - 60) / 12);
 	poke(vs, tf, vb0 + 13);
-	for (e = 0; e < 7; e += 1) {
-		sb = vb0 + 96 + e * 6;
+	for (ei = 0; ei < 7; ei += 1) {
+		sb = vb0 + 96 + ei * 6;
 		poke(vs, 1, sb);
 		poke(vs, 0, sb + 1);
-		ini = peek(cf, 192 + e * 24 + 3);
+		ini = peek(cf, 192 + ei * 24 + 3);
 		cur = peek(vs, sb + 2);
-		st0 = wasOn > 0.5 && e < 4 ? cur : ini;
+		st0 = wasOn > 0.5 && ei < 4 ? cur : ini;
 		poke(vs, st0, sb + 3);
 		poke(vs, st0, sb + 2);
 		poke(vs, 0, sb + 4);
@@ -222,7 +228,9 @@ op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp) {
 		poke(vs, ph, ib);
 		wv = peek(cf, cb + 9);
 		tb = wv >= 22 ? 22 + k : wv;
-		yr = op_read(wt, tb, peek(vs, ib + 5), ph + m * fmk + fbk, interp);
+		mip = peek(vs, ib + 5);
+		xph = ph + m * fmk + fbk;
+		yr = op_read(wt, tb, mip, xph, interp);
 		y = (wv == 21 ? nz : yr) * peek(vs, ib + 2);
 		poke(vs, peek(vs, ib + 3), ib + 4);
 		poke(vs, y, ib + 3);
@@ -344,10 +352,10 @@ op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, sr, nsub) {
 	poke(vs, gn, vb0 + 2);
 	act = 0;
 	pev = 0;
-	for (e = 0; e < 7; e += 1) {
-		lv = op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid);
-		act = e < 4 && peek(vs, vb0 + 96 + e * 6) > 0.5 && peek(cf, 64 + e * 32 + 15) > 0.5 ? 1 : act;
-		pev = e == 6 ? lv : pev;
+	for (ei = 0; ei < 7; ei += 1) {
+		lv = op_env(vs, cf, vb0, ei, dt, gt, bdt, sgrid);
+		act = ei < 4 && peek(vs, vb0 + 96 + ei * 6) > 0.5 && peek(cf, 64 + ei * 32 + 15) > 0.5 ? 1 : act;
+		pev = ei == 6 ? lv : pev;
 	}
 	lfo = peek(vs, vb0 + 8);
 	pon = peek(cf, 408) > 0.5;
@@ -369,8 +377,8 @@ op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, sr, nsub) {
 	poke(vs, lr / sr, vb0 + 22);
 	op_fcoef(vs, cf, vb0, lfo, sr);
 	pan = clamp(peek(cf, 4) + peek(cf, 5) * (gn - 60) / 64 + peek(cf, 6) * (peek(vs, vb0 + 5) * 2 - 1) + peek(vs, vb0 + 148 + 21), -1, 1);
-	poke(vs, cos((pan + 1) * 0.785398163), vb0 + 19);
-	poke(vs, sin((pan + 1) * 0.785398163), vb0 + 20);
+	poke(vs, min(1, 1 - pan), vb0 + 19);
+	poke(vs, min(1, 1 + pan), vb0 + 20);
 	poke(vs, max(peek(cf, 19) * (1 + peek(vs, vb0 + 148 + 9)), 0), vb0 + 26);
 	poke(vs, max(1 + peek(vs, vb0 + 148 + 20), 0), vb0 + 27);
 	poke(vs, act, vb0);
@@ -389,18 +397,18 @@ op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp) {
 	for (sub = 0; sub < nsub; sub += 1) {
 		x = op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp);
 		y = op_post(vs, cf, vb0, sub, x) * vol;
-		l = l + (nsub > 1 ? (sub == 0 ? y * 1.4142 : 0) : y * peek(vs, vb0 + 19));
-		r = r + (nsub > 1 ? (sub == 1 ? y * 1.4142 : 0) : y * peek(vs, vb0 + 20));
+		l = l + (nsub > 1 ? (sub == 0 ? y : 0) : y * peek(vs, vb0 + 19));
+		r = r + (nsub > 1 ? (sub == 1 ? y : 0) : y * peek(vs, vb0 + 20));
 	}
 	return l, r;
 }
 
 Buffer cfgb("opcfg");
 Buffer vbuf("opvoices");
-Buffer wt("opwaves");
+Buffer wtab("opwaves");
 Buffer scope("opscope");
-Data cf(448);
-Data vs(6144);
+Data cfd(448);
+Data vsd(6144);
 Data seen(32);
 Data leg(32);
 History kc(0);
@@ -413,7 +421,7 @@ History tlpr(0);
 
 // copy the configuration a few floats per sample (the whole block every 56 samples)
 for (q = 0; q < 8; q += 1) {
-	poke(cf, peek(cfgb, cp + q), cp + q);
+	poke(cfd, peek(cfgb, cp + q), cp + q);
 }
 cp = cp + 8 >= 448 ? 0 : cp + 8;
 
@@ -422,16 +430,16 @@ sph = in1 + in2 * 0;
 bcnt = sph < bph - 0.5 ? bcnt + 1 : bcnt;
 bph = sph;
 sbeat = bcnt + sph;
-playing = peek(cf, 18) > 0.5;
+playing = peek(cfd, 18) > 0.5;
 sgrid = playing ? sbeat : -1;
 
 ctl = kc == 0;
 kc = kc + 1 >= 16 ? 0 : kc + 1;
 dt = 16 / samplerate;
-bdt = dt * peek(cf, 17) / 60;
+bdt = dt * peek(cfd, 17) / 60;
 nz = noise();
-nsub = peek(cf, 8) > 0.001 ? 2 : 1;
-interp = peek(cf, 15) > 0.5 ? 1 : 0;
+nsub = peek(cfd, 8) > 0.001 ? 2 : 1;
+interp = peek(cfd, 15) > 0.5 ? 1 : 0;
 nv = 0;
 outl = 0;
 outr = 0;
@@ -446,20 +454,24 @@ for (v = 0; v < 32; v += 1) {
 		poke(seen, tr, v);
 		poke(leg, lc, v);
 		fresh = 1;
-		op_on(vs, cf, vb0, peek(vbuf, vo + 1), peek(vbuf, vo + 2), peek(vbuf, vo + 5), peek(vbuf, vo + 4));
+		nn = peek(vbuf, vo + 1);
+		nvel = peek(vbuf, vo + 2);
+		nrnd = peek(vbuf, vo + 5);
+		nfrom = peek(vbuf, vo + 4);
+		op_on(vsd, cfd, vb0, nn, nvel, nrnd, nfrom);
 	}
 	if (lc != peek(leg, v)) {
 		poke(leg, lc, v);
-		poke(vs, peek(vs, vb0 + 2), vb0 + 10);
-		poke(vs, 0, vb0 + 11);
-		poke(vs, peek(vbuf, vo + 1), vb0 + 12);
-		poke(vs, peek(cf, 9) > 0.5 ? 0 : 1, vb0 + 11);
+		poke(vsd, peek(vsd, vb0 + 2), vb0 + 10);
+		poke(vsd, 0, vb0 + 11);
+		poke(vsd, peek(vbuf, vo + 1), vb0 + 12);
+		poke(vsd, peek(cfd, 9) > 0.5 ? 0 : 1, vb0 + 11);
 	}
-	if (peek(vs, vb0) > 0.5) {
+	if (peek(vsd, vb0) > 0.5) {
 		if (ctl || fresh) {
-			op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, samplerate, nsub);
+			op_ctl(vsd, cfd, vb0, gt, dt, bdt, sgrid, samplerate, nsub);
 		}
-		yl, yr = op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp);
+		yl, yr = op_voice(vsd, cfd, wtab, vb0, sbeat, nz, nsub, interp);
 		outl = outl + yl;
 		outr = outr + yr;
 		nv = nv + 1;
@@ -467,11 +479,11 @@ for (v = 0; v < 32; v += 1) {
 }
 
 // Tone (output low-pass), volume, safety
-tc = peek(cf, 7);
+tc = peek(cfd, 7);
 tk = 1 - exp(-6.2831853 * tc / samplerate);
 tlp = tc >= 19999 ? outl : tlp + (outl - tlp) * tk;
 tlpr = tc >= 19999 ? outr : tlpr + (outr - tlpr) * tk;
-gv = peek(cf, 3);
+gv = peek(cfd, 3);
 out1 = fixnan(clamp(tlp * gv, -4, 4));
 out2 = fixnan(clamp(tlpr * gv, -4, 4));
 
@@ -484,10 +496,10 @@ if (ctl) {
 	poke(scope, max(abs(out1), abs(out2)), 3);
 	for (tv = 0; tv < 32; tv += 1) {
 		for (te = 0; te < 7; te += 1) {
-			poke(scope, peek(vs, tv * 192 + 96 + te * 6 + 2), 8 + tv * 16 + te);
-			poke(scope, peek(vs, tv * 192 + 96 + te * 6) + min(peek(vs, tv * 192 + 96 + te * 6 + 1), 0.999), 8 + tv * 16 + 7 + te);
+			poke(scope, peek(vsd, tv * 192 + 96 + te * 6 + 2), 8 + tv * 16 + te);
+			poke(scope, peek(vsd, tv * 192 + 96 + te * 6) + min(peek(vsd, tv * 192 + 96 + te * 6 + 1), 0.999), 8 + tv * 16 + 7 + te);
 		}
-		poke(scope, peek(vs, tv * 192 + 8), 8 + tv * 16 + 14);
-		poke(scope, peek(vs, tv * 192 + 15), 8 + tv * 16 + 15);
+		poke(scope, peek(vsd, tv * 192 + 8), 8 + tv * 16 + 14);
+		poke(scope, peek(vsd, tv * 192 + 15), 8 + tv * 16 + 15);
 	}
 }

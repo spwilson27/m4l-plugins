@@ -114,9 +114,10 @@ const fns = G.functionsOf(coreSrc);
 for (const f of fns) {
     const rets = f.body.filter((l) => /^\s*return\b/.test(l));
     ok(rets.length === 1 && /^\treturn\b/.test(rets[0]), `gen ${f.name}: one return, at function level`);
-    ok(f.body.length <= 80, `gen ${f.name}: short enough for Max 9 (${f.body.length} lines)`);
+    ok(f.body.length <= 100, `gen ${f.name}: short enough for Max 9 (${f.body.length} lines; op_env at 84 compiles)`);
 }
-ok(!/\be\d\b/.test(coreSrc.replace(/\/\/.*$/gm, "")), "no e<digit> identifiers");
+ok(!/\be\d*\b/.test(coreSrc.replace(/\/\/.*$/gm, "")), "no e / e<digit> identifiers (GenExpr reads them as Euler's constant: op_on with a loop variable e compiled to silence)");
+ok(!/^(Data|Buffer) (cf|vs|wt)\b/m.test(coreSrc), "global Data / Buffer names differ from the function parameter names");
 ok(!/\b(gate|phi|mix)\s*=/.test(coreSrc.replace(/\/\/.*$/gm, "")), "no gate / phi / mix variables");
 const core = G.load(coreSrc.replace("\treturn l, r;", "\treturn [l, r];"));
 
@@ -145,7 +146,7 @@ function render(vals, opts) {
         const gt = i < opts.off * sr ? 1 : 0;
         if (i % 16 === 0) core.op_ctl(vs, cf, 0, gt, 16 / sr, 0, -1, sr, 1);
         const lr = core.op_voice(vs, cf, wt, 0, 0, 0, 1, 1);
-        out.push(lr[0] / Math.SQRT1_2 * cfgArr[3]);   // centre pan -> mono, then Volume
+        out.push(lr[0] * cfgArr[3]);   // centre pan is unity on both sides (Operator's balance law), then Volume
     }
     return out;
 }

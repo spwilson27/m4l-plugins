@@ -287,7 +287,7 @@ function opDspRelease() { var q = new Global("opplus_dspq"); if (q.owner === opD
 function opDspResend() {
     outlet(0, "cfgb", opNames.cfg);
     outlet(0, "vbuf", opNames.voices);
-    outlet(0, "wt", opNames.waves);
+    outlet(0, "wtab", opNames.waves);
     outlet(0, "scope", opNames.scope);
     opWriteCfg();
 }
