@@ -229,7 +229,7 @@ op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp) {
 		wv = peek(cf, cb + 9);
 		tb = wv >= 22 ? 22 + k : wv;
 		mip = peek(vs, ib + 5);
-		xph = ph + m * fmk + fbk;
+		xph = ph - m * fmk + fbk;   // Operator subtracts the modulation (measured: a ratio-2 modulator fits only with the sign inverted)
 		yr = op_read(wt, tb, mip, xph, interp);
 		y = (wv == 21 ? nz : yr) * peek(vs, ib + 2);
 		poke(vs, peek(vs, ib + 3), ib + 4);
@@ -272,13 +272,16 @@ op_fcoef(vs, cf, vb0, lfo, sr) {
 	vel = peek(vs, vb0 + 3);
 	fe = peek(vs, vb0 + 96 + 30 + 2);
 	ea = clamp(peek(cf, 394) + peek(vs, md + 15), -1, 1);
-	oc = ea * fe * 9 + peek(cf, 392) * (vel - 0.5) * 4 + peek(cf, 393) * (peek(vs, vb0 + 12) - 60) / 12;
+	oc = ea * fe * 9 + peek(cf, 392) * (vel - 0.5) * 4 + peek(cf, 393) * (peek(vs, vb0 + 12) - 70) / 12;   // key tracking centre measured on Operator (MIDI 70)
 	oc = oc + (peek(cf, 373) > 0.5 ? lfo * peek(cf, 368) * 4 : 0) + peek(vs, md + 10) * 5;
 	fc = clamp(peek(cf, 388) * exp2(oc), 20, sr * 0.45);
 	g = tan(3.14159265 * fc / sr);
 	rs = clamp(peek(cf, 389) + peek(vs, md + 12) + peek(vs, md + 11), 0, 1.25);
 	ci = peek(cf, 386);
-	k = 1.4142 * (1 - 0.985 * (rs / 1.25) * (ci == 4 ? 1.01 : 1));
+	// Q per stage measured on Operator (noise through the filter, harmonics of a saw): res 0 = 0.5 (two critically damped stages,
+	// -12 dB at the cutoff), 0.5 = 1.54, 0.9 = 2.44, 1.0 = 3.7; 1.25 self-oscillates. ln Q is interpolated linearly between them.
+	lq = rs < 0.5 ? -0.693 + rs * 2.25 : (rs < 0.9 ? 0.432 + (rs - 0.5) * 1.15 : (rs < 1 ? 0.892 + (rs - 0.9) * 4.16 : 1.308 + (rs - 1) * 7.65));
+	k = 1 / exp(lq) / (ci == 4 ? 1.05 : 1);
 	poke(vs, fc, vb0 + 15);
 	poke(vs, g, vb0 + 16);
 	poke(vs, max(k, 0.02), vb0 + 17);
@@ -388,7 +391,7 @@ op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, sr, nsub) {
 // One sample of one voice (both channels).
 op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp) {
 	lfo = op_lfo(vs, cf, vb0, sbeat, nz);
-	lp = lfo * peek(cf, 368) * 12;
+	lp = lfo * peek(cf, 368) * 30.8;   // measured: +-30.8 semitones x Amount^2 (the amount curve is applied in opCfg)
 	lm = exp2(lp / 12);
 	fmk = peek(vs, vb0 + 26);
 	vol = peek(vs, vb0 + 27);

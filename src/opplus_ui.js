@@ -40,6 +40,7 @@ function opLighter() { return sptMix(sptColor("live_surface_bg"), sptColor("live
 function opCyan() { return sptColor("live_lcd_control_fg_alt"); }
 function opOrange() { return sptColor("live_lcd_control_fg"); }
 function opLabelCol() { return sptColor("live_control_fg"); }
+function opShellText() { return sptMix(sptColor("live_control_fg"), [1, 1, 1, 1], 0.28); }
 function opDim(c, on) { return on ? c : sptMix(c, sptColor("live_surface_bg"), 0.55); }
 /** Display colour of a value / label of a section that is switched off: Operator greys its whole display. */
 function opOff() { return sptMix(sptColor("live_lcd_title"), sptColor("live_lcd_bg"), 0.3); }
@@ -259,8 +260,14 @@ function all_notes_off() {
 function playing(v) { opRt.playing = Number(v) > 0 ? 1 : 0; opWriteCfg(); }
 function tempo(v) { if (Number(v) > 0) { opRt.bpm = Number(v); opWriteCfg(); } }
 
-// test hook: note <pitch> <vel>
+// test hooks (receive opplus_test): note <pitch> <vel>, diag
 function note(p, v) { midi_note(p, v); }
+function diag() {
+    var g = new Global("opplus_diag");
+    var d = { ready: opDsp.ready, error: opDsp.error, createdAt: opDsp.createdAt, retries: opDsp.retries };
+    g[OP_IS_MAIN ? "main" : "graph"] = JSON.stringify({ dsp: d, names: opNames, inits: opInits, err: opInitErr, sec: opSel(),
+        alive: opAlive(), click: opLastClick, sr: opSr, wavesSr: opWavesSr, active: opTel.active });
+}
 
 // ---------------- deferred DSP (AGENTS.md 1d; pattern of src/spectral_dsp.js) ----------------
 var opDsp = { ready: 0, error: "", createdAt: 0, c0: -1, task: null, conf: null, retries: 0 };
@@ -376,14 +383,16 @@ function dsp_restart() {
 
 // ---------------- init (live.thisdevice) ----------------
 var opTempoApi = null, opPlayApi = null, opPoll = null, opFrontTasks = [];
+var opInitErr = "", opInits = 0, opLoadTask = null;
 function init() {
+    opInits++;
     if (!OP_IS_MAIN) { opStartPoll(); return; }
     opWriteCfg();
-    var t = new Task(function () {
-        opBuildWaves();
-        opDspLoad();
+    opLoadTask = new Task(function () {
+        try { opBuildWaves(); } catch (e) { opInitErr = "waves: " + e; }
+        try { opDspLoad(); } catch (e2) { opInitErr += " dsp: " + e2; }
     }, this);
-    t.schedule(30);
+    opLoadTask.schedule(30);
     try {
         opTempoApi = new LiveAPI(function (a) { var v = arrayfromargs(a); if (v[0] === "tempo") tempo(v[1]); }, "live_set");
         opTempoApi.property = "tempo";
@@ -403,6 +412,7 @@ function init() {
 /** Live draws v8ui canvases over live.* boxes: bring every transparent control and click zone to the front. */
 function opBringFront() {
     if (!opHost) return;
+    try { var gv = opHost.getnamed("op_graph"); if (gv) opHost.bringtofront(gv); } catch (e) {}
     var names = [];
     for (var i = 0; i < OP_LAYOUT.length; i++) if (OP_LAYOUT[i].key && !opHidden[OP_LAYOUT[i].key]) names.push("op_" + OP_LAYOUT[i].key);
     for (i = 0; i < OP_UBUTTONS.length; i++) {
@@ -436,8 +446,10 @@ function opApplyVisibility() {
 }
 
 /** From the ubuttons: click sel <i> | click view <0|1> | click slopes */
+var opLastClick = "";
 function click(what, arg) {
     what = String(what);
+    opLastClick = what + " " + arg + " @" + (Date.now() % 100000);
     if (what === "sel") opSet("ui_section", Number(arg));
     else if (what === "view") { var k = opSecKey(opSel()); if (k) opSet("ui_view_" + k, Number(arg)); }
     else if (what === "slopes") {
@@ -475,7 +487,9 @@ var opTelVoice = 0, opTelVoiceSent = -1;
 function telvoice(v) { opTelVoice = Math.round(Number(v)) || 0; }
 
 // ---------------- drawing ----------------
-function opT(str, x, y, col, size, align) { sptText(str, x, y + 3.5, col, size || 9.5, align || 0); }
+var OP_FS = 10.5;        // display labels / values (Operator: about 12 % larger than SPT_SIZE)
+var OP_FS_SHELL = 10.8;  // shell labels
+function opT(str, x, y, col, size, align) { var sz = size || OP_FS; sptText(str, x, y + sz * 0.37, col, sz, align || 0); }
 function opRect(x, y, w, h, col) { sptRgba(col); mgraphics.rectangle(x, y, w, h); mgraphics.fill(); }
 function opStroke(x, y, w, h, col, lw) { sptRgba(col); mgraphics.set_line_width(lw || 1); mgraphics.rectangle(x + 0.5, y + 0.5, w - 1, h - 1); mgraphics.stroke(); }
 
@@ -485,7 +499,7 @@ function opDial(it, on) {
     var n = (v - p.min) / ((p.max - p.min) || 1);
     var a0 = Math.PI * 0.5, sweep = Math.PI * 1.5;
     var bip = p.min < 0 && p.max > 0;
-    opT(it.label, it.lx, it.ly, opLabelCol(), 9.5);
+    opT(it.label, it.lx - 1, it.ly, opShellText(), OP_FS_SHELL);
     mgraphics.set_line_width(2.5);
     sptRgba(sptMix(sptColor("live_control_bg"), [0, 0, 0, 1], 0.4));
     mgraphics.arc(cx, cy, r, a0, a0 + sweep);
@@ -502,7 +516,7 @@ function opDial(it, on) {
     mgraphics.move_to(cx, cy);
     mgraphics.line_to(cx + Math.cos(e) * (r + 0.5), cy + Math.sin(e) * (r + 0.5));
     mgraphics.stroke();
-    opT(opFormat(p, v).replace("-inf", "-\u221e"), cx + 3, cy + 10.5, sptMix(opLabelCol(), [1, 1, 1, 1], 0.3), 9.5);
+    opT(opFormat(p, v).replace("-inf", "-\u221e"), cx + 3, cy + 12, opShellText(), OP_FS);
 }
 
 var OP_WAVE_SHORT = ["Sin", "Sin4", "Sin8", "Sw3", "Sw4", "Sw6", "Sw8", "Sw16", "Sw32", "Sw64", "SwD", "Sq3", "Sq4", "Sq6", "Sq8", "Sq16",
@@ -551,7 +565,7 @@ function opMenu(it, on) {
     var col = st === "lcdalt" ? opOrange() : opCyan();
     if (/^mx_/.test(it.key) && Math.round(v) === 0) col = opOrange();
     var c = opDisp(col, on);
-    if (/^osc_[abcd]_repeat$/.test(it.key) && Math.round(opVals["osc_" + it.key.charAt(4) + "_wave"]) !== 22) c = sptMix(col, sptColor("live_lcd_bg"), 0.55);
+    if (/^osc_[abcd]_repeat$/.test(it.key) && Math.round(opVals["osc_" + it.key.charAt(4) + "_wave"]) !== 22) c = sptColor("live_lcd_title");
     opT(opMenuText(it.key, v), it.x, it.y + 6, c, 9.5);
     opArrow(it.x + it.w - 5, it.y + 6, c);
 }
@@ -568,7 +582,7 @@ function opToggle(it, on) {
         opStroke(x, y, w, h, v ? sptMix(oc, [0, 0, 0, 1], 0.35) : oc);
         opT(it.text, x + w * 0.5, y + h * 0.5, v ? [0.08, 0.08, 0.08, 1] : oc, 8.5, 1);
     } else if (st === "rbox") {
-        var oc2 = opDisp(opOrange(), on);
+        var oc2 = opOrange();   // Operator keeps R / Q / G orange even while the section is switched off
         if (it.g === "shell") oc2 = v ? sptMix(opLabelCol(), sptColor("live_surface_bg"), 0.2) : sptMix(opLabelCol(), sptColor("live_surface_bg"), 0.5);
         if (v) { opRect(x, y, w, h, oc2); opT(it.text, x + w * 0.5, y + h * 0.5, [0.1, 0.1, 0.1, 1], 8, 1); }
         else { opStroke(x, y, w, h, oc2); opT(it.text, x + w * 0.5, y + h * 0.5, oc2, 8, 1); }
@@ -610,7 +624,7 @@ function opLcd(it, on) {
         if (Math.round(opVals["mx_" + m[1] + "_dst_" + m[2]]) === 0) dim = true;
     }
     var txt = opFormat(p, v).replace("-inf", "-∞");
-    var vc = !on ? opOff() : (dim ? sptMix(col, sptColor("live_lcd_bg"), 0.55) : col);
+    var vc = !on ? opOff() : (dim ? sptColor("live_lcd_title") : col);
     if (it.rlabel) opT(txt, it.x + it.w - 4, it.y, vc, 9.5, 2);
     else opT(txt, it.x, it.y, vc, 9.5);
 }
@@ -624,7 +638,9 @@ function opPanels() {
         if (rows[r] !== sel) opRect(0, y, 210, 40, opSurface());
         if (4 + r !== sel) opRect(514, y, 210, 40, opSurface());
     }
-    opRect(215, 0, 294, 167, sptColor("live_lcd_bg"));
+    // the display, except the graph strip at its top: the graph v8ui paints that (painting it here covered it in Live)
+    var gh = sel === 7 ? OP_GH_GLOBAL : OP_GH;
+    opRect(215, gh, 294, 167 - gh, sptColor("live_lcd_bg"));
 }
 
 function opPeIcon(it, on) {
@@ -684,13 +700,13 @@ function opHeaders() {
     var lc = sptColor("live_lcd_frame");
     // left: Envelope
     if (hasView) {
-        if (v === 0) opRect(219, 63.5, 5, 5, opDisp(opCyan(), on)); else opStroke(219, 63.5, 5, 5, tc);
+        if (v === 0) opRect(218, 62.5, 7, 7, opDisp(opCyan(), on)); else opStroke(218, 62.5, 7, 7, tc);
     }
-    opT("Envelope", hasView ? 227 : 219.5, HEAD_Y, tc, 9.5);
+    opT("Envelope", hasView ? 227.5 : 219.5, HEAD_Y, tc, 11.5);
     if (hasView) {
-        if (v === 1) opRect(407.5, 63.5, 5, 5, opDisp(opCyan(), on)); else opStroke(407.5, 63.5, 5, 5, tc);
+        if (v === 1) opRect(406.5, 62.5, 7, 7, opDisp(opCyan(), on)); else opStroke(406.5, 62.5, 7, 7, tc);
     }
-    opT(right, hasView ? 415 : 408, HEAD_Y, tc, 9.5);
+    opT(right, hasView ? 416 : 408, HEAD_Y, tc, 11.5);
     opRect(219, 71, 183, 1, lc);
     opRect(407, 71, 98, 1, lc);
     if (s === 5 || s === 6) {
@@ -721,8 +737,8 @@ function opPaintMain() {
             case "menu": opMenu(it, secOn); break;
             case "toggle": opToggle(it, secOn); break;
             case "tab": opTab(it, secOn); break;
-            case "label": opT(it.label, it.lx, it.ly, it.g === "shell" ? opLabelCol() : opDisp(sptColor("live_lcd_title"), secOn), it.big ? 11 : 9.5); break;
-            case "glabel": opT(it.label, it.lx, it.ly, sptColor("live_lcd_title"), 9.5); break;
+            case "label": opT(it.label, it.lx - (it.g === "shell" ? 1 : 0), it.ly, it.g === "shell" ? opShellText() : opDisp(sptColor("live_lcd_title"), secOn), it.big ? 11.3 : (it.g === "shell" ? OP_FS_SHELL : OP_FS)); break;
+            case "glabel": opT(it.label, it.lx, it.ly, sptColor("live_lcd_title"), OP_FS); break;
             case "peicon": opPeIcon(it, opVals.pe_on > 0.5); break;
             case "algicon": opAlgIcon(it); break;
             case "waveicon": opWaveIcon(it, secOn); break;
@@ -750,21 +766,23 @@ function opEnvTimes(s) {
     var rl = opDecayMs(opNorm(OP_BY_KEY[px + "_release"], opVals[px + "_release"]));
     return [at, dc, rl];
 }
-function opSegW(ms) { return Math.log(1 + ms / 2) ; }
+/** Segment width as a fraction of the graph (fitted to Operator's display: 50 ms 0.05, 400 ms 0.165, 1 s 0.226). */
+function opSegW(ms) { return 0.0721 * Math.log(1 + ms / 50); }
 
 /** Envelope geometry in graph coordinates: points init, peak, decay end, sustain end, release end. */
 function opEnvGeom(s) {
     var px = opEnvPx(s), T = opEnvTimes(s);
     var x0 = 8, x1 = OP_GW - 8, y0 = 6, y1 = OP_GH - 6;
-    var wa = opSegW(T[0]), wd = opSegW(T[1]), wr = opSegW(T[2]), ws = 4.0;
-    var k = (x1 - x0) / Math.max(wa + wd + ws + wr, 12);
+    var W = x1 - x0, wa = opSegW(T[0]), wd = opSegW(T[1]), wr = opSegW(T[2]);
+    var sc = Math.min(1, 0.95 / Math.max(wa + wd + 0.12 + wr, 0.01));
+    var k = W * sc;
     var lv = function (suffix) {
         var key = px + "_" + suffix, p = OP_BY_KEY[key];
         if (!p) return 0;
         return (opVals[key] - p.min) / ((p.max - p.min) || 1);
     };
     var yv = function (n) { return y1 - n * (y1 - y0); };
-    var xa = x0 + wa * k, xd = xa + wd * k, xs = xd + ws * k, xr = xs + wr * k;
+    var xa = x0 + wa * k, xd = xa + wd * k, xs = Math.max(xd + 0.12 * k, x0 + 0.63 * W), xr = Math.min(x1, xs + wr * k);
     var end = OP_BY_KEY[px + "_end"] ? lv("end") : (s === 6 ? 0.5 : 0);
     return { px: px, x: [x0, xa, xd, xs, xr], y: [yv(lv("init")), yv(lv("peak")), yv(lv("sustain")), yv(lv("sustain")), yv(end)], k: k, x0: x0, y0: y0, y1: y1 };
 }
@@ -785,8 +803,8 @@ function opDrawEnv(s, on) {
     var bc = opDisp(sptColor("live_lcd_title"), on);
     sptRgba(bc);
     mgraphics.set_line_width(1);
-    var corners = [[3, 3, 1, 1], [OP_GW - 3, 3, -1, 1], [3, OP_GH - 3, 1, -1], [OP_GW - 3, OP_GH - 3, -1, -1]];
-    for (var i = 0; i < 4; i++) {
+    var corners = [[OP_GW - 3, 3, -1, 1], [OP_GW - 3, OP_GH - 3, -1, -1]];
+    for (var i = 0; i < 2; i++) {
         var q = corners[i];
         mgraphics.move_to(q[0] + q[2] * 6, q[1]); mgraphics.line_to(q[0], q[1]); mgraphics.line_to(q[0], q[1] + q[3] * 6);
         mgraphics.stroke();
@@ -861,7 +879,9 @@ function opDrawHarmonics(o, on) {
 /** Magnitude response (dB) of the current filter at frequency f (approximation of the SVF, used for display only). */
 function opFilterDb(f) {
     var fc = opFilterHz(opNorm(OP_BY_KEY.filter_freq, opVals.filter_freq));
-    var res = opVals.filter_res, k = Math.max(0.02, 1.4142 * (1 - 0.985 * (res / 1.25)));
+    var res = opVals.filter_res;
+    var lq = res < 0.5 ? -0.693 + res * 2.25 : (res < 0.9 ? 0.432 + (res - 0.5) * 1.15 : (res < 1 ? 0.892 + (res - 0.9) * 4.16 : 1.308 + (res - 1) * 7.65));
+    var k = 1 / Math.exp(lq);
     var t = Math.round(opVals.filter_type), w = f / fc, ns = opVals.filter_slope > 0.5 ? 2 : 1;
     var re = 1 - w * w, im = k * w, den = Math.sqrt(re * re + im * im);
     var lp = 1 / den, hp = w * w / den, bp = k * w / den, nt = Math.abs(1 - w * w) / den;
@@ -988,7 +1008,7 @@ function opEnvSetLevel(px, suffix, y, G) {
 /** Inverse of opSegW for a segment width in px -> time ms -> parameter value. */
 function opEnvSetTime(px, suffix, wpx, G) {
     var key = px + "_" + suffix, p = OP_BY_KEY[key];
-    var ms = Math.max(0, (Math.exp(Math.max(0, wpx) / G.k) - 1) * 2);
+    var ms = Math.max(0, (Math.exp(Math.max(0, wpx) / G.k / 0.0721) - 1) * 50);
     var lo = suffix === "attack" ? 0.1 : 1, span = suffix === "attack" ? 200000 : 60000;
     var n = ms <= lo ? 0 : Math.log(ms / lo) / Math.log(span);
     opSet(key, p.min + Math.max(0, Math.min(1, n)) * (p.max - p.min));

@@ -57,7 +57,7 @@ def items():
         it.append(_dial("%s_fix_freq" % l, 13.75, y, "Freq", cond="fix" + L))
         it.append(_dial("%s_fine" % l, 72.5, y, "Fine", cond="nofix" + L))
         it.append(_dial("%s_fix_freq_mul" % l, 72.5, y, "Multi", cond="fix" + L))
-        it.append(_sq("%s_fix_on" % l, 115.0, y + 20.5, 8.0, "shell", style="square"))
+        it.append(_sq("%s_fix_on" % l, 114.5, y + 20.0, 9.0, "shell", style="square"))
         it.append({"key": None, "t": "label", "label": "Fixed", "lx": 105.5, "ly": y + 8.0, "g": "shell"})
         it.append(_dial("osc_%s_level" % l, 149.25, y, "Level"))
         it.append(_sq("osc_%s_on" % l, 191.0, y + 13.5, 11.5, "shell", text=L, style="letter"))
@@ -121,7 +121,7 @@ def items():
         g, l = "s%d" % i, L.lower()
         env_grid(l + "e", g, vel_key="osc_%s_lev_lt_vel" % l, key_key="osc_%s_lev_lt_key" % l)
         it.append(_menu("osc_%s_wave" % l, COL[4], VAL_Y[0] - 6.0, 40.0, g, label="Wave", ly=LBL_Y[0], style="lcdalt"))
-        it.append({"key": None, "t": "waveicon", "x": 466.0, "y": 85.0, "w": 40.0, "h": 16.0, "osc": i, "g": g})
+        it.append({"key": None, "t": "waveicon", "x": 460.5, "y": 80.0, "w": 36.0, "h": 17.0, "osc": i, "g": g})
         it.append(_lcd("osc_%s_feedb" % l, 4, 1, "Feedback", g))
         it.append(_menu("osc_%s_repeat" % l, COL[5], VAL_Y[1] - 6.0, 44.0, g, label="Repeat", ly=LBL_Y[1]))
         it.append(_sq("osc_%s_retrig" % l, COL[4], VAL_Y[2] - 5.0, 10.0, g, text="R", style="rbox"))
@@ -129,7 +129,7 @@ def items():
         it[-1]["x"] = COL[4] + 13.0
         it[-1]["lx"] = COL[4]
         it.append(_lcd("%s_freq_lt_vel" % l, 5, 2, "Osc<Vel", g, w=30.0))
-        it.append(_sq("%s_quantize" % l, 497.0, VAL_Y[2] - 5.0, 10.0, g, text="Q", style="rbox"))
+        it.append(_sq("%s_quantize" % l, 489.0, VAL_Y[2] - 5.0, 10.0, g, text="Q", style="rbox"))
 
     # LFO
     g = "s4"

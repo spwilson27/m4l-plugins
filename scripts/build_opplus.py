@@ -49,7 +49,7 @@ def gen_code():
 
 
 def valueof(p):
-    v = {"parameter_longname": p["name"].strip() or p["key"], "parameter_shortname": p["name"].strip()[:31] or p["key"],
+    v = {"parameter_longname": p["name"] or p["key"], "parameter_shortname": p["name"][:31] or p["key"],   # exact, trailing space of "A Fix On " too
          "parameter_annotation_name": p["name"].strip(), "parameter_linknames": 1, "parameter_initial_enable": 1}
     if p["enum"]:
         v.update({"parameter_type": 2, "parameter_enum": list(p["items"]), "parameter_mmax": len(p["items"]) - 1,
@@ -262,8 +262,9 @@ def build(out=OUT):
         line("obj-face", 1, "obj-graph"),
         line("obj-graph", 0, "obj-face"),
     ]
-    boxes.append(newobj("obj-testhook", "r ---optest", 1000, 300, 90, numinlets=0, numoutlets=1))
+    boxes.append(newobj("obj-testhook", "r opplus_test", 1000, 300, 90, numinlets=0, numoutlets=1))
     lines.append(line("obj-testhook", 0, "obj-face"))
+    lines.append(line("obj-testhook", 0, "obj-graph"))
     doc = sc.patcher(boxes, lines, W, "Operator+: a recreation of Ableton Operator (4-operator FM synth)", "Operator+", "instrument", 0,
                      dev_type="iiii")
     sc.write_amxd(doc, out, dev_type=b"iiii")

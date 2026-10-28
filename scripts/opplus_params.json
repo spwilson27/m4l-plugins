@@ -12377,7 +12377,7 @@
 "key": "osc_a_repeat",
 "name": "Osc-A Repeat",
 "min": 0.0,
-"max": 1.0,
+"max": 5.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12397,7 +12397,7 @@
 "key": "osc_b_repeat",
 "name": "Osc-B Repeat",
 "min": 0.0,
-"max": 1.0,
+"max": 5.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12417,7 +12417,7 @@
 "key": "osc_c_repeat",
 "name": "Osc-C Repeat",
 "min": 0.0,
-"max": 1.0,
+"max": 5.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12437,7 +12437,7 @@
 "key": "osc_d_repeat",
 "name": "Osc-D Repeat",
 "min": 0.0,
-"max": 1.0,
+"max": 5.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12457,7 +12457,7 @@
 "key": "voices",
 "name": "Voices",
 "min": 0.0,
-"max": 1.0,
+"max": 14.0,
 "init": 5,
 "items": [
 "1",
@@ -12534,7 +12534,7 @@
 "key": "mx_vel_dst_a",
 "name": "Vel Dst A",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12584,7 +12584,7 @@
 "key": "mx_vel_dst_b",
 "name": "Vel Dst B",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12634,7 +12634,7 @@
 "key": "mx_key_dst_a",
 "name": "Key Dst A",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12684,7 +12684,7 @@
 "key": "mx_at_dst_a",
 "name": "AT Dst A",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12734,7 +12734,7 @@
 "key": "mx_at_dst_b",
 "name": "AT Dst B",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12784,7 +12784,7 @@
 "key": "mx_pb_dst_a",
 "name": "PB Dst A",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12834,7 +12834,7 @@
 "key": "mx_mw_dst_a",
 "name": "MW Dst A",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12884,7 +12884,7 @@
 "key": "mx_mw_dst_b",
 "name": "MW Dst B",
 "min": 0.0,
-"max": 1.0,
+"max": 22.0,
 "init": 0.0,
 "items": [
 "Off",
@@ -12934,7 +12934,7 @@
 "key": "ui_section",
 "name": "UI Section",
 "min": 0.0,
-"max": 1.0,
+"max": 7.0,
 "init": 0.0,
 "items": [
 "A",

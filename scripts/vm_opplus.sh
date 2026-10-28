@@ -4,9 +4,10 @@
 # the rest there.
 #   scripts/vm_opplus.sh sync               rsync the repo
 #   scripts/vm_opplus.sh audio [case ...]   scripts/run_opplus_audio_tests.py in the VM (shared Max harness, NonRealTime)
-#   scripts/vm_opplus.sh live               write opplus_test.als (Operator and Operator+ on twin MIDI tracks, each followed by
-#                                           the OpCap probe; MCP Bridge on Main) and open it fresh in the VM's Live (Live lock)
-#   scripts/vm_opplus.sh test               scripts/test_opplus_live.js on the host (DSP ready, playback, LOM, A/B, screenshots)
+#   scripts/vm_opplus.sh live               build on the host, sync, write opplus_test.als (scripts/make_smoke_set.py: MCP Bridge
+#                                           on Main) and open it fresh in the VM's Live (Live lock)
+#   scripts/vm_opplus.sh test [step ...]    scripts/test_opplus_live.py on the host: setup (Operator / Operator+ twin tracks with
+#                                           OpCap probes), dsp, params, ab (A/B audio), shots (screenshots per section)
 #   scripts/vm_opplus.sh run                live + test under one hold of the Live lock
 set -u
 VM=macos-1
@@ -34,11 +35,11 @@ case "${1:-}" in
     sync_repo && "${SSH[@]}" "cd ~/${VMREL} && /usr/bin/python3 scripts/run_opplus_audio_tests.py $*" ;;
   live)
     host_build opplus opplus_probe && sync_repo || exit 1
-    "${SSH[@]}" "cd ~/${VMREL} && /usr/bin/python3 scripts/make_opplus_set.py" || exit 1
+    "${SSH[@]}" "cd ~/${VMREL} && /usr/bin/python3 scripts/make_smoke_set.py opplus_test.als" || exit 1
     "$ROOT/scripts/vm_live_open.sh" ensure "~/${VMREL}/opplus_test.als" --fresh ;;
   test)
     shift
-    python3 "$ROOT/scripts/test_opplus_live.js.py" "$@" 2>/dev/null || node "$ROOT/scripts/test_opplus_live.js" "$@" ;;
+    OPPLUS_VM_DIR="$VMREL" python3 "$ROOT/scripts/test_opplus_live.py" "$@" ;;
   *)
     sed -n '2,12p' "$0"; exit 2 ;;
 esac

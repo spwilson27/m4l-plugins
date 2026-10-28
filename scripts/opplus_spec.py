@@ -176,6 +176,8 @@ def spec():
 
     def extra(key, name, items=None, mn=0.0, mx=1.0, init=0.0, style="enum", invisible=1, info=None):
         info = info or ("%s (stored with the Set) of Operator+." % name)
+        if items:
+            mn, mx = 0.0, float(len(items) - 1)
         out.append({"key": key, "name": name, "min": mn, "max": mx, "init": init, "items": items or [],
                     "enum": bool(items), "extra": True, "style": style, "invisible": invisible, "info": info})
 

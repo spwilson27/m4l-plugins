@@ -47,6 +47,7 @@ for (const p of C.OP_P) {
 }
 ok(bad === 0, `display strings equal Operator's at 65 points of every parameter (${bad} mismatches)`);
 for (const p of C.OP_P) ok(typeof p.info === "string" && p.info.length >= 12, `${p.key} has an Info View sentence`);
+for (const p of C.OP_P) if (p.enum) ok(p.min === 0 && p.max === p.items.length - 1, `${p.key}: enum range 0..${p.items.length - 1}`);
 const keys = C.OP_P.map((p) => p.key);
 ok(new Set(keys).size === keys.length, "unique keys");
 ok(new Set(C.OP_P.map((p) => p.name.trim())).size === C.OP_P.length, "unique names");
@@ -219,7 +220,8 @@ const solo = { osc_b_level: 0, osc_c_level: 0, osc_d_level: 0, osc_a_lev_lt_vel:
     const x = render(vals).slice(6000, 15600);
     const dry = render(Object.assign({}, vals, { filter_on: 0 })).slice(6000, 15600);
     const r1 = goertzel(x, 220, 48000) / goertzel(dry, 220, 48000), r8 = goertzel(x, 1760, 48000) / goertzel(dry, 1760, 48000);
-    ok(r1 > 0.85 && r8 < 0.12, `lowpass 745 Hz: 220 Hz kept (${r1.toFixed(2)}), 1760 Hz cut (${r8.toFixed(3)})`);
+    near(r1, 0.525, 0.06, "lowpass 745 Hz with Filt<Key 100 % at A3: 220 Hz at -5.6 dB (Operator in Live: -5.6 dB; key tracking centred on A4)");
+    ok(r8 < 0.01, `lowpass: 1760 Hz cut (${r8.toFixed(4)})`);
 }
 
 // ---------- 6. layout and device ----------

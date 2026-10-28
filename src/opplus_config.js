@@ -332,7 +332,7 @@ function opCfg(vals, rt) {
     c[f + 4] = OP_RETRIG[opRetrigIdx(kv("lfo_sync"))] * 4;
     c[f + 5] = kv("lfo_r_lt_k");
     c[f + 6] = kv("lfo_retrigger");
-    c[f + 7] = kv("lfo_amt");
+    c[f + 7] = kv("lfo_amt") * kv("lfo_amt");   // measured: vibrato depth grows with Amount^2 (10 % = +-0.31 st, 50 % = +-8 st)
     c[f + 8] = kv("lfo_amt_a") / 100;
     c[f + 9] = Math.round(kv("lfo_dst_b"));
     c[f + 10] = kv("lfo_amt_b") / 100;

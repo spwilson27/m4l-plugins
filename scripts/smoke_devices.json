@@ -6,6 +6,12 @@
     "skipParams": [],
     "notes": "gen core created at load; meter > 0 is the ready probe"
   },
+  "devices/Operator+.amxd": {
+    "kind": "instrument",
+    "ready": {"global": "opplus_trace", "regex": "dsp ready"},
+    "notes": "deferred gen; Operator's default patch (sine on A) plays the MIDI clip",
+    "needsSignal": true
+  },
   "devices/Better Sampler.amxd": {
     "kind": "instrument",
     "ready": {

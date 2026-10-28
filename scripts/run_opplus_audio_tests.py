@@ -42,7 +42,7 @@ CASES = [
     {"name": "envelope", "vals": S(ae_attack=0.39, ae_decay=0.5, ae_sustain=0.5, ae_release=0.5), "notes": [(0, 57, 600)], "dur": 1200, "env": True},
     {"name": "poly3", "vals": S(), "notes": [(0, 57), (0, 64), (0, 69)], "dur": 400, "f0": 110, "extra_f": [220.0, 329.63, 440.0], "poly": True},
     {"name": "release_silent", "vals": S(ae_release=0.2), "notes": [(0, 57, 100)], "dur": 800, "silent_tail": True},
-    {"name": "vibrato", "vals": S(lfo_on=1, lfo_type=0, lfo_range=0, lfo_rate=100, lfo_amt=0.05, osc_a_lt_lfo=1, le_attack=0),
+    {"name": "vibrato", "vals": S(lfo_on=1, lfo_type=0, lfo_range=0, lfo_rate=100, lfo_amt=0.2, osc_a_lt_lfo=1, le_attack=0),
      "notes": [(0, 57)], "dur": 1000, "track": True, "vib": True},
     {"name": "spread", "vals": S(spread=50), "notes": [(0, 57)], "dur": 400, "stereo": True},
     {"name": "noise", "vals": S(osc_a_wave=21), "notes": [(0, 57)], "dur": 300, "noise": True},
@@ -110,8 +110,8 @@ def check(case, r):
                 errs.append("h%d %.3f vs %.3f" % (i + 1, g, w))
     env = [float(v) for v in str(r.get("env", "")).split(",") if v != ""]
     if case.get("lp"):
-        # saw 64 through LP 745 Hz 24 dB: the 8th harmonic (1760 Hz) is cut by > 18 dB relative to a saw's 1/8
-        if not (float(r["h1"]) > 0.6 * OP * 2 / 3.14159 and float(r["h8"]) < float(r["h1"]) / 8 * 0.12):
+        # saw 64 through LP 745 Hz 24 dB, Filt<Key 100 %: Operator in Live has the fundamental at -5.6 dB, 1760 Hz far down
+        if not (abs(float(r["h1"]) / (OP * 2 / 3.14159) - 0.525) < 0.06 and float(r["h8"]) < float(r["h1"]) / 8 * 0.05):
             errs.append("lowpass h1 %.4f h8 %.5f" % (float(r["h1"]), float(r["h8"])))
     if case.get("env"):
         if not (env[2] > 0.5 * OP):
@@ -129,7 +129,8 @@ def check(case, r):
             errs.append("tail not silent / voice still active (%s, voices %s)" % (max(env[-20:]), r["voices"]))
     if case.get("vib"):
         tr = [float(v) for v in str(r["track"]).split(",") if float(v) > 0][5:]
-        if not tr or max(tr) - min(tr) < 3:
+        # Operator in Live at Amount 20 %: +-1.2 st (30.8 st x Amount^2), i.e. about 31 Hz peak to peak at 220 Hz
+        if not tr or not 22 < max(tr) - min(tr) < 40:
             errs.append("no vibrato: %s" % tr[:20])
     if case.get("stereo") and float(r["lrdiff"]) < 0.01:
         errs.append("spread: left == right")
