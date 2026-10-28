@@ -36,12 +36,15 @@ check("DV_ENGINE_GEN split", C.DV_ENGINE_GEN.split === 1 && C.DV_ENGINE_GEN.rero
 
 // ---- scope layout ----------------------------------------------------------------------------------------------
 const S = C.DV_SCOPE;
-const slots = Object.entries(S).filter(([k]) => !["METAS", "DRAWS", "HIDDEN", "ECHO", "WAVE"].includes(k)).map(([, v]) => v);
+const slots = Object.entries(S).filter(([k]) => !["METAS", "DRAWS", "HIDDEN", "HIDDEN2", "ECHO", "WAVE"].includes(k)).map(([, v]) => v);
 check("scope scalar slots unique", new Set(slots).size === slots.length);
-check("scope blocks do not overlap", S.METAS + 8 <= S.DRAWS && S.DRAWS + 8 <= S.PK_IN && S.HIDDEN + 64 <= S.ECHO);
+check("scope blocks do not overlap", S.METAS + 8 <= S.DRAWS && S.DRAWS + 8 <= S.PK_IN && S.HIDDEN + 64 <= S.ECHO && S.ECHO + 32 <= S.HIDDEN2 && S.HIDDEN2 + 16 <= S.WAVE);
+check("dvHiddenSlot: rows 0..63 at HIDDEN, 64.. at HIDDEN2", C.dvHiddenSlot(0) === S.HIDDEN && C.dvHiddenSlot(63) === S.HIDDEN + 63 && C.dvHiddenSlot(64) === S.HIDDEN2 && C.dvHiddenSlot(79) === S.HIDDEN2 + 15);
+check("DV_MAP capacity 80 rows, bank stride 640, 1296 samples", C.DV_MAP.ROW_CAP === 80 && C.DV_MAP.BANK_STRIDE === 640 && C.DV_MAP.ROW_CAP * C.DV_MAP.STRIDE === C.DV_MAP.BANK_STRIDE && C.DV_MAP.SAMPS === 1296 && C.DV_MAP.BASE + 2 * C.DV_MAP.BANK_STRIDE === C.DV_MAP.SAMPS);
+check("curve codes: sat is 4", C.DV_CURVE_CODE.sat === 4 && C.DV_CURVE_CODE.step === 3);
 check("scope fits", S.WAVE + C.DV_WAVE_BLOCKS * C.DV_WAVE_STRIDE === C.DV_SCOPE_SAMPS && S.ECHO + 32 <= S.WAVE);
 check("echo offsets inside 32", Object.values(C.DV_ECHO).every((v) => v >= 0 && v < 32));
-check("DV_HIDDEN fits its scope block", C.DV_HIDDEN.length <= 64);
+check("DV_HIDDEN fits its scope blocks and the map", C.DV_HIDDEN.length <= C.DV_MAP.ROW_CAP && C.DV_HIDDEN.length <= 64 + 16);
 
 // ---- hash / draw -----------------------------------------------------------------------------------------------
 let sum = 0, n = 0;
@@ -143,6 +146,7 @@ check("Ring 100 is 2.0 s total", near(C.DV_RING_HOLD_S + C.dvRingTr(100) + C.DV_
 check("env 1 for 150 ms, then decays, -66 dB at Tr", C.dvRingEnv(0.1, 1) === 1 && near(20 * Math.log10(C.dvRingEnv(0.15 + 1.83, 1.83)), -66, 0.01));
 check("env exactly 0 after 2.0 s at Ring 100", C.dvRingEnv(2.0 + 1e-9, C.dvRingTr(100)) === 0 && C.dvRingEnv(2.5, 1.83) === 0);
 check("env monotonic non-increasing", (() => { let prev = 2; for (let t = 0; t < 2.2; t += 0.001) { const e = C.dvRingEnv(t, 1.83); if (e > prev + 1e-12) return false; prev = e; } return true; })());
+check("dvRingEnv takes a hold: 1 until it ends, Classic default unchanged, exact 0 after hold + Tr + 0.02", C.dvRingEnv(0.5, 1, 0.6) === 1 && C.dvRingEnv(0.5, 1) === C.dvRingEnv(0.5, 1, 0.15) && C.dvRingEnv(0.6 + 1 + 0.02 + 1e-9, 1, 0.6) === 0 && near(20 * Math.log10(C.dvRingEnv(0.6 + 1, 1, 0.6)), -66, 0.01));
 check("env never exceeds 1, no pre-hit signal", C.dvRingEnv(-0.1, 1) === 0 && C.dvRingEnv(0, 1) === 1);
 check("windows sum to 1 and gB >= 0", (() => { for (let t = 0; t < 0.5; t += 0.0005) for (const [a, b] of [[10, 120], [20, 180], [15, 150]]) { const w = C.dvWindows(t, a, b); if (w.gB < 0 || w.gT < 0 || w.gR < 0 || !near(w.gT + w.gB + w.gR, 1, 1e-12)) return false; } return true; })());
 check("windows at 0: transient only; at 0.5 s: long only", (() => { const w0 = C.dvWindows(0, 15, 150), w1 = C.dvWindows(0.5, 15, 150); return w0.gT === 1 && w0.gR === 0 && w1.gT === 0 && w1.gR === 1; })());
@@ -151,9 +155,18 @@ check("latency 256 / 1279", C.dvLatency(0) === 256 && C.dvLatency(1) === 1279);
 // ---- hidden table ---------------------------------------------------------------------------------------------------------
 const H = C.DV_HIDDEN;
 check("hidden ids unique", new Set(H.map((r) => r.id)).size === H.length);
-check("hidden row count 64 (36 Classic + 28 appended), the map's and the scope's limit", H.length === 64 && C.DV_HIDDEN_CLASSIC === 36, String(H.length));
+check("hidden row count 72 (36 Classic + 28 Arch Mode + 8 extra), capacity 80", H.length === 72 && C.DV_HIDDEN_CLASSIC === 36 && H.length <= C.DV_MAP.ROW_CAP, String(H.length));
+check("extra rows 64..71 are marked extra, in order", H.slice(64).map((r) => r.id).join() === "lfo_hz,lfo_depth,lfo_shape,lfo_tgt,tape_dir,dry_rep,env_hold_ms,snd_close_ms" && H.every((r, i) => !!r.extra === (i >= 64)));
+check("extra rows hold the Classic constants", (() => { const c = Object.fromEntries(H.slice(64).map((r) => [r.id, [r.lo, r.hi]])); return JSON.stringify(c) === JSON.stringify({ lfo_hz: [1, 1], lfo_depth: [0, 0], lfo_shape: [0, 0], lfo_tgt: [0, 0], tape_dir: [0, 0], dry_rep: [0, 0], env_hold_ms: [150, 150], snd_close_ms: [200, 200] }); })());
+check("DV_NONFX lfo, dry, env", C.DV_NONFX.join() === "lfo,dry,env");
 check("every meta feeds a row", [0, 1, 2, 3, 4, 5, 6, 7].every((m) => H.some((r) => r.meta === m)));
-check("21 effects (17 + tape, gate, zap, spec)", Object.keys(C.DV_EFFECTS).length === 21, Object.keys(C.DV_EFFECTS).join());
+check("21 effects (17 + tape, gate, zap, spec), no lfo / dry / env", Object.keys(C.DV_EFFECTS).length === 21 && C.DV_NONFX.every((f) => !(f in C.DV_EFFECTS)), Object.keys(C.DV_EFFECTS).join());
+check("sat curve: 0 at u 0, hi at u >= 0.5, monotonic, 0.64 at 0.2", (() => {
+    const row = { curve: "sat", lo: 0, hi: 1 }; let prev = -1;
+    for (let u = 0; u <= 1.0001; u += 0.01) { const v = C.dvCurve(row, u); if (v < prev - 1e-12) return false; prev = v; }
+    return C.dvCurve(row, 0) === 0 && near(C.dvCurve(row, 0.5), 1, 1e-12) && C.dvCurve(row, 1) === 1 && near(C.dvCurve(row, 0.2), 0.64, 1e-12) &&
+        C.dvMapValue({ meta: 0, src: 0, curve: 4, lo: 2, hi: 6, jit: 1 }, [20, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]) === 2 + 4 * 0.64;
+})());
 const neutral = C.dvHiddenNeutral();
 H.forEach((r, i) => {
     if (r.kind === "A") {
@@ -244,12 +257,14 @@ check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenG
     check("Classic keeps the appended rows at their constants", cst === 0, String(cst));
     const f = C.dvMapFloats(C.dvArchMap(3));
     check("dvMapFloats: STRIDE floats per row, fits a bank", f.length === H.length * C.DV_MAP.STRIDE && f.length <= C.DV_MAP.BANK_STRIDE && C.DV_MAP.BASE + 2 * C.DV_MAP.BANK_STRIDE <= C.DV_MAP.SAMPS);
+    check("Classic Archs 0..1000 keep rows 64..71 at their constants (curve, meta untouched)", (() => { for (let a = 0; a <= 1000; a++) { const mp = C.dvArchMap(a, 0); for (let i = 64; i < 72; i++) if (mp[i].lo !== H[i].lo || mp[i].hi !== H[i].hi || mp[i].curve !== C.DV_CURVE_CODE[H[i].curve]) return false; } return true; })());
 }
 
 // ---- Arch Modes: Wonky (1), Natural (2), Glitch (3) ------------------------------------------------------------------------------
 {
     const idx = C.DV_HIDDEN_INDEX, rng = C.dvRng(11);
     const neu0 = C.dvHiddenNeutral();
+    const famMetaOf = (mp, fam) => { const r = mp[idx[{ zap: "zap_wet", pitch: "pitch_wet", form: "form_wet", ring: "ring_wet", res: "res_wet" }[fam]]]; return r && r.hi > r.lo ? r.meta : null; };
     for (const md of [1, 2, 3]) {
         const name = C.DV_MODES[md], def = C.DV_MODE_DEF[md];
         const bad = [], distinct = new Set(), counts = [];
@@ -264,7 +279,7 @@ check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenG
             H.forEach((r, i) => { if (r.kind === "A" && Math.abs(neu[i] - neu0[i]) > 1e-12) bad.push(`a${a} neutral ${r.id}`); });
             for (let m = 0; m < 7; m++) if (!sum[m].length) bad.push(`a${a} meta ${m} drives nothing`);
             const ts = mp[idx.tr_s];
-            if (ts.meta !== 7 || ts.lo !== 0.05 || ts.hi !== def.tr || ts.curve !== 1) bad.push(`a${a} tr_s`);
+            if (ts.meta !== 7 || ts.lo !== (def.trLo !== undefined ? def.trLo : 0.05) || ts.hi !== def.tr || ts.curve !== 1) bad.push(`a${a} tr_s`);
             const all = [].concat(...sum);
             if (md === 2 && !(all.includes("snap") && all.includes("res") && all.includes("conv"))) bad.push(`a${a} natural core families`);
             if (md === 2 && ["crush", "ring", "gate", "zap", "spec"].some((x) => all.includes(x))) bad.push(`a${a} natural has a glitch family`);
@@ -277,13 +292,15 @@ check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenG
                 H.forEach((r, i) => {
                     const env = (def.env && def.env[r.id]) || C.DV_ARCH_ENV[r.id], v = hv[i];
                     if (!Number.isFinite(v)) { bad.push(`a${a} ${r.id} not finite`); return; }
+                    if (r.extra) return; // checked below
                     if (mp[i].lo === mp[i].hi && Math.abs(v - neu0[i]) < 1e-12) return; // a family out of play keeps its Arch 0 neutral value
                     let lo, hi;
-                    if (r.id === "tr_s") { lo = 0.05; hi = def.tr; }
+                    if (r.id === "tr_s") { lo = def.trLo !== undefined ? def.trLo : 0.05; hi = def.tr; }
                     else if (r.id === "pitch_st") { lo = -12; hi = 12; }
                     else if (r.id === "tape_st" && md === 2) { lo = -7; hi = 7; }
                     else if (env && env.b) { lo = env.b[0]; hi = env.b[1]; }
                     else if (env && env.abs) { lo = r.lo; hi = env.abs[1]; }
+                    else if (env && env.top) { lo = r.lo; hi = env.top[1]; }
                     else if (env && env.amax) { lo = r.lo; hi = env.cap !== undefined ? env.cap : r.lo + (r.hi - r.lo) * env.amax[1]; }
                     else { lo = Math.min(r.lo, r.hi); hi = Math.max(r.lo, r.hi); }
                     if (env && env.set) { lo = Math.min(lo, ...env.set); hi = Math.max(hi, ...env.set); }
@@ -291,6 +308,43 @@ check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenG
                     if (r.kind === "D" && v !== Math.floor(v)) bad.push(`a${a} ${r.id} not integer`);
                 });
             });
+            // ---- rows 64..71 ----
+            const row = (id) => mp[idx[id]];
+            const holdHi = Math.max(row("env_hold_ms").lo, row("env_hold_ms").hi), closeHi = Math.max(row("snd_close_ms").lo, row("snd_close_ms").hi);
+            if (holdHi / 1000 + def.tr + 0.02 > 8.0 + 1e-9) bad.push(`a${a} hold ${holdHi} + Tr ${def.tr} > 8 s`);
+            if (row("env_hold_ms").lo !== 150 || row("snd_close_ms").lo !== 200 || row("env_hold_ms").meta !== 7 || row("snd_close_ms").meta !== 7) bad.push(`a${a} hold/close lo/meta`);
+            if (def.x.holdMax ? holdHi > def.x.holdMax + 1e-9 || closeHi > def.x.closeMax + 1e-9 : holdHi !== 150 || closeHi !== 200) bad.push(`a${a} hold/close top`);
+            // dry_rep: bounded by 1.1 x the strongest in-play anchor, on its meta, neutral at meta 0 (Pitch 50)
+            const dry = row("dry_rep");
+            const anchors = def.x.dryAnchors.map((id) => row(id)).filter((rw) => rw.hi > rw.lo && !(rw.lo === rw.hi));
+            const inPlayAnchors = def.x.dryAnchors.filter((id) => {
+                const fx = H[idx[id]].fx; return all.includes(fx) && row(id).hi > row(id).lo;
+            }).map((id) => row(id));
+            const anchorHi = inPlayAnchors.length ? Math.max(...inPlayAnchors.map((rw) => rw.hi)) : 0;
+            if (anchorHi === 0 ? (dry.lo !== 0 || dry.hi !== 0) : (dry.hi > 1.1 * anchorHi + 1e-9 || dry.hi < Math.min(def.x.dryHi[0], 1.1 * anchorHi) - 1e-9 || dry.hi > def.x.dryHi[1] + 1e-9)) bad.push(`a${a} dry_rep ${dry.hi} anchor ${anchorHi}`);
+            if (dry.hi > 0) {
+                const anchorRow = inPlayAnchors.find((rw) => rw.meta === dry.meta);
+                if (!anchorRow) bad.push(`a${a} dry_rep meta ${dry.meta} is no anchor's meta`);
+                const wantCurve = dry.meta === C.DV_PITCH_META ? C.DV_CURVE_CODE.abs50 : (def.sat ? C.DV_CURVE_CODE.sat : C.DV_CURVE_CODE.lin);
+                if (dry.curve !== wantCurve) bad.push(`a${a} dry_rep curve`);
+            }
+            if (md === 2 && dry.hi > 0.3 + 1e-9) bad.push(`a${a} natural dry_rep ${dry.hi}`);
+            // lfo: only with a target family in play, depth neutral at meta 0, sat (abs50 on Pitch)
+            const dep = row("lfo_depth"), tgt = row("lfo_tgt"), hz = row("lfo_hz"), shp = row("lfo_shape");
+            const tfx = ["zap", "pitch", "form", "ring", "res"];
+            if (dep.hi > 0) {
+                if (!def.x.lfoP) bad.push(`a${a} lfo in a mode without it`);
+                if (tgt.lo !== tgt.hi || tgt.lo < 0 || tgt.lo > 4 || !all.includes(tfx[tgt.lo])) bad.push(`a${a} lfo_tgt ${tgt.lo} not in play`);
+                else if (famMetaOf(mp, tfx[tgt.lo]) !== null && famMetaOf(mp, tfx[tgt.lo]) !== dep.meta) bad.push(`a${a} lfo_depth meta ${dep.meta} != target meta`);
+                if (dep.lo !== 0 || dep.hi < 0.4 - 1e-9 || dep.hi > 1 + 1e-9) bad.push(`a${a} lfo_depth ${dep.hi}`);
+                if (dep.curve !== (dep.meta === C.DV_PITCH_META ? C.DV_CURVE_CODE.abs50 : (def.sat ? C.DV_CURVE_CODE.sat : C.DV_CURVE_CODE.lin))) bad.push(`a${a} lfo_depth curve`);
+                const lo = Math.min(hz.lo, hz.hi), hi = Math.max(hz.lo, hz.hi);
+                if (lo < def.x.lfoHz[0] - 1e-9 || hi > def.x.lfoHz[1] + 1e-9 || Math.log(hi / lo) < 0.4 * Math.log(def.x.lfoHz[1] / def.x.lfoHz[0]) - 1e-9 || hz.meta !== dep.meta || hz.curve !== C.DV_CURVE_CODE.log) bad.push(`a${a} lfo_hz ${hz.lo}..${hz.hi}`);
+                const n = Math.abs(shp.hi - shp.lo) + 1;
+                if (shp.src !== 1 || n < 2 || n > 4 || Math.min(shp.lo, shp.hi) < 0 || Math.max(shp.lo, shp.hi) > 3) bad.push(`a${a} lfo_shape ${shp.lo}..${shp.hi}`);
+            } else if (dep.hi !== 0 || tgt.hi !== 0 || hz.lo !== 1 || hz.hi !== 1 || shp.lo !== 0 || shp.hi !== 0) bad.push(`a${a} lfo off but not constant`);
+            const td = row("tape_dir");
+            if (td.hi !== td.lo) { if (!all.includes("tape") || td.lo !== 0 || td.hi !== 1 || td.src !== 1 || !def.x.tapeDirP) bad.push(`a${a} tape_dir`); }
             if (bad.length > 5) break;
         }
         check(`${name}: neutral at meta 0, every meta drives something, Tr top ${def.tr} s, mode families, values in the envelopes`, bad.length === 0, bad.slice(0, 5).join("; "));
@@ -307,7 +361,27 @@ check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenG
         for (const id of ["res_f0", "comb_hz", "pitch_st", "tape_st"]) { const r = mp[idx[id]]; if (r.meta === C.DV_PITCH_META && r.lo !== r.hi) { n++; if (r.hi > r.lo) up++; } }
     }
     check("Natural: everything Pitch tunes rises with Pitch", n > 100 && up === n, `${up}/${n}`);
-    check("dvModeTrMax: 1.83 Classic / Natural, 7.83 Wonky / Glitch", C.dvModeTrMax(0) === 1.83 && C.dvModeTrMax(2) === 1.83 && C.dvModeTrMax(1) === 7.83 && C.dvModeTrMax(3) === 7.83);
+    check("dvModeTrMax: 1.83 Classic / Natural, 7.38 Wonky, 6.78 Glitch", C.dvModeTrMax(0) === 1.83 && C.dvModeTrMax(2) === 1.83 && C.dvModeTrMax(1) === 7.38 && C.dvModeTrMax(3) === 6.78);
+    check("hold + Tr + 0.02 <= 8.0 at the maxima", 0.6 + C.dvModeTrMax(1) + 0.02 <= 8.0 + 1e-12 && 1.2 + C.dvModeTrMax(3) + 0.02 <= 8.0 + 1e-12);
+    check("Wonky / Glitch Ring floor 0.45 / 0.7 s, Natural 0.05", C.dvArchMap(9, 1)[idx.tr_s].lo === 0.45 && C.dvArchMap(9, 3)[idx.tr_s].lo === 0.7 && C.dvArchMap(9, 2)[idx.tr_s].lo === 0.05);
+    // sat on every non-Pitch amount row in Wonky / Glitch (log rows, abs50 rows aside); Natural none
+    let satBad = 0, satSeen = 0, natSat = 0;
+    for (let a = 0; a <= 300; a++) for (const md of [1, 2, 3]) {
+        const mp = C.dvArchMap(a, md);
+        H.forEach((r, i) => {
+            if (r.extra || r.kind !== "A" || r.id === "pitch_st" || mp[i].lo === mp[i].hi) return;
+            const isLog = mp[i].curve === C.DV_CURVE_CODE.log;
+            if (mp[i].meta === C.DV_PITCH_META) { if (mp[i].curve !== C.DV_CURVE_CODE.abs50) satBad++; return; }
+            if (md === 2) { if (mp[i].curve === C.DV_CURVE_CODE.sat) natSat++; return; }
+            if (isLog) return;
+            if (mp[i].curve !== C.DV_CURVE_CODE.sat) satBad++; else satSeen++;
+        });
+    }
+    check("sat on every non-Pitch amount row in Wonky / Glitch, never in Natural", satBad === 0 && natSat === 0 && satSeen > 1000, `${satBad}/${natSat}/${satSeen}`);
+    // the draws of rows 0..63 are unchanged by the extras: with an LFO map the family structure still matches the no-extras generator
+    const lfoMaps = [1, 3].map((md) => { let n = 0; for (let a = 0; a <= 1000; a++) if (C.dvArchMap(a, md)[idx.lfo_depth].hi > 0) n++; return n; });
+    check("LFO is chosen in a good share of Wonky (p 0.8) / Glitch (p 0.5) Archs", lfoMaps[0] > 500 && lfoMaps[1] > 200 && lfoMaps[0] > lfoMaps[1], lfoMaps.join());
+    check("Natural never has an LFO or reversed tape", (() => { for (let a = 0; a <= 1000; a++) { const mp = C.dvArchMap(a, 2); if (mp[idx.lfo_depth].hi !== 0 || mp[idx.tape_dir].hi !== 0) return false; } return true; })());
 }
 
 // ---- blob ---------------------------------------------------------------------------------------------------------------------

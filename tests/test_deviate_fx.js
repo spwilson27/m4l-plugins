@@ -42,17 +42,17 @@ for (const [label, text] of [["main gen", T.full], ["spec gen", T.spec]]) {
 const HI = cfg.DV_HIDDEN_INDEX;
 const data = (n, ch) => new gx.DataSim(n, ch || 1);
 function page(hv) {
-    const h = data(64), q = data(96);
+    const h = data(80), q = data(96);
     hv.forEach((v, i) => h.poke(v, i));
-    fns.dv_pg1(h, q); fns.dv_pg2(h, q); fns.dv_pg3(h, q); fns.dv_pg4(h, q);
+    fns.dv_pg1(h, q); fns.dv_pg2(h, q); fns.dv_pg3(h, q); fns.dv_pg4(h, q); fns.dv_pg5(h, q);
     return q;
 }
-const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 67, 73, 76, 87];
+const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 67, 73, 76, 87, 91, 95];
 {
     const q = page(cfg.dvHiddenNeutral());
     ok(WETS.every((i) => q.peek(i) === 0), `neutral hidden values give exactly 0 for every wet / amount (${WETS.filter((i) => q.peek(i) !== 0)})`);
     // pass-through entries come from the right hidden row
-    const hv = new Float64Array(64);
+    const hv = new Float64Array(80);
     for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) hv[i] = 3.0 + i * 1.37;
     hv[HI.tr_s] = 0.8;
     const q2 = page(hv);
@@ -63,6 +63,7 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 6
     const p4 = ["tape_wet", "tape_st", "tape_glide", "tape_ms", "loop_ms", "loop_step", "gate_wet", "gate_hz", "gate_duty", "zap_wet", "zap_f0", "zap_f1", "zap_ms",
         "zap_res", "bend_st", "bend_ms", "ring_sweep", "vowel_sweep", "res_kind", "res_drop", "spec_wet", "spec_op", "spec_amt"];
     p4.forEach((id, k) => { pass[67 + k] = id; });
+    ["lfo_hz", "lfo_depth", "lfo_shape", "lfo_tgt", "tape_dir", "dry_rep"].forEach((id, k) => { pass[90 + k] = id; }); // dv_pg5: rows 64..69 -> pv 90..95
     for (const k in pass) ok(q2.peek(Number(k)) === hv[HI[pass[k]]], `pv[${k}] = hidden ${pass[k]}`);
     ok(q2.peek(13) === 12 - 1.25 * hv[HI.crush_bits] && q2.peek(14) === (1 + 0.75 * hv[HI.crush_bits]) * hv[HI.crush_sr], "crush bits / factor from crush_bits x crush_sr");
     ok(q2.peek(9) === Math.min(3, hv[HI.drive_amt] * 1.7 + hv[HI.drive_shape]), "drive shape = 1.7 drive + drive_shape, at most 3");
@@ -228,6 +229,16 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 6
         ok(lib.peak(r, 16000, 20000) < lib.peak(r, 0, 8000) + 1e-9, `resonator stays stable (f0 ${f0}, stretch ${sx}, t60 ${t60})`);
     }
     ok(nan === 0 && worst < 40, `resonator output is finite and bounded (max ${worst.toFixed(2)})`);
+    // tone mode: T60 up to 6.6 s with Q up to 1500 once t60 > 1.21 (Tr > 1.84); Classic (t60 <= 1.2) keeps the cap of 150
+    {
+        const qOf = (f0, t60) => { const st = data(48), pv = data(96), io = data(2); pv.poke(f0, 21); pv.poke(1, 22); pv.poke(t60, 23); fns.dv_res(io, pv, 20, 1, st, SR); return 1 / st.peek(6 + 5); };
+        ok(Math.abs(qOf(1000, 1.2) - 150) < 1e-6, "resonator Q is capped at 150 for t60 <= 1.2");
+        ok(Math.abs(qOf(1000, 5) - 1500) < 1e-6 || qOf(1000, 5) > 150, `resonator Q passes 150 for a long t60 (Q ${qOf(1000, 5).toFixed(0)} at t60 5)`);
+        ok(qOf(6000, 6.6) <= 1500 + 1e-9, "resonator Q is capped at 1500");
+        const hvT = new Float64Array(80); hvT[HI.tr_s] = 7.0;
+        const qT = page(hvT), hvC = new Float64Array(80); hvC[HI.tr_s] = 1.8;
+        ok(Math.abs(qT.peek(23) - 6.3) < 1e-12 && Math.abs(page(hvC).peek(23) - 1.2) < 1e-12, "dv_pg2: resonator T60 = 0.9 Tr up to 6.6 s for Tr > 1.84, 1.2 s cap below");
+    }
     // the 0.9 Tr rule at the extremes: the lowest mode of a 1.2 s t60 sets the worst Q (clamped to 150)
     const hi = run(420, 1, 1.2, 1, 12000, (i) => (i === 0 ? 1 : 0));
     ok(lib.peak(hi, 0, 12000) < 5, "impulse excitation at the highest Q stays small");
@@ -391,7 +402,7 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 6
         for (let i = 0; i < n; i++) {
             const x = input(i);
             io.poke(x, 0); io.poke(-x, 1);
-            fns.dv_tape(io, pv, 67, st, rb, SR, act === undefined ? 1 : act, i === resetAt ? 1 : 0);
+            fns.dv_tape(io, pv, 67, st, rb, SR, act === undefined ? 1 : act, i === resetAt ? 1 : 0, cfgp.rev || 0);
             out[i] = io.peek(0);
             if (io.peek(1) !== -out[i]) out[i] = NaN;
         }
@@ -413,6 +424,32 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 6
     ok(near(ys, 1160) > 0.99 && near(ys, 1590) > 0.99 && lib.peak(ys, 1200, 1560) < 1e-9, `stutter step +12 st: repeat 2 twice as fast, repeat 3 four times (${near(ys, 1160)}, ${near(ys, 1590)})`);
     const yo = tape({ st: -12 }, sine(300), 6000, 100, 0);
     ok(yo.every((v, i) => v === Math.sin(2 * Math.PI * 300 * i / SR)), "inactive tape passes the dry through");
+    {
+        // reverse: an impulse at sta + d (sta = 100) with a loop of L = 1000 samples comes back at ~ 2L - d after the reset (reading sta + 2L - pos)
+        const Lms = 1000 / 48, d = 300, L = 1000, at = 100;
+        const imp2 = (i) => (i === at + d ? 1 : 0);
+        const yv = tape({ loop: Lms, rev: 1 }, imp2, 5000, at);
+        const peakAt = (y, a, b) => { let k = a; for (let i = a; i < b; i++) if (Math.abs(y[i]) > Math.abs(y[k])) k = i; return k; };
+        const kr = peakAt(yv, at + L + 50, at + 2 * L - 10);
+        ok(Math.abs(kr - (at + 2 * L - d)) <= 2 && Math.abs(yv[kr]) > 0.9, `tape reverse with a loop: the impulse returns reversed at 2L - d (${kr - at} vs ${2 * L - d}, level ${yv[kr].toFixed(3)})`);
+        ok(Math.abs(yv[at + d]) > 0.99, "tape reverse: the live pass still plays forward");
+        const yw = tape({ loop: Lms, rev: 1 }, imp2, 5000, at);
+        ok(yw.every((v, i) => v === yv[i]), "tape reverse is deterministic");
+        // the loop period is 2L: the forward copy repeats 2L after the first
+        ok(Math.abs(yv[at + d + 2 * L]) > 0.9 || Math.abs(yv[at + d + 2 * L + 1]) > 0.9 || Math.abs(yv[at + d + 2 * L - 1]) > 0.9, "tape reverse: the loop period is 2 L");
+        // no loop: the window is the glide ms (here 800 samples); reverse follows the live pass, then goes silent
+        const Wms = 800 / 48;
+        const yn = tape({ ms: Wms, rev: 1 }, (i) => (i === at + 200 ? 1 : 0), 4000, at);
+        const kn = peakAt(yn, at + 800 + 20, at + 1600 - 10);
+        ok(Math.abs(kn - (at + 1600 - 200)) <= 2 && Math.abs(yn[kn]) > 0.9, `tape reverse without a loop: window = tape_ms (${kn - at} vs ${1600 - 200})`);
+        ok(lib.peak(yn, at + 1700, 4000) < 1e-12, "tape reverse without a loop is silent after the reversed window");
+        // never reads ahead of the writing: a slow rate (-12 st) keeps pos <= tt, finite
+        const ys2 = tape({ st: -12, ms: Wms, rev: 1 }, sine(300), 6000, at);
+        ok(ys2.every(Number.isFinite) && lib.peak(ys2, 0, 6000) < 1.0001, "tape reverse at -12 st stays finite and bounded");
+        // forward (rev 0) is unchanged by the new argument
+        const yf = tape({ loop: Lms }, imp2, 3000, at);
+        ok(Math.abs(yf[at + d]) > 0.99 && Math.abs(yf[at + L + d]) > 0.99, "tape forward loop unchanged (rev 0)");
+    }
     let fin = true;
     const yr = tape({ st: -7, loop: 35, step: -3 }, (i) => Math.sin(i * 0.01) * (i % 7000 < 4000 ? 1 : 0), 40000, 100);
     for (let i = 0; i < yr.length; i++) if (!Number.isFinite(yr[i]) || Math.abs(yr[i]) > 2.2) fin = false;
@@ -469,11 +506,25 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65, 6
     const r1 = lib.rms(fz.L, 4000, 5000), r2 = lib.rms(fz.L, 12000, 14000), r3 = lib.rms(fz.L, 36000, 38000);
     ok(r2 > 0.3 * r1 && r3 < r2 && r3 > 0.01 * r1, `freeze holds the spectrum after the input stops and decays slowly (${r1.toFixed(3)} ${r2.toFixed(3)} ${r3.toFixed(4)})`);
     let bad = 0;
-    for (const op of [0, 1, 2, 3]) for (const amt of [0, 0.5, 1]) {
+    for (const op of [0, 1, 2, 3, 4, 5]) for (const amt of [0, 0.5, 1]) {
         const r = spec(op, amt, (i) => Math.sin(i * 0.07) * (i % 3000 < 1500 ? 1 : 0.1), 9000, 1000);
         for (let i = 0; i < 9000; i++) if (!Number.isFinite(r.L[i]) || !Number.isFinite(r.R[i]) || Math.abs(r.L[i]) > 4) bad++;
     }
     ok(bad === 0, `every spectral op and amount stays finite and bounded (${bad})`);
+    {
+        const tone = (i) => 0.5 * Math.sin(i * 0.2) + 0.2 * Math.sin(i * 0.37 + 0.3);
+        const a4 = spec(4, 0.5, tone, 8000, 1e9), b4 = spec(4, 0.5, tone, 8000, 1e9), id0 = spec(1, 0.5, tone, 8000, 1e9);
+        let same = true, diff = 0;
+        for (let i = 0; i < 8000; i++) { if (a4.L[i] !== b4.L[i]) same = false; diff = Math.max(diff, Math.abs(a4.L[i] - id0.L[i])); }
+        ok(same && diff > 0.05 && lib.rms(a4.L, 3000, 8000) > 0.02, `scramble (op 4) is deterministic and changes the spectrum (diff ${diff.toFixed(3)})`);
+        const a5 = spec(5, 1, tone, 12000, 1e9), b5 = spec(5, 1, tone, 12000, 1e9);
+        let same5 = a5.L.every((v, i) => v === b5.L[i]);
+        ok(same5 && lib.rms(a5.L, 3000, 12000) > 0.02, "walk (op 5) is deterministic and sounds");
+        // the walk state stays inside +-64 bins and is at 0 for the other ops
+        const sst = data(10); const wkRun = (op) => { const sx = data(512, 2), sy = data(257, 2), smg = data(257), sph = data(257); sx.poke(1, 3, 0); sst.poke(0, 9); let mxw = 0; for (let k = 0; k < 400; k++) { fresh.dv_specop(sx, sy, smg, sph, sst, op, 1); mxw = Math.max(mxw, Math.abs(sst.peek(9))); } return mxw; };
+        const w5 = wkRun(5), w1 = wkRun(1);
+        ok(w5 > 1 && w5 <= 64 && w1 === 0, `walk state is clipped to +-64 bins (max ${w5.toFixed(1)}) and untouched by other ops`);
+    }
 }
 console.log(`${checks} checks, ${fails} failed`);
 process.exit(fails ? 1 : 0);

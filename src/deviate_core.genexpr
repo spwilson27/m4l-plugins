@@ -140,6 +140,8 @@ dv_draw(pv, pr, lk, st, tT, tE, seedIn, chanceIn, driftIn, ev) {
 //   52 reverb: wet, size, rt60, damp | 56 delay: wet, ms, fb, ping-pong, damp | 61 slap: wet, ms, tone, offset | 65 conv wet | 66 conv IR tag
 //   67 tape: wet, st, glide st, glide ms, loop ms, loop step | 73 gate: wet, Hz, duty | 76 zap: wet, f0, f1, ms, res | 81 bend st, ms | 83 ring sweep
 //   84 vowel sweep | 85 resonator kind, drop | 87 spectral: wet, op, amount (67..89 = hidden rows 36..58, dv_pg4)
+//   90 lfo Hz | 91 lfo depth | 92 lfo shape | 93 lfo target | 94 tape reverse | 95 dry replacement (90..95 = hidden rows 64..69, dv_pg5)
+//   rows 70 / 71 (Ring hold ms, send-close ms) are latched at a hit, not part of pv; hidden rows 64..79 are echoed at scope HIDDEN2 (160..)
 // Every in-loop decay is derived from the Ring time Tr (hidden row 35): at most 0.9 Tr, so a restarted Ring envelope never meets old residue.
 // Hidden row indexes (DV_HIDDEN): 0 snap_amt 1 click_lvl 2 click_hz 3 tfilt_hz 5 pitch_st 6 pitch_wet 7 grain_ms 8 res_wet 9 res_f0 10 res_stretch
 //   11 comb_wet 12 comb_hz 13 form_wet 14 form_vowel 16 phas_wet 17 phas_hz 18 chor_wet 19 chor_hz 20 chor_ms 21 conv_wet 22 conv_ir 23 rev_wet
@@ -195,7 +197,8 @@ dv_pg2(hv, qt) {
 	poke(qt, h8, 20);
 	poke(qt, h9, 21);
 	poke(qt, h10, 22);
-	poke(qt, clip(t9, 0.05, 1.2), 23);
+	t60c = (peek(hv, 35) > 1.84) ? 6.6 : 1.2;
+	poke(qt, clip(t9, 0.05, t60c), 23);
 	poke(qt, h11, 24);
 	poke(qt, cmbHz, 25);
 	poke(qt, clip(pow(10, -3 / (cmbHz * max(t9, 0.02))), 0, 0.95), 26);
@@ -267,9 +270,18 @@ dv_pg4(hv, qt) {
 	return 0;
 }
 
+// Rows 64..69 (lfo hz / depth / shape / target, tape direction, dry replacement) -> pv 90..95.
+dv_pg5(hv, qt) {
+	for (i = 0; i < 6; i += 1) {
+		hvx = peek(hv, 64 + i);
+		poke(qt, hvx, 90 + i);
+	}
+	return 0;
+}
+
 // Move q toward qt (every 8th sample): a continuous parameter by `k`, snapping when closer than 1e-5 + 1e-4 |qt|; hard = 1 copies qt.
 dv_pvsm(q, qt, k, hard) {
-	for (i = 0; i < 90; i += 1) {
+	for (i = 0; i < 96; i += 1) {
 		a = peek(q, i);
 		b = peek(qt, i);
 		d = b - a;
@@ -331,8 +343,8 @@ Data dvT(8);
 Data dvE(8);
 Data dvAT(8);
 Data dvAE(8);
-Data dvHV(64);
-Data dvMp(512);
+Data dvHV(80);
+Data dvMp(640);
 Data dvQ(96);
 Data dvQT(96);
 Data dvGp(4);
@@ -408,6 +420,7 @@ History relC(0);
 History slowC(0);
 History lockAud(1440);
 History holdS(7200);
+History closeS(9600);
 History fadeS(960);
 History fast(0);
 History slow(0);
@@ -475,6 +488,9 @@ History envLast(0);
 History mapVer(0);
 History md16(0);
 History gtS(1);
+History drPT(1);
+History drPB(1);
+History drPR(1);
 
 // History discipline: a History read after a write in the same sample returns the OLD value (AGENTS 16 / 21), so every History
 // is read into a local, computed on, and written back exactly once per sample (never read again after its write).
@@ -499,6 +515,7 @@ relN = relC;
 slwN = slowC;
 lkaN = lockAud;
 hldN = holdS;
+clsN = closeS;
 fdN = fadeS;
 if (dvthr != cacheThr) {
 	cacheThr = dvthr;
@@ -520,6 +537,8 @@ if (sr != cacheSr) {
 	lockAud = lkaN;
 	hldN = 0.15 * sr;
 	holdS = hldN;
+	clsN = 0.2 * sr;
+	closeS = clsN;
 	fdN = 0.02 * sr;
 	fadeS = fdN;
 }
@@ -611,8 +630,8 @@ playLast = (dvplay > 0.5) ? 1 : 0;
 mvN = mapVer;
 mvB = peek(dmap, 0, 0);
 if (mvB > 0.5 && mvB != mvN) {
-	mvO = 16 + 512 * clip(floor(peek(dmap, 1, 0) + 0.5), 0, 1);
-	for (i = 0; i < 512; i += 1) {
+	mvO = 16 + 640 * clip(floor(peek(dmap, 1, 0) + 0.5), 0, 1);
+	for (i = 0; i < 640; i += 1) {
 		mvq = peek(dmap, mvO + i, 0);
 		poke(dvMp, mvq, i);
 	}
@@ -822,17 +841,28 @@ if (applyNow > 0.5) {
 	wrN = peek(dvHV, 15);
 	trN = peek(dvHV, 35);
 	irN = peek(dvHV, 22);
+	// Ring hold and send-close window: latched on a hit (a Reroll keeps the running ones); 150 / 200 are the Classic constants
+	hvHd = peek(dvHV, 70);
+	hvCl = peek(dvHV, 71);
+	hldN = (ageReset > 0.5) ? ((hvHd == 150) ? 0.15 * sr : hvHd * sr / 1000) : hldN;
+	clsN = (ageReset > 0.5) ? ((hvCl == 200) ? 0.2 * sr : hvCl * sr / 1000) : clsN;
+	trN = min(trN, 7.98 - hldN / sr);
 	dkN = pow(10, -3.3 / (max(trN, 0.001) * sr));
 	esN = hldN + trN * sr;
 	for (i = 0; i < 64; i += 1) {
 		hvv = peek(dvHV, i);
 		poke(scope, hvv, 64 + i, 0);
 	}
+	for (i = 0; i < 8; i += 1) {
+		hvv2 = peek(dvHV, 64 + i);
+		poke(scope, hvv2, 160 + i, 0);
+	}
 	poke(scope, irN, 11, 0);
 	dv_pg1(dvHV, dvQT);
 	dv_pg2(dvHV, dvQT);
 	dv_pg3(dvHV, dvQT);
 	dv_pg4(dvHV, dvQT);
+	dv_pg5(dvHV, dvQT);
 	hardNow = (qInit < 0.5) ? 1 : 0;
 	qInit = 1;
 	pvTN = 4000;
@@ -865,6 +895,8 @@ trS = trN;
 irTag = irN;
 decayK = dkN;
 endS = esN;
+holdS = hldN;
+closeS = clsN;
 pageCnt = pcN;
 clkAmp = ckAmpN;
 cvWant = cvWN;
@@ -884,6 +916,9 @@ if (applyNow > 0.5) {
 	di71 = peek(dvQT, 71);
 	di85 = peek(dvQT, 85);
 	di88 = peek(dvQT, 88);
+	di92 = peek(dvQT, 92);
+	di93 = peek(dvQT, 93);
+	di94 = peek(dvQT, 94);
 	poke(dvQ, di13, 13);
 	poke(dvQ, di14, 14);
 	poke(dvQ, di29, 29);
@@ -891,6 +926,9 @@ if (applyNow > 0.5) {
 	poke(dvQ, di71, 71);
 	poke(dvQ, di85, 85);
 	poke(dvQ, di88, 88);
+	poke(dvQ, di92, 92);
+	poke(dvQ, di93, 93);
+	poke(dvQ, di94, 94);
 }
 
 // ---- sleep decision ----
@@ -1068,6 +1106,7 @@ if (fa < 0.5 && fp > 0.5) {
 	dv_wipe(dvSmg, 0, 257, 257, 0);
 	dv_wipe(dvSph, 0, 257, 257, 0);
 	poke(dvSst, 0, 1);
+	poke(dvSst, 0, 9);
 }
 poke(dvAc, fa, 15);
 // ring slices (a ring's slice is 1/192 of it; an effect that wakes finishes what is left first)
@@ -1202,6 +1241,9 @@ hsP = (hpN + 1 >= 256) ? 0 : hpN + 1;
 
 // ---- modulated copies of the grain shifter (pitch bend), ring modulator (Hz sweep), formant (vowel sweep), resonator (kind, strike drop)
 // parameters and the zap's cutoff, made every 16th sample (and at a page) from the time since the hit reached the output ----
+dpT = drPT;
+dpB = drPB;
+dpR = drPR;
 m16 = wrap(md16 + 1, 0, 16);
 md16 = m16;
 if (lifeRun > 0.5 && (m16 < 0.5 || applyNow > 0.5)) {
@@ -1211,13 +1253,30 @@ if (lifeRun > 0.5 && (m16 < 0.5 || applyNow > 0.5)) {
 	q82 = max(peek(dvQ, 82), 1);
 	q42 = peek(dvQ, 42);
 	q43 = peek(dvQ, 43);
-	poke(dvGp, q41 + q81 * exp(-tsec * 1000 / q82), 1);
+	// LFO from the hit (pv 90 Hz, 91 depth, 92 shape, 93 target): sine, triangle (starts at 0), square, sample & hold; only the chosen target receives it
+	lfp = peek(dvQ, 90) * tsec;
+	lfq = lfp - floor(lfp);
+	lfi = floor(lfp);
+	lfh = gl_hash(lfi, 3.3);
+	lfs = sin(6.283185307179586 * lfp);
+	lft = (lfq < 0.25) ? 4 * lfq : ((lfq < 0.75) ? 2 - 4 * lfq : 4 * lfq - 4);
+	lfr = (lfq < 0.5) ? 1 : -1;
+	lfv = peek(dvQ, 92);
+	lfx = (lfv < 0.5) ? lfs : ((lfv < 1.5) ? lft : ((lfv < 2.5) ? lfr : lfh * 2 - 1));
+	lfw = peek(dvQ, 91) * lfx;
+	lfg = peek(dvQ, 93);
+	lfwZ = (lfg < 0.5) ? lfw : 0;
+	lfwG = (lfg > 0.5 && lfg < 1.5) ? lfw : 0;
+	lfwV = (lfg > 1.5 && lfg < 2.5) ? lfw : 0;
+	lfwR = (lfg > 2.5 && lfg < 3.5) ? lfw : 0;
+	lfwO = (lfg > 3.5) ? lfw : 0;
+	poke(dvGp, q41 + q81 * exp(-tsec * 1000 / q82) + 7 * lfwG, 1);
 	poke(dvGp, q42, 2);
 	poke(dvGp, q43, 3);
 	q46 = peek(dvQ, 46);
 	q83 = peek(dvQ, 83);
-	poke(dvRgp, clip(q46 * pow(2, q83 * tsec), 1, sr * 0.45), 2);
-	vw = peek(dvQ, 29) + peek(dvQ, 84) * tsec;
+	poke(dvRgp, clip(q46 * pow(2, q83 * tsec) * pow(2, 1.5 * lfwR), 1, sr * 0.45), 2);
+	vw = peek(dvQ, 29) + peek(dvQ, 84) * tsec + 2 * lfwV;
 	vp = vw - 8 * floor(vw / 8);
 	q30 = peek(dvQ, 30);
 	q31 = peek(dvQ, 31);
@@ -1229,14 +1288,32 @@ if (lifeRun > 0.5 && (m16 < 0.5 || applyNow > 0.5)) {
 	q22 = peek(dvQ, 22);
 	q23 = peek(dvQ, 23);
 	q85 = peek(dvQ, 85);
-	poke(dvRsp, q21 * (1 + q86 * exp(-tsec / 0.06)), 1);
+	poke(dvRsp, q21 * (1 + q86 * exp(-tsec / 0.06)) * pow(2, lfwO), 1);
 	poke(dvRsp, q22, 2);
 	poke(dvRsp, q23, 3);
 	poke(dvRsp, q85, 4);
 	zf0 = max(peek(dvQ, 77), 20);
 	zf1 = max(peek(dvQ, 78), 20);
 	zu = min(tsec * 1000 / max(peek(dvQ, 79), 1), 1);
-	poke(dvRsp, zf0 * pow(zf1 / zf0, zu), 5);
+	poke(dvRsp, zf0 * pow(zf1 / zf0, zu) * pow(2, 2 * lfwZ), 5);
+	// remaining-dry products of each chain's serial effects (an effect below its 0.02 skip threshold counts 0; wet w blends as (1 - w) x + w fx; snap and click add, the sat's blend is clip(1.5 q))
+	zqA = peek(dvQ, 8);
+	zqB = peek(dvQ, 12);
+	zqC = peek(dvQ, 16);
+	dpT = (1 - (zqA > 0.02 ? zqA : 0)) * (1 - (zqB > 0.02 ? zqB : 0)) * (1 - (zqC > 0.02 ? zqC : 0));
+	zqA = peek(dvQ, 24);
+	zqB = peek(dvQ, 28);
+	zqC = peek(dvQ, 76);
+	zqD = peek(dvQ, 32);
+	zqE = peek(dvQ, 40);
+	zqF = peek(dvQ, 44);
+	zqG = peek(dvQ, 47);
+	dpB = (1 - (zqA > 0.02 ? zqA : 0)) * (1 - (zqB > 0.02 ? zqB : 0)) * (1 - (zqC > 0.02 ? zqC : 0)) * (1 - (zqD > 0.02 ? zqD : 0)) * (1 - (zqE > 0.02 ? zqE : 0)) * (1 - (zqF > 0.02 ? zqF : 0)) * (1 - (zqG > 0.02 ? clip(zqG * 1.5, 0, 1) : 0));
+	zqA = peek(dvQ, 48);
+	dpR = 1 - (zqA > 0.02 ? zqA : 0);
+	drPT = dpT;
+	drPB = dpB;
+	drPR = dpR;
 }
 
 // ---- tape: varispeed / tape stop / stutter of the whole delayed dry (its ring is written every awake sample; a hit restarts its head) ----
@@ -1247,7 +1324,8 @@ if (asleep < 0.5) {
 	tpA = (lifeRun > 0.5 && qTp > 0.02) ? 1 : 0;
 	poke(dvIoP, xdL, 0);
 	poke(dvIoP, xdR, 1);
-	dv_tape(dvIoP, dvQ, 67, stTap, rbTap, sr, tpA, ageReset);
+	rvT = peek(dvQ, 94);
+	dv_tape(dvIoP, dvQ, 67, stTap, rbTap, sr, tpA, ageReset, rvT);
 	if (tpA > 0.5) {
 		tpL = peek(dvIoP, 0);
 		tpR = peek(dvIoP, 1);
@@ -1288,7 +1366,7 @@ if (asleep < 0.5 && lifeNow > 0.5) {
 	xBR = gB * srcBR;
 	xRL = gR * srcBL;
 	xRR = gR * srcBR;
-	sgS = clip(1 - (agN - 0.2 * sr) / (0.02 * sr), 0, 1);
+	sgS = clip(1 - (agN - clsN) / (0.02 * sr), 0, 1);
 	sndL = xdL * sgS;
 	sndR = xdR * sgS;
 
@@ -1475,8 +1553,12 @@ if (asleep < 0.5 && lifeNow > 0.5) {
 	}
 	gsN = gsN + (gsq - gsN) * min(1, 1000 / sr);
 	gtE = 1 - qGt * envV * (1 - gsN);
-	resL = resL * gtE - xdL * (1 - gtE);
-	resR = resR * gtE - xdR * (1 - gtE);
+	// dry replacement (pv 95): part of the dry is taken away while the Ring envelope runs, least inside the transient window
+	// only the dry the effects have not already replaced is taken away: D = (1 - tape) x (gT PT + gB PB + gR PR)
+	dkD = (1 - peek(dvQ, 67)) * (gTs * dpT + gB * dpB + gR * dpR);
+	dkE = peek(dvQ, 95) * envV * dkD * (1 - 0.5 * gTs);
+	resL = resL * gtE - xdL * (1 - gtE * (1 - dkE));
+	resR = resR * gtE - xdR * (1 - gtE * (1 - dkE));
 	pkTv = max(abs(xTL), abs(xTR));
 	pkBv = max(max(abs(xBL), abs(xBR)), max(abs(rsL), abs(rsR)));
 	pkLv = envV * max(max(abs(xRL), abs(xRR)), max(abs(sndL), abs(sndR)));
@@ -1642,6 +1724,10 @@ if (tcN < 0.5) {
 			for (i = 0; i < 64; i += 1) {
 				hvr = peek(dvHV, i);
 				poke(scope, hvr, 64 + i, 0);
+			}
+			for (i = 0; i < 8; i += 1) {
+				hvr2 = peek(dvHV, 64 + i);
+				poke(scope, hvr2, 160 + i, 0);
 			}
 		}
 	}

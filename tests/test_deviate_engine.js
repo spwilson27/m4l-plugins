@@ -224,6 +224,8 @@ const noIr = (t) => !/dvIr/.test(String(t.fn.name));
     ok(b[M.VER] === 3 && b[M.BANK] === 0 && same(rows(0), cfg.dvMapFloats(cfg.dvArchMap(0))), "Arch 0 = the factory map");
     e.setParam("amode", 3);
     ok(b[M.VER] === 4 && b[M.BANK] === 1 && same(rows(1), cfg.dvMapFloats(cfg.dvArchMap(0, 3))) && e.ctx.dvMap.mode === 3, "an Arch Mode change writes that mode's map (Glitch, Arch 0)");
+    ok(M.ROW_CAP === 80 && M.BANK_STRIDE === M.ROW_CAP * M.STRIDE && M.SAMPS === M.BASE + 2 * M.BANK_STRIDE && cfg.DV_HIDDEN_COUNT === 72, "map bank stride = ROW_CAP x STRIDE (640), buffer 1296, 72 rows");
+    ok(rows(1).length === 72 * M.STRIDE && b.length >= M.SAMPS - 1 || b.length >= M.BASE + M.BANK_STRIDE + 72 * M.STRIDE, "bank 1 holds all 72 rows within the buffer");
     e.setParam("arch", 913);
     ok(b[M.VER] === 5 && same(rows(0), cfg.dvMapFloats(cfg.dvArchMap(913, 3))), "and Arch changes keep the mode");
     e.ctx.init_dsp();

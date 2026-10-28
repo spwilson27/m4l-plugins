@@ -49,6 +49,10 @@ Cases (what each proves; numbers are printed by the run):
                    out at 220 Hz), stutter (the first 30 ms of a burst repeat after it), gate (a steady tone is chopped), zap (a 100 Hz low-pass
                    removes the tone from the body), spectral freeze (a decaying hold: the burst is still heard after it ends), spectral shift / thin / robot, the four
                    resonator kinds, the sweeps (bend, ring Hz, vowel) and drive shape / crush rate: audible where they should be, finite, bounded
+                   (mod_spec_0..5 incl. scramble and walk), mod_tape_rev (the burst comes back reversed after the 100 ms window; forward control silent),
+                   mod_lfo (a square LFO on the zap cutoff alternates the residue; depth 0 does not), mod_dry_rep (the dry is replaced during an
+                   400 ms hold, exact dry after the life), mod_hold_long (an 800 ms hold keeps the envelope at 1; default control), mod_snd_close
+                   (the spectral send hears the hit for 1000 ms instead of 200)
   conv_onset       a burst that starts a new life with IR 6: (output with the IR bank) - (output without it) = 0.7 * wet * (IR 6 * burst) from the
                    first sample (time-domain IR from build_cache/deviate_ir_48000_td.json), i.e. the convolver gets the whole hit
   wipe_rehit       four identical hits 250 ms apart at Ring 10 (the next apply lands a few ms after the end of a life, inside the old wipe window), delay /
@@ -305,7 +309,7 @@ def device(code, case):
                + (", dumps " + " ".join(case["dumps"]) if case.get("dumps") else ""), 40, 130, 900),
         mh.box("dev-buf-scope", "buffer~ #0-dvscope @samps 1536", 980, 20, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-ctl", "buffer~ #0-dvctl @samps 64", 980, 45, 200, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-buf-map", "buffer~ #0-dvmap @samps 1040", 1220, 45, 200, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-buf-map", "buffer~ #0-dvmap @samps 1296", 1220, 45, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-ir", "buffer~ #0-dvir @samps %d" % (2500000 if case.get("ir") else 4096), 980, 70, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-spec", "buffer~ #0-dvspec @samps 2048 @chans 5", 980, 95, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-tap", f"buffer~ #0-dvtap @samps {tap_samps(case['dur'])}", 980, 120, 260, numoutlets=2,
@@ -457,13 +461,36 @@ def mode_cases():
                                    rwin=["110:125"])
     out["mod_zap"] = [zap("mod_zap", 100), zap("mod_zap_open", 20000)]
     out["mod_spec"] = [mod_case(f"mod_spec_{op}", "kind 2, amp 0.8, s1 100, blen 100", [("spec_wet", 1, 1), ("spec_op", op, op), ("spec_amt", 0.2, 0.2)],
-                                dur=3300, rwin=["120:300", "400:1500", "2125:3300"]) for op in range(4)]
+                                dur=3300, rwin=["120:300", "400:1500", "2125:3300"]) for op in range(6)]
     out["mod_res_kinds"] = [mod_case(f"mod_res_{k}", "kind 4, amp 0.8, s1 100, tf 200", [("res_wet", 0.9, 0.9), ("res_f0", 200, 200), ("res_kind", k, k),
                                                                                           ("res_drop", 0.5, 0.5)], rwin=["300:1000"]) for k in range(1, 5)]
     out["mod_sweeps"] = [mod_case("mod_sweeps", "kind 4, amp 0.8, s1 100, tf 150",
                                   [("pitch_wet", 1, 1), ("pitch_st", 5, 5), ("bend_st", 12, 12), ("bend_ms", 200, 200), ("ring_wet", 0.7, 0.7),
                                    ("ring_hz", 300, 300), ("ring_sweep", 3, 3), ("form_wet", 0.8, 0.8), ("vowel_sweep", 6, 6), ("form_shift", -7, -7)],
                                   rwin=["110:400"])]
+    # tape reverse: a 100 ms window (tape_ms), rate 1: the live pass is the dry (no residue), then the head turns round and the burst comes back
+    # reversed about 2 x 100 ms after the hit (output 105.3 ms + 200 ms - burst length 2.1 ms = 303..305 ms)
+    tape_rev = [("tape_wet", 1, 1), ("tape_ms", 100, 100)]
+    out["mod_tape_rev"] = [mod_case("mod_tape_rev", "kind 2, amp 0.8, s1 100, blen 100", tape_rev + [("tape_dir", 1, 1)], rwin=["130:290", "300:310"]),
+                           mod_case("mod_tape_fwd", "kind 2, amp 0.8, s1 100, blen 100", tape_rev, rwin=["130:290", "300:310"])]
+    # LFO: a square wave at 8 Hz on the zap cutoff (base 300 Hz: x4 = 1200 Hz while the LFO is +1, x1/4 = 75 Hz while -1) against a steady 300 Hz
+    # tone (the hit is the tone's start, so no click rings the filter); the residue (output - dry) is small in the open half period and about
+    # the tone in the closed one. Control: depth 0 (no alternation). Sim twin: tests/test_deviate_gen.js.
+    lfo = lambda n, d: mod_case(n, "kind 7, amp 0.3", [("zap_wet", 1, 1), ("zap_f0", 300, 300), ("zap_f1", 300, 300), ("zap_res", 0.3, 0.3),  # noqa: E731
+                                                        ("lfo_hz", 8, 8), ("lfo_depth", d, d), ("lfo_shape", 2, 2), ("lfo_tgt", 0, 0)],
+                                rwin=["40:60", "70:90"])
+    out["mod_lfo"] = [lfo("mod_lfo", 1), lfo("mod_lfo_off", 0)]
+    # dry replacement: the dry is taken away while the Ring envelope holds (hold 400 ms), and is the exact dry again once the life is over
+    out["mod_dry_rep"] = [mod_case("mod_dry_rep", "kind 5, amp 0.8, s1 100", [("dry_rep", 1, 1), ("env_hold_ms", 400, 400)], dur=3300,
+                                   rwin=["180:450", "2400:3300"])]
+    # long hold: a gate chopping the tone at full envelope for 800 ms against the default 150 ms hold
+    gate = [("gate_wet", 1, 1), ("gate_hz", 10, 10), ("gate_duty", 0.5, 0.5)]
+    out["mod_hold_long"] = [mod_case("mod_hold_long", "kind 5, amp 0.8, s1 100", gate + [("env_hold_ms", 800, 800)], dur=3300, rwin=["600:700", "2900:3300"]),
+                            mod_case("mod_hold_default", "kind 5, amp 0.8, s1 100", gate, dur=3300, rwin=["600:700", "2900:3300"])]
+    # send-close window: the spectral send (robot / whisper, no memory) hears the hit for 200 ms by default and for 1000 ms with snd_close_ms 1000
+    spec3 = [("spec_wet", 1, 1), ("spec_op", 3, 3), ("spec_amt", 0.5, 0.5)]
+    out["mod_snd_close"] = [mod_case("mod_snd_close", "kind 5, amp 0.8, s1 100", spec3 + [("snd_close_ms", 1000, 1000)], dur=3300, rwin=["500:700", "2400:3300"]),
+                            mod_case("mod_snd_default", "kind 5, amp 0.8, s1 100", spec3, dur=3300, rwin=["500:700", "2400:3300"])]
     out["mod_grit"] = [mod_case("mod_grit", "kind 4, amp 0.8, s1 100, tf 150",
                                 [("drive_amt", 0.6, 0.6), ("drive_shape", 1, 1), ("crush_wet", 0.8, 0.8), ("crush_bits", 4, 4), ("crush_sr", 8, 8)],
                                 rwin=["105:125"])]
@@ -916,7 +943,7 @@ def check_mod(name, res, errors):
         need("mod_zap", "rmax_110_125", 0.08)
         need("mod_zap_open", "rmax_110_125", 0, 0.03)
     elif name == "mod_spec":
-        for op in range(4):
+        for op in range(6):
             need(f"mod_spec_{op}", "rmax_120_300", 0.01)
             need(f"mod_spec_{op}", "rmax_2125_3300", 0, 1e-9)
         need("mod_spec_0", "rmax_400_1500", 0.01)
@@ -927,6 +954,29 @@ def check_mod(name, res, errors):
         need("mod_sweeps", "rmax_110_400", 0.05)
     elif name == "mod_grit":
         need("mod_grit", "rmax_105_125", 0.05)
+    elif name == "mod_tape_rev":
+        need("mod_tape_rev", "rmax_300_310", 0.15)
+        need("mod_tape_rev", "rmax_130_290", 0, 0.02)
+        need("mod_tape_fwd", "rmax_300_310", 0, 0.02)
+    elif name == "mod_lfo":
+        a, b = subs.get("mod_lfo", {}).get("rmax_40_60"), subs.get("mod_lfo", {}).get("rmax_70_90")
+        if a is None or b is None or not (b > 2 * a and b > 0.15):
+            errors.append(f"mod_lfo: closed half period {b} must exceed 2 x the open one {a} and 0.15")
+        a0, b0 = subs.get("mod_lfo_off", {}).get("rmax_40_60"), subs.get("mod_lfo_off", {}).get("rmax_70_90")
+        if a0 is None or b0 is None or not (a0 > 0.1 and b0 < 1.5 * a0):
+            errors.append(f"mod_lfo_off: depth 0 must not alternate (windows {a0} / {b0})")
+    elif name == "mod_dry_rep":
+        need("mod_dry_rep", "rmax_180_450", 0.27)   # the 0.3 tone is replaced: the residue is the whole dry
+        need("mod_dry_rep", "rmax_2400_3300", 0, 1e-9)
+    elif name == "mod_hold_long":
+        need("mod_hold_long", "rmax_600_700", 0.25)
+        need("mod_hold_default", "rmax_600_700", 0, 0.12)
+        need("mod_hold_long", "rmax_2900_3300", 0, 1e-9)
+        need("mod_hold_default", "rmax_2900_3300", 0, 1e-9)
+    elif name == "mod_snd_close":
+        need("mod_snd_close", "rmax_500_700", 0.03)
+        need("mod_snd_default", "rmax_500_700", 0, 0.005)
+        need("mod_snd_close", "rmax_2400_3300", 0, 1e-9)
 
 
 def check_split_sum(m, errors):

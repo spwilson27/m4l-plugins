@@ -49,11 +49,16 @@ var DV_SCOPE = Object.freeze({
     SPEC_HEAD: 42, // next slot of the ---deviatespec rings
     ALIVE: 48, // moves every 64 samples, also in silence (drives the DSP resend)
     SPEC_ALIVE: 49, // the Spectral stage shell's alive counter (src/deviate_spec.genexpr); the engine waits for it before switching to Spectral
-    HIDDEN: 64, // 64..127: the hidden values (DV_HIDDEN rows, applied page)
+    HIDDEN: 64, // 64..127: the hidden values of rows 0..63 (DV_HIDDEN, applied page); rows 64..79 live at HIDDEN2 (use dvHiddenSlot)
     ECHO: 128, // 128..159: what the gen runs with (DV_ECHO)
+    HIDDEN2: 160, // 160..175: the hidden values of rows 64..79 (160..255 are otherwise unused)
     WAVE: 256, // 256..1535: DV_WAVE_BLOCKS blocks of DV_WAVE_STRIDE
 });
 var DV_SCOPE_SAMPS = 1536;
+/** Scope slot of hidden row i: rows 0..63 at DV_SCOPE.HIDDEN + i, rows 64..79 at DV_SCOPE.HIDDEN2 + i - 64. */
+function dvHiddenSlot(i) {
+    return i < 64 ? DV_SCOPE.HIDDEN + i : DV_SCOPE.HIDDEN2 + i - 64;
+}
 // ECHO block: offsets from DV_SCOPE.ECHO
 var DV_ECHO = Object.freeze({
     V: 0, // 0..7 values
@@ -225,12 +230,13 @@ function dvRingTr(ring) {
     return DV_RING_TR_MIN * Math.pow(DV_RING_TR_MAX / DV_RING_TR_MIN, dvClamp(ring, 0, 100) / 100);
 }
 
-/** Output envelope of the effect residue `age` seconds after a hit: hold 150 ms, exponential to -66 dB at Tr, 20 ms fade to exact 0. */
-function dvRingEnv(age, Tr) {
+/** Output envelope of the effect residue `age` seconds after a hit: hold (default 150 ms, the env_hold_ms row), exponential to -66 dB at Tr, 20 ms fade to exact 0. */
+function dvRingEnv(age, Tr, hold) {
+    var h = hold === undefined ? DV_RING_HOLD_S : hold;
     if (age < 0) return 0;
-    if (age <= DV_RING_HOLD_S) return 1;
-    var end = DV_RING_HOLD_S + Tr;
-    if (age <= end) return Math.pow(10, -3.3 * (age - DV_RING_HOLD_S) / Tr);
+    if (age <= h) return 1;
+    var end = h + Tr;
+    if (age <= end) return Math.pow(10, -3.3 * (age - h) / Tr);
     var e0 = Math.pow(10, -3.3);
     var f = 1 - (age - end) / DV_RING_FADE_S;
     return f > 0 ? e0 * f : 0;
@@ -254,7 +260,8 @@ function dvWindows(ageSec, wT, wR) {
 // curve: lin | log | step (integer lo..hi, n = hi - lo + 1 equal bins) | abs50 (bipolar: min(1, 4 |2u - 1|), 0 at u = 0.5).
 // kind: A = amount (value at meta 0 is neutral = the effect is off; Pitch: neutral at 50), C = character, D = discrete (step).
 // jit: per-slot deterministic jitter of the meta (u scaled by 1 + jit (2 hash(slot) - 1)), 0 for rows that must stay exact.
-// The DSP lane may append rows (slot = index; scope slot DV_SCOPE.HIDDEN + index, 64 available).
+// The DSP lane may append rows (slot = index; scope slot dvHiddenSlot(index); capacity DV_MAP.ROW_CAP = 80).
+// extra: true rows (ids 64..71) are built by dvModeExtras, never by the family loop; their fx names (lfo, dry, env) are in DV_NONFX.
 var DV_HIDDEN = [
     { id: "snap_amt", chain: "T", fx: "snap", meta: 0, curve: "lin", lo: 0, hi: 1, kind: "A", jit: 0.08 },
     { id: "click_lvl", chain: "T", fx: "click", meta: 0, curve: "lin", lo: 0, hi: 0.9, kind: "A", jit: 0.1 },
@@ -322,7 +329,18 @@ var DV_HIDDEN = [
     { id: "grain_spray", chain: "B", fx: "pitch", meta: 1, curve: "lin", lo: 0.05, hi: 0.05, kind: "C", jit: 0 },
     { id: "dly_pp", chain: "L", fx: "dly", meta: 5, curve: "lin", lo: 0.5, hi: 0.5, kind: "C", jit: 0 },
     { id: "form_shift", chain: "B", fx: "form", meta: 2, curve: "lin", lo: 0, hi: 0, kind: "C", jit: 0 },
+    // Rows 64..71 (the "replace the drum" pass). Constants in Classic / Arch 0; built by dvModeExtras in the other modes.
+    { id: "lfo_hz", chain: "B", fx: "lfo", meta: 0, curve: "log", lo: 1, hi: 1, kind: "C", jit: 0, extra: true }, // cyclic wobble rate after the hit
+    { id: "lfo_depth", chain: "B", fx: "lfo", meta: 0, curve: "sat", lo: 0, hi: 0, kind: "A", jit: 0, extra: true },
+    { id: "lfo_shape", chain: "B", fx: "lfo", meta: 0, curve: "step", lo: 0, hi: 0, kind: "D", jit: 0, extra: true }, // 0 sine, 1 triangle, 2 square, 3 S&H
+    { id: "lfo_tgt", chain: "B", fx: "lfo", meta: 0, curve: "step", lo: 0, hi: 0, kind: "D", jit: 0, extra: true }, // 0 zap, 1 grain st, 2 vowel, 3 ring Hz, 4 resonator f0
+    { id: "tape_dir", chain: "B", fx: "tape", meta: 1, curve: "step", lo: 0, hi: 0, kind: "D", jit: 0, extra: true }, // 1 = the tape plays backward
+    { id: "dry_rep", chain: "L", fx: "dry", meta: 0, curve: "sat", lo: 0, hi: 0, kind: "A", jit: 0, extra: true }, // share of the dry the effected signal replaces
+    { id: "env_hold_ms", chain: "L", fx: "env", meta: 7, curve: "lin", lo: 150, hi: 150, kind: "C", jit: 0, extra: true }, // Ring hold (150 = the Classic hold)
+    { id: "snd_close_ms", chain: "L", fx: "env", meta: 7, curve: "log", lo: 200, hi: 200, kind: "C", jit: 0, extra: true }, // window the sends see (200 = Classic)
 ];
+/** Hidden-row fx names that are not effects (excluded from DV_EFFECTS and dvArchSummary). */
+var DV_NONFX = ["lfo", "dry", "env"];
 var DV_HIDDEN_CLASSIC = 36; // rows the Classic generator (and Arch 0) maps; the rest keep their constant there
 var DV_HIDDEN_COUNT = DV_HIDDEN.length;
 /** hidden id -> row index */
@@ -335,7 +353,7 @@ var DV_EFFECTS = (function () {
     var out = {};
     for (var i = 0; i < DV_HIDDEN.length; i++) {
         var r = DV_HIDDEN[i];
-        if (r.fx === "win" || (r.fx === "ring" && r.id === "tr_s")) continue;
+        if (r.fx === "win" || (r.fx === "ring" && r.id === "tr_s") || DV_NONFX.indexOf(r.fx) >= 0) continue;
         out[r.fx] = r.chain;
     }
     return out;
@@ -352,6 +370,7 @@ function dvCurve(row, u) {
         case "lin": return row.lo + (row.hi - row.lo) * u;
         case "log": return row.lo * Math.pow(row.hi / row.lo, u);
         case "abs50": return row.lo + (row.hi - row.lo) * Math.min(1, 4 * Math.abs(2 * u - 1));
+        case "sat": { var sz = Math.min(1, 2 * u); return row.lo + (row.hi - row.lo) * sz * (2 - sz); }
         default: {
             var n = row.hi - row.lo + 1;
             return row.lo + Math.min(n - 1, Math.floor(u * n));
@@ -371,8 +390,8 @@ function dvCurve(row, u) {
 //   - per-row jitter is re-drawn (same amplitude as DV_HIDDEN; none on the Pitch meta, so 50 stays exactly neutral).
 // Anything the gen limits (buffer lengths at 96 kHz, filter frequencies) is inside these envelopes, so every Arch is as safe as Arch 0.
 var DV_ARCH_MAX = 1000;
-var DV_MAP = Object.freeze({ VER: 0, BANK: 1, ARCH: 2, ROWS: 3, BASE: 16, BANK_STRIDE: 512, STRIDE: 8, SAMPS: 1040 });
-var DV_CURVE_CODE = Object.freeze({ lin: 0, log: 1, abs50: 2, step: 3 });
+var DV_MAP = Object.freeze({ VER: 0, BANK: 1, ARCH: 2, ROWS: 3, BASE: 16, ROW_CAP: 80, BANK_STRIDE: 640, STRIDE: 8, SAMPS: 1296 }); // SAMPS = BASE + 2 * BANK_STRIDE
+var DV_CURVE_CODE = Object.freeze({ lin: 0, log: 1, abs50: 2, step: 3, sat: 4 });
 // amount rows: amax = [min, max] of the new maximum (fraction of the factory span, or absolute for pitch_st / tfilt_hz);
 // character rows: b = [lo, hi] envelope, log = log axis, span = minimum share of the envelope; discrete rows: b and nmin bins.
 var DV_ARCH_ENV = {
@@ -500,12 +519,16 @@ function dvArchMap(arch, mode) {
 // Every mode keeps the invariants of Classic: meta 0 (Pitch 50) is neutral, every meta Snap..Grit drives something, ranges stay inside the
 // envelopes the DSP is safe in; only Tr's top (the Ring law's 2.0 s) moves to 8.0 s in Wonky and Glitch.
 var DV_MODES = ["Classic", "Wonky", "Natural", "Glitch"];
-var DV_RING_TR_MAX_LONG = 7.83; // 0.15 + 7.83 + 0.02 = 8.0 s
+var DV_RING_TR_MAX_LONG = 7.83; // the old Wonky / Glitch top (0.15 + 7.83 + 0.02 = 8.0 s); the modes now use DV_TR_WONKY / DV_TR_GLITCH
+var DV_TR_WONKY = 7.38; // + env_hold_ms up to 600 + 0.02 fade <= 8.0 s
+var DV_TR_GLITCH = 6.78; // + env_hold_ms up to 1200 + 0.02 fade <= 8.0 s
 var DV_RING_MAX_S_LONG = 8.0;
 var DV_MODE_FAMILIES = DV_ARCH_FAMILIES.concat(["tape", "gate", "zap", "spec"]);
 var DV_MODE_DEF = {
     1: { // Wonky
-        tr: DV_RING_TR_MAX_LONG, min: 9, max: 14,
+        tr: DV_TR_WONKY, trLo: 0.45, sat: true, min: 9, max: 14,
+        x: { lfoP: 0.8, lfoHz: [0.5, 16], tapeDirP: 0.5, dryAnchors: ["zap_wet", "form_wet", "ring_wet", "pitch_wet", "res_wet"], dryHi: [0.5, 1],
+            holdMax: 600, closeMax: 800 },
         p: { snap: 0.4, click: 0.35, filt: 0.3, pitch: 0.85, res: 0.45, comb: 0.55, form: 0.85, phas: 0.6, chor: 0.45, conv: 0.4, rev: 0.4,
             dly: 0.5, slap: 0.3, drive: 0.65, crush: 0.4, ring: 0.75, sat: 0.5, tape: 0.7, gate: 0.3, zap: 0.85, spec: 0.3 },
         need: [], sig: [["zap", "tape", "form", "ring", "pitch"], 3], couple: [["zap", "pitch", 0.5], ["form", "ring", 0.3]],
@@ -513,14 +536,19 @@ var DV_MODE_DEF = {
             pitch_st: { semis: [5, 12] }, grain_ms: { b: [25, 90], span: 0.3 }, bend_st: { b: [-24, 24], span: 0.5 },
             bend_ms: { b: [30, 700], log: 1, span: 0.3 }, grain_spray: { b: [0, 0.3], span: 0.3 }, tape_glide: { b: [-60, -12], span: 0.3 },
             tape_ms: { b: [80, 1500], log: 1, span: 0.3 }, loop_ms: { b: [0, 80], span: 0.3 }, zap_f0: { b: [1500, 12000], log: 1, span: 0.3 },
-            zap_f1: { b: [60, 1500], log: 1, span: 0.3 }, zap_ms: { b: [40, 900], log: 1, span: 0.3 }, zap_res: { b: [0.6, 0.95], span: 0.3 },
+            zap_f1: { b: [60, 1500], log: 1, span: 0.3 }, zap_ms: { b: [40, 900], log: 1, span: 0.3 }, zap_res: { b: [0.8, 1.0], span: 0.3 },
             ring_sweep: { b: [-4, 4], span: 0.4 }, ring_hz: { b: [25, 1200], log: 1, span: 0.3 }, vowel_sweep: { b: [-8, 8], span: 0.4 },
-            drive_shape: { b: [0.8, 3], span: 0.3 }, phas_hz: { b: [0.5, 12], log: 1, span: 0.3 }, res_drop: { b: [0, 1], span: 0.3 },
-            spec_op: { b: [1, 3], nmin: 1 }, gate_hz: { b: [4, 20], log: 1, span: 0.3 },
+            drive_shape: { b: [0.8, 3], span: 0.3 }, phas_hz: { b: [0.5, 12], log: 1, span: 0.3 }, res_drop: { b: [-0.75, 3], span: 0.3 },
+            spec_op: { b: [1, 5], nmin: 1 }, gate_hz: { b: [4, 20], log: 1, span: 0.3 },
+            // depth: amounts reach (nearly) their full span; with the sat curve they are at ~0.64 of it by meta 20
+            pitch_wet: { top: [1, 1] }, ring_wet: { top: [0.8, 1] }, crush_wet: { top: [0.7, 1] }, dly_wet: { top: [0.7, 1] },
+            form_wet: { top: [0.85, 1] }, drive_amt: { top: [0.8, 1] }, res_wet: { top: [0.8, 1] }, rev_wet: { top: [0.6, 1] },
+            conv_wet: { top: [0.6, 1] }, tape_wet: { top: [0.8, 1] }, zap_wet: { top: [0.85, 1] }, spec_wet: { top: [0.7, 1.1] },
         },
     },
     2: { // Natural
-        tr: DV_RING_TR_MAX, roles: [["snap", "click", "filt", "drive"], ["tape", "pitch"], ["res", "comb", "form"], ["chor", "phas", "slap"],
+        tr: DV_RING_TR_MAX, x: { lfoP: 0, tapeDirP: 0, dryAnchors: ["res_wet"], dryHi: [0.1, 0.3] },
+        roles: [["snap", "click", "filt", "drive"], ["tape", "pitch"], ["res", "comb", "form"], ["chor", "phas", "slap"],
             ["conv", "rev"], ["slap", "dly"], ["sat", "drive"]],
         env: {
             pitch_st: { semis: [2, 7] }, grain_ms: { b: [70, 140], span: 0.3 }, grain_spray: { b: [0, 0.08], span: 0.3 },
@@ -536,23 +564,30 @@ var DV_MODE_DEF = {
         },
     },
     3: { // Glitch
-        tr: DV_RING_TR_MAX_LONG, min: 9, max: 14,
+        tr: DV_TR_GLITCH, trLo: 0.7, sat: true, min: 9, max: 14,
+        x: { lfoP: 0.5, lfoHz: [1, 16], tapeDirP: 0.4, dryAnchors: ["crush_wet", "pitch_wet", "ring_wet", "spec_wet", "dly_wet"], dryHi: [0.7, 1],
+            holdMax: 1200, closeMax: 2000 },
         p: { snap: 0.3, click: 0.55, filt: 0.4, pitch: 0.7, res: 0.1, comb: 0.35, form: 0.1, phas: 0.2, chor: 0.2, conv: 0.3, rev: 0.2,
             dly: 0.75, slap: 0.3, drive: 0.4, crush: 0.8, ring: 0.5, sat: 0.25, tape: 0.9, gate: 0.8, zap: 0.25, spec: 1 },
         need: ["spec"], sig: [["tape", "gate", "crush", "pitch", "dly"], 3], couple: [["tape", "gate", 0.3]],
         env: {
-            spec_op: { b: [0, 3], nmin: 1 }, spec_amt: { b: [0, 1], span: 0.3 }, loop_ms: { b: [12, 220], log: 1, span: 0.3 },
+            spec_op: { b: [0, 5], nmin: 1 }, spec_amt: { b: [0, 1], span: 0.3 }, loop_ms: { b: [12, 220], log: 1, span: 0.3 },
             loop_step: { b: [-5, 5], span: 0.3 }, tape_glide: { b: [-24, 0], span: 0.3 }, tape_ms: { b: [50, 800], log: 1, span: 0.3 },
             gate_hz: { b: [4, 40], log: 1, span: 0.3 }, gate_duty: { b: [0.15, 0.7], span: 0.3 }, crush_sr: { b: [2, 32], log: 1, span: 0.3 },
             grain_ms: { b: [15, 70], span: 0.3 }, grain_spray: { b: [0.3, 1], span: 0.3 }, dly_ms: { b: [15, 300], log: 1, span: 0.3 },
             dly_fb: { b: [0.3, 0.8], span: 0.3 }, dly_pp: { b: [0.6, 1], span: 0.3 }, ring_hz: { b: [200, 3000], log: 1, span: 0.3 },
             ring_sweep: { b: [-2, 2], span: 0.3 }, drive_shape: { b: [1.5, 3], span: 0.3 }, click_hz: { b: [3000, 11000], log: 1, span: 0.3 },
             conv_ir: { b: [2, 8], nmin: 2 },
+            zap_res: { b: [0.8, 1.0], span: 0.3 }, res_drop: { b: [-0.75, 3], span: 0.3 },
+            pitch_wet: { top: [1, 1] }, ring_wet: { top: [0.8, 1] }, crush_wet: { top: [0.7, 1] }, dly_wet: { top: [0.7, 1] },
+            form_wet: { top: [0.85, 1] }, drive_amt: { top: [0.8, 1] }, res_wet: { top: [0.8, 1] }, rev_wet: { top: [0.6, 1] },
+            conv_wet: { top: [0.6, 1] }, tape_wet: { top: [0.9, 1] }, zap_wet: { top: [0.85, 1] }, spec_wet: { top: [1.0, 1.33] },
+            gate_wet: { top: [0.85, 1] },
         },
     },
 };
 
-/** Tr (s) at Ring 100 under an Arch Mode: 1.83 (the 2.0 s cap) in Classic and Natural, 7.83 (8.0 s) in Wonky and Glitch. */
+/** Tr (s) at Ring 100 under an Arch Mode: 1.83 (the 2.0 s cap) in Classic and Natural, 7.38 in Wonky and 6.78 in Glitch (hold + Tr + 0.02 <= 8.0 s). */
 function dvModeTrMax(mode) {
     var d = DV_MODE_DEF[Math.round(Number(mode) || 0)];
     return d ? d.tr : DV_RING_TR_MAX;
@@ -630,9 +665,10 @@ function dvModeMap(a, md) {
     if (natural && famMeta.comb >= 0 && rnd() < 0.5) rowMeta.comb_hz = DV_PITCH_META;
     for (var i = 0; i < DV_HIDDEN.length; i++) {
         var r = DV_HIDDEN[i], row = map[i];
+        if (r.extra) continue; // built by dvModeExtras below (no draw here, so the draws of rows 0..63 are what they were)
         var env = (def.env && def.env[r.id]) || DV_ARCH_ENV[r.id];
         row.jit = r.jit ? 1 + r.jit * (2 * rnd() - 1) : 1;
-        if (r.id === "tr_s") { row.lo = DV_RING_TR_MIN; row.hi = def.tr; row.curve = DV_CURVE_CODE.log; row.meta = DV_RING_META; row.src = 0; row.jit = 1; continue; }
+        if (r.id === "tr_s") { row.lo = def.trLo !== undefined ? def.trLo : DV_RING_TR_MIN; row.hi = def.tr; row.curve = DV_CURVE_CODE.log; row.meta = DV_RING_META; row.src = 0; row.jit = 1; continue; }
         if (r.fx === "win") row.meta = pick(7);
         else {
             var fm = famMeta[r.fx];
@@ -653,12 +689,13 @@ function dvModeMap(a, md) {
             row.curve = DV_CURVE_CODE.lin; row.lo = -ts; row.hi = ts;
         } else if (r.kind === "A") {
             var hi;
-            if (env.abs) hi = env.log ? env.abs[0] * Math.pow(env.abs[1] / env.abs[0], rnd()) : env.abs[0] + (env.abs[1] - env.abs[0]) * rnd();
+            if (env.top) hi = env.top[0] + (env.top[1] - env.top[0]) * rnd(); // absolute maximum (one draw, like the branches below)
+            else if (env.abs) hi = env.log ? env.abs[0] * Math.pow(env.abs[1] / env.abs[0], rnd()) : env.abs[0] + (env.abs[1] - env.abs[0]) * rnd();
             else hi = r.lo + (r.hi - r.lo) * (env.amax[0] + (env.amax[1] - env.amax[0]) * rnd());
             if (env.cap !== undefined) hi = Math.min(hi, env.cap);
             row.lo = r.lo;
             row.hi = hi;
-            row.curve = onPitch ? DV_CURVE_CODE.abs50 : (env.abs && env.log ? DV_CURVE_CODE.log : DV_CURVE_CODE.lin);
+            row.curve = onPitch ? DV_CURVE_CODE.abs50 : (env.abs && env.log ? DV_CURVE_CODE.log : (def.sat ? DV_CURVE_CODE.sat : DV_CURVE_CODE.lin));
         } else if (r.kind === "D") {
             row.curve = DV_CURVE_CODE.step;
             row.src = 1;
@@ -679,7 +716,69 @@ function dvModeMap(a, md) {
             row.curve = env.log ? DV_CURVE_CODE.log : DV_CURVE_CODE.lin;
         }
     }
+    dvModeExtras(def, famMeta, map, rnd, pick, neutral0);
     return (dvModeCache[key] = map);
+}
+
+/** Overwrite one map row (extra rows) with a meta, source (0 drifted E, 1 undrifted T), curve name and range. Jitter 1: no jitter. */
+function dvSetExtraRow(map, id, meta, src, curve, lo, hi) {
+    var row = map[DV_HIDDEN_INDEX[id]];
+    row.meta = meta; row.src = src; row.curve = DV_CURVE_CODE[curve]; row.lo = lo; row.hi = hi; row.jit = 1;
+}
+
+/**
+ * Rows 64..71 of a mode map (lfo_*, tape_dir, dry_rep, env_hold_ms, snd_close_ms), drawn after the family loop (so no earlier draw moves).
+ * Everything not drawn stays at the Classic constant (lo = hi). Wonky / Glitch / Natural only; `def.x` holds the mode's numbers.
+ *   lfo:      only when a target family is in play (0 zap, 1 grain/pitch, 2 formant vowel, 3 ring Hz, 4 resonator f0), probability x.lfoP;
+ *             depth = sat amount on the target's meta (abs50 on Pitch), rate log on the same meta, shape step 0..3 (2..4 bins) from T.
+ *   tape_dir: step 0..1 on the tape family's meta (from T) when tape is in play, probability x.tapeDirP.
+ *   dry_rep:  anchored to the in-play family with the largest wet hi among x.dryAnchors; its meta; hi in x.dryHi, capped at 1.1 x anchor hi.
+ *   env_hold_ms (lin) / snd_close_ms (log) on the Ring meta: 150 / 200 at Ring 0, up to x.holdMax / x.closeMax at Ring 100.
+ * @param {any} def
+ * @param {Object<string, number>} famMeta family -> meta (-1 out of play)
+ * @param {any[]} map
+ * @param {() => number} rnd
+ * @param {(n: number) => number} pick
+ * @param {Float64Array | number[]} [neutral0] (unused: the extras keep their own constants)
+ */
+function dvModeExtras(def, famMeta, map, rnd, pick, neutral0) {
+    var x = def.x;
+    if (!x) return;
+    var idx = DV_HIDDEN_INDEX;
+    var inPlay = function (fam) { return famMeta[fam] !== undefined && famMeta[fam] >= 0; };
+    var amount = function (meta) { return meta === DV_PITCH_META ? "abs50" : (def.sat ? "sat" : "lin"); };
+    // LFO
+    if (x.lfoP > 0) {
+        var tg = [["zap", 0], ["pitch", 1], ["form", 2], ["ring", 3], ["res", 4]].filter(function (t) { return inPlay(t[0]); });
+        if (tg.length && rnd() < x.lfoP) {
+            var t = tg[pick(tg.length)], meta = famMeta[t[0]];
+            dvSetExtraRow(map, "lfo_tgt", 0, 0, "lin", t[1], t[1]);
+            dvSetExtraRow(map, "lfo_depth", meta, 0, amount(meta), 0, 0.4 + 0.6 * rnd());
+            var span = 0.4 + 0.6 * rnd(), p0 = (1 - span) * rnd(), p1 = p0 + span, a = x.lfoHz[0], b = x.lfoHz[1];
+            var h0 = a * Math.pow(b / a, p0), h1 = a * Math.pow(b / a, p1);
+            if (rnd() < 0.5) { var sw = h0; h0 = h1; h1 = sw; }
+            dvSetExtraRow(map, "lfo_hz", meta, 0, "log", h0, h1);
+            var nb = 2 + pick(3), s0 = pick(4 - nb + 1);
+            if (rnd() < 0.5) dvSetExtraRow(map, "lfo_shape", 0, 1, "step", s0, s0 + nb - 1);
+            else dvSetExtraRow(map, "lfo_shape", 0, 1, "step", s0 + nb - 1, s0);
+        }
+    }
+    // tape direction
+    if (x.tapeDirP > 0 && inPlay("tape") && rnd() < x.tapeDirP) dvSetExtraRow(map, "tape_dir", famMeta.tape, 1, "step", 0, 1);
+    // dry replacement
+    var best = null, bestHi = 0;
+    for (var i = 0; i < x.dryAnchors.length; i++) {
+        var wid = x.dryAnchors[i], wr = map[idx[wid]];
+        if (!inPlay(DV_HIDDEN[idx[wid]].fx) || wr.hi <= wr.lo) continue;
+        if (wr.hi > bestHi) { bestHi = wr.hi; best = wr; }
+    }
+    if (best) {
+        var dh = Math.min(x.dryHi[0] + (x.dryHi[1] - x.dryHi[0]) * rnd(), 1.1 * bestHi);
+        dvSetExtraRow(map, "dry_rep", best.meta, 0, amount(best.meta), 0, dh);
+    }
+    // Ring hold and send window
+    if (x.holdMax) dvSetExtraRow(map, "env_hold_ms", DV_RING_META, 0, "lin", 150, 150 + (x.holdMax - 150) * rnd());
+    if (x.closeMax) dvSetExtraRow(map, "snd_close_ms", DV_RING_META, 0, "log", 200, 200 + (x.closeMax - 200) * rnd());
 }
 
 /** One hidden value of a map row (the formula of dv_hidden in the gen). */
@@ -694,6 +793,7 @@ function dvMapValue(row, E, T) {
             var n = Math.abs(hi - lo) + 1;
             return lo + (hi >= lo ? 1 : -1) * Math.min(n - 1, Math.floor(u * n));
         }
+        case 4: { var sz = Math.min(1, 2 * u); return lo + (hi - lo) * sz * (2 - sz); }
         default: return lo + (hi - lo) * u;
     }
 }
@@ -732,7 +832,7 @@ function dvArchSummary(map) {
     var mp = map || dvArchMap(0), out = [[], [], [], [], [], [], [], []];
     for (var i = 0; i < DV_HIDDEN.length; i++) {
         var r = DV_HIDDEN[i], row = mp[i];
-        if (r.kind !== "A" || r.fx === "win" || row.hi === row.lo) continue;
+        if (r.kind !== "A" || r.fx === "win" || DV_NONFX.indexOf(r.fx) >= 0 || row.hi === row.lo) continue;
         if (out[row.meta].indexOf(r.fx) < 0) out[row.meta].push(r.fx);
     }
     return out;
@@ -744,7 +844,7 @@ function dvNum(x) {
 }
 
 /**
- * The GenExpr function `dv_hidden(mE, mT, hv, mp)`: mE / mT are Data(8) (drifted metas, undrifted draws), hv a Data(64) that
+ * The GenExpr function `dv_hidden(mE, mT, hv, mp)`: mE / mT are Data(8) (drifted metas, undrifted draws), hv a Data(80) (DV_MAP.ROW_CAP) that
  * receives the hidden values, mp a Data holding the map rows (DV_MAP.STRIDE floats each: meta, src, curve, lo, hi, jit) copied from
  * buffer ---deviatemap. One loop, a single `return 0` (so tests/genexpr_functions.js can run it); the formula is dvMapValue's.
  * Local names start with `hr` (a function local named like a global Data breaks the compile).
@@ -771,7 +871,9 @@ function dvHiddenGen() {
         "\t\thrn = abs(hrhi - hrlo) + 1;",
         "\t\thrsg = hrhi >= hrlo ? 1 : -1;",
         "\t\thrvs = hrlo + hrsg * min(hrn - 1, floor(hru * hrn));",
-        "\t\thrv = hrc < 0.5 ? hrvl : (hrc < 1.5 ? hrvg : (hrc < 2.5 ? hrva : hrvs));",
+        "\t\thrz = min(1, 2 * hru);",
+        "\t\thrvt = hrlo + (hrhi - hrlo) * hrz * (2 - hrz);",
+        "\t\thrv = hrc < 0.5 ? hrvl : (hrc < 1.5 ? hrvg : (hrc < 2.5 ? hrva : (hrc < 3.5 ? hrvs : hrvt)));",
         "\t\tpoke(hv, hrv, hri);",
         "\t}",
         "\treturn 0;",
@@ -884,7 +986,7 @@ function dvPreviewTel(state) {
     s[S.WAVE_HEAD] = 40;
     s[S.SPEC_HEAD] = 0;
     var hv = dvHiddenFromMetas(metas, draws);
-    for (i = 0; i < hv.length; i++) s[S.HIDDEN + i] = hv[i];
+    for (i = 0; i < hv.length; i++) s[dvHiddenSlot(i)] = hv[i];
     for (i = 0; i < 8; i++) { s[S.ECHO + DV_ECHO.V + i] = Number(DV_PARAMS[i][5]); s[S.ECHO + DV_ECHO.R + i] = Number(DV_PARAMS[8 + i][5]); }
     s[S.ECHO + DV_ECHO.SENS] = 0.5; s[S.ECHO + DV_ECHO.THR] = -36; s[S.ECHO + DV_ECHO.CHANCE] = 100; s[S.ECHO + DV_ECHO.MIX] = 1;
     s[S.ECHO + DV_ECHO.SEED] = 7;
@@ -908,7 +1010,7 @@ if (nodeModule && nodeModule.exports) {
         DV_PARAMS, DV_PARAM_INDEX, DV_ENGINE_GEN, DV_HIDDEN, DV_HIDDEN_COUNT, DV_HIDDEN_INDEX, DV_EFFECTS, DV_BLOB_VERSION,
         dvClamp, dvRng, dvLatency, DV_HASH_M, dvHash, dvDriftK, dvNewState, dvStep, dvDrawn, dvDefaultDrawParams, dvRingTr, dvRingEnv, dvSmooth,
         dvWindows, dvJitter, dvCurve, dvHiddenFromMetas, dvHiddenNeutral, dvHiddenGen, DV_ARCH_MAX, DV_MAP, DV_CURVE_CODE, DV_ARCH_ENV,
-        DV_ARCH_FAMILIES, DV_HIDDEN_CLASSIC, DV_MODES, DV_MODE_DEF, DV_MODE_FAMILIES, DV_RING_TR_MAX_LONG, DV_RING_MAX_S_LONG, dvModeTrMax,
+        DV_ARCH_FAMILIES, DV_HIDDEN_CLASSIC, DV_NONFX, dvHiddenSlot, dvModeExtras, DV_TR_WONKY, DV_TR_GLITCH, DV_MODES, DV_MODE_DEF, DV_MODE_FAMILIES, DV_RING_TR_MAX_LONG, DV_RING_MAX_S_LONG, dvModeTrMax,
         dvModeMap, dvFactoryMap, dvArchMap, dvMapValue, dvMapFloats, dvArchSummary, dvBlobEncode, dvBlobDecode, dvPreviewTel,
     };
 }

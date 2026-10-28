@@ -289,7 +289,7 @@ function analyze(durMs) {
     if (names.scope) {
         var sb = new Buffer(names.scope);
         var sc = readChannel(sb, 1, DV_SCOPE_SAMPS);
-        for (var s = 0; s < 160; s++) kv("s" + s, sc[s]);
+        for (var s = 0; s < 176; s++) kv("s" + s, sc[s]);
         // hidden values against dvHiddenFromMetas of the telemetry metas / draws
         var metas = [], draws = [];
         for (var k = 0; k < 8; k++) { metas.push(sc[DV_SCOPE.METAS + k]); draws.push(sc[DV_SCOPE.DRAWS + k]); }
@@ -298,7 +298,7 @@ function analyze(durMs) {
         var maxerr = 0, stepbad = 0;
         for (var j = 0; j < DV_HIDDEN_COUNT; j++) {
             var row = amap[j];
-            var got = sc[DV_SCOPE.HIDDEN + j];
+            var got = sc[dvHiddenSlot(j)];
             if (row.curve === DV_CURVE_CODE.step) { if (got !== hv[j]) stepbad++; }
             else maxerr = Math.max(maxerr, Math.abs(got - hv[j]) / (Math.abs(row.hi - row.lo) || 1));
         }

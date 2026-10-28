@@ -321,13 +321,13 @@ step("arch", () => {
     hook(d, "test_hit"); sleep(700);
     const r3 = report(d);
     check(r3.map.arch === 0 && hiddenErr(r3, 0) < 1e-4, `${d.face}: back to Arch 0 (err ${hiddenErr(r3, 0)})`);
-    // Arch Mode Glitch: its own map, and Ring 100 reaches Tr 7.83 s (the 8 s cap of Wonky / Glitch)
+    // Arch Mode Glitch: its own map, and Ring 100 reaches Tr dvModeTrMax(3) (hold + Tr + fade <= 8 s)
     setParam(d, "Mode", 3); setParam(d, "Ring", 100); setParam(d, "R Ring", 0); sleep(300);
     hook(d, "test_hit"); sleep(700);
     const r4 = report(d);
     check(r4.map.mode === 3 && hiddenErr(r4, 0, 3) < 1e-4 && hiddenErr(r4, 0, 0) > 1e-3,
         `${d.face}: Arch Mode Glitch through the LOM -> the Glitch map (mode ${r4.map.mode}, err ${hiddenErr(r4, 0, 3)})`);
-    check(Math.abs(r4.scope[S.TR_S] - 7.83) < 1e-3, `${d.face}: Ring 100 in Glitch -> Tr ${r4.scope[S.TR_S]} s (8.0 s life)`);
+    check(Math.abs(r4.scope[S.TR_S] - cfg.dvModeTrMax(3)) < 1e-3, `${d.face}: Ring 100 in Glitch -> Tr ${r4.scope[S.TR_S]} s (dvModeTrMax(3) ${cfg.dvModeTrMax(3)})`);
     setParam(d, "Mode", 0); sleep(300);
     restore(d);
 });

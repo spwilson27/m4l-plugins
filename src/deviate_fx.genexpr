@@ -691,7 +691,8 @@ dv_res(io, pv, b, w, st, sr) {
 		for (m = 0; m < 6; m += 1) {
 			rk = dv_rk(rkd, m, ex);
 			fm = clip(f0 * rk, 30, sr * 0.45);
-			qm = clip(3.141592653589793 * fm * t60 / 6.9, 0.7, 150);
+			qcap = (t60 > 1.21) ? 1500 : 150;
+			qm = clip(3.141592653589793 * fm * t60 / 6.9, 0.7, qcap);
 			st.poke(tan(3.141592653589793 * fm / sr), m);
 			st.poke(1 / qm, 6 + m);
 			st.poke(clip(0.08 * sqrt(qm * sr / (3.141592653589793 * fm)), 0.5, 10) / sqrt(m + 1), 12 + m);
@@ -767,9 +768,12 @@ dv_zap(io, f, res, w, st, sr) {
 // ms of the hit repeat, repeat n at r * 2^(n * step / 12) (only repeats from the second on can be faster, and their source is written), with
 // 1.5 ms fades at both ends. A head that falls 64000 samples behind fades out. After a reset the old head crossfades into the new one over
 // 48 samples (1 ms; the new head starts 96 samples before the onset, so the onset itself is never faded).
+// rv = 1 (reverse): after the live pass over a window W (the loop length, else min(glide ms, 60000 samples)) the head turns round and reads the
+// window backward from where the live pass ended, so it never passes the writing; the loop period is then 2 W, with fades at its ends only.
 // io in: the delayed dry, out: the tape. pv at b: -, st0, glide st, glide ms, loop ms, loop step st.
-// st: 0 write pos, 1 start, 2 pos, 3 repeat, 4 old index, 5 old rate, 6 old fade left, 7 rate now, 8 samples since the reset.
-dv_tape(io, pv, b, st, rb, sr, act, reset) {
+// st: 0 write pos, 1 start, 2 pos, 3 repeat, 4 old index, 5 old rate (signed), 6 old fade left, 7 rate now (signed), 8 samples since the reset,
+// 9 next read index.
+dv_tape(io, pv, b, st, rb, sr, act, reset, rv) {
 	xl = io.peek(0);
 	xr = io.peek(1);
 	wp = st.peek(0);
@@ -784,7 +788,7 @@ dv_tape(io, pv, b, st, rb, sr, act, reset) {
 	tt = st.peek(8);
 	ofl = st.peek(6);
 	if (reset > 0.5) {
-		st.poke(sta + pos, 4);
+		st.poke(st.peek(9), 4);
 		st.poke(st.peek(7), 5);
 		ofl = act > 0.5 ? 48 : 0;
 		sta = wp;
@@ -797,12 +801,18 @@ dv_tape(io, pv, b, st, rb, sr, act, reset) {
 	lpOn = lp >= 0.004 * sr ? 1 : 0;
 	rs = clip(rep * stp, -36, 24);
 	rn = (lpOn > 0.5 && abs(rs) > 0.0001) ? r * pow(2, rs / 12) : r;
+	rvOn = rv > 0.5 ? 1 : 0;
+	wl = lpOn > 0.5 ? lp : min(tms, 60000);
+	pw = rvOn > 0.5 ? 2 * wl : wl;
+	eo = (rvOn > 0.5 && pos > wl) ? 2 * wl - pos : pos;
+	eo = max(eo, 0);
+	rgf = rvOn > 0.5 ? clip((2 * wl - pos) / (0.0015 * sr), 0, 1) : 1;
 	yl = xl;
 	yr = xr;
 	if (act > 0.5) {
-		gw = lpOn > 0.5 ? clip(min(pos, lp - pos) / (0.0015 * sr), 0, 1) : clip((64000 - (tt - pos)) / 2000, 0, 1);
-		yl = gw * dv_rd(rb, 0, sta + pos);
-		yr = gw * dv_rd(rb, 1, sta + pos);
+		gw = lpOn > 0.5 ? clip(min(pos, pw - pos) / (0.0015 * sr), 0, 1) : clip((64000 - (tt - eo)) / 2000, 0, 1) * rgf;
+		yl = gw * dv_rd(rb, 0, sta + eo);
+		yr = gw * dv_rd(rb, 1, sta + eo);
 		if (ofl > 0.5) {
 			oi = st.peek(4);
 			ow = ofl / 48;
@@ -815,15 +825,19 @@ dv_tape(io, pv, b, st, rb, sr, act, reset) {
 		ofl = ofl - 1;
 	}
 	pos = pos + rn;
-	if (lpOn > 0.5 && pos >= lp) {
-		pos = pos - lp;
+	if (lpOn > 0.5 && pos >= pw) {
+		pos = pos - pw;
 		rep = rep + 1;
 	}
+	pos = (lpOn < 0.5 && rvOn > 0.5) ? min(pos, 2 * wl + 1) : pos;
+	bk = (rvOn > 0.5 && pos > wl) ? 1 : 0;
+	en = bk > 0.5 ? max(2 * wl - pos, 0) : pos;
 	st.poke(sta, 1);
 	st.poke(pos, 2);
 	st.poke(rep, 3);
 	st.poke(ofl, 6);
-	st.poke(rn, 7);
+	st.poke(rn * (1 - 2 * bk), 7);
+	st.poke(sta + en, 9);
 	st.poke(min(tt + 1, 100000000), 8);
 	wp = wp + 1;
 	st.poke(wp >= 65536 ? 0 : wp, 0);
@@ -836,8 +850,10 @@ dv_tape(io, pv, b, st, rb, sr, act, reset) {
 // max(held x 0.997, now) (about -10 dB per second once the input stops) and is resynthesised every hop with its phase advance plus amt x random
 // (a one-frame capture read silent frames in Max, see AGENTS 31); 1 shift: bins move by
 // (2 amt - 1) * 48 (about +-4.5 kHz at 48 kHz); 2 thin: only bins above (0.03 + 0.4 amt) x the loudest survive, and a random share (0.6 amt)
-// of those drops out per frame; 3 robot (amt 0: zero phase, a buzz at the hop rate) to whisper (amt 1: random phase).
-// sst: 2 frame counter, 8 the frame's loudest bin.
+// of those drops out per frame; 3 robot (amt 0: zero phase, a buzz at the hop rate) to whisper (amt 1: random phase); 4 scramble: every bin takes
+// the content of a random bin within +-(2 + 30 amt) of it, new every hop; 5 walk: the whole spectrum shifts by a random walk
+// wk = clip((wk + (2 h - 1)(1 + 5 amt)) 0.97, -64, 64) bins (one step per hop).
+// sst: 2 frame counter, 8 the frame's loudest bin, 9 the walk (op 5; cleared with the spectral wipe).
 dv_specop(sx, sy, smg, sph, sst, op, amt) {
 	frm = sst.peek(2);
 	fdk = op < 0.5 ? 0.997 : 0;
@@ -853,6 +869,11 @@ dv_specop(sx, sy, smg, sph, sst, op, amt) {
 	mx = sst.peek(8);
 	thr = (0.03 + 0.4 * amt) * mx;
 	sh = floor((2 * amt - 1) * 48 + 0.5);
+	hw = gl_hash(frm, 5.5);
+	wo = sst.peek(9);
+	wkN = clip((wo + (hw * 2 - 1) * (1 + 5 * amt)) * 0.97, -64, 64);
+	sst.poke(op > 4.5 ? wkN : wo, 9);
+	shw = floor(wkN + 0.5);
 	for (k = 0; k <= 256; k += 1) {
 		xr = sx.peek(k, 0);
 		xi = sx.peek(k, 1);
@@ -869,14 +890,18 @@ dv_specop(sx, sy, smg, sph, sst, op, amt) {
 		sph.poke(ph, k);
 		fr = mgN * cos(ph);
 		fi = mgN * sin(ph);
-		j = clip(k - sh, 0, 256);
+		hs = gl_hash(frm * 0.37 + k * 1.91, 7.7);
+		sc = floor((hs * 2 - 1) * (2 + 30 * amt) + 0.5);
+		jj = (op > 4.5) ? k - shw : ((op > 3.5) ? k + sc : k - sh);
+		j = clip(jj, 0, 256);
 		sxr = sx.peek(j, 0);
 		sxi = sx.peek(j, 1);
-		inr = (k - sh >= 0 && k - sh <= 256) ? 1 : 0;
+		inr = (jj >= 0 && jj <= 256) ? 1 : 0;
 		kp = (m >= thr && hk >= 0.6 * amt) ? 1 : 0;
 		rph = amt * 6.283185307179586 * hk;
-		yr = op < 0.5 ? fr : (op < 1.5 ? inr * sxr : (op < 2.5 ? xr * kp : m * cos(rph)));
-		yi = op < 0.5 ? fi : (op < 1.5 ? inr * sxi : (op < 2.5 ? xi * kp : m * sin(rph)));
+		mvF = (op < 1.5 || op > 3.5) ? 1 : 0;
+		yr = op < 0.5 ? fr : (mvF > 0.5 ? inr * sxr : (op < 2.5 ? xr * kp : m * cos(rph)));
+		yi = op < 0.5 ? fi : (mvF > 0.5 ? inr * sxi : (op < 2.5 ? xi * kp : m * sin(rph)));
 		sy.poke(yr, k, 0);
 		sy.poke(yi, k, 1);
 	}

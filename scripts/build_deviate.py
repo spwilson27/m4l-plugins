@@ -36,7 +36,7 @@ SCOPE_SAMPS = 1536
 CTL_SAMPS = 64
 IR_SAMPS = 2500000
 SPEC_SAMPS = 2048  # x 5 channels
-MAP_SAMPS = 1040  # DV_MAP.SAMPS: the hidden map (Architecture), written by the engine
+MAP_SAMPS = 1296  # DV_MAP.SAMPS: the hidden map (Architecture), written by the engine
 # Spike S1 (DEVIATE_PLAN.md): may a transparent live.* sit over an ignoreclick canvas (z-order in Live)? Off until proven in Live.
 UNDER_CONTROLS = True  # spike S1 passed (README "Spike S1"): the engine brings every live.* to the front, so widgets over an ignoreclick canvas work
 

@@ -216,9 +216,9 @@ function dvParseScope(s, nowMs) {
         T.metas[i] = dvClamp(dvNum(s[S.METAS + i]), 0, 100);
         T.draws[i] = dvClamp(dvNum(s[S.DRAWS + i]), 0, 100);
     }
-    if (s.length > S.HIDDEN + DV_HIDDEN_COUNT) {
+    if (s.length > dvHiddenSlot(DV_HIDDEN_COUNT - 1)) {
         T.hidden = [];
-        for (i = 0; i < DV_HIDDEN_COUNT; i++) T.hidden.push(dvNum(s[S.HIDDEN + i]));
+        for (i = 0; i < DV_HIDDEN_COUNT; i++) T.hidden.push(dvNum(s[dvHiddenSlot(i)]));
     }
     // smoothed display peaks: instant attack, ~120 ms release
     var k = dt > 0 ? Math.exp(-dt / 120) : 0;
@@ -249,7 +249,7 @@ function dvPoll(fps) {
 function dvFrame() {
     var b = dvBuf(dvNames.scope);
     if (!b) return;
-    var n = dvWant.wave ? DV_SCOPE_SAMPS : 160;
+    var n = dvWant.wave ? DV_SCOPE_SAMPS : DV_SCOPE.HIDDEN2 + 16;
     var s = b.peek(1, 0, n);
     if (!s || s.length < 64) return;
     var frames = dvNum(s[DV_SCOPE.FRAMES], -1);

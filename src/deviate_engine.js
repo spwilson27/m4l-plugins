@@ -609,7 +609,12 @@ function test_report() {
     var scope = null;
     try { scope = dvNames.scope ? new Buffer(dvNames.scope).peek(1, 0, 160) : null; } catch (e) { scope = null; }
     var hidden = null;
-    try { hidden = dvNames.scope ? new Buffer(dvNames.scope).peek(1, DV_SCOPE.HIDDEN, DV_HIDDEN_COUNT) : null; } catch (e2) { hidden = null; }
+    try {
+        if (dvNames.scope) {
+            var hb = new Buffer(dvNames.scope), h1 = hb.peek(1, DV_SCOPE.HIDDEN, 64), h2 = hb.peek(1, dvHiddenSlot(64), DV_HIDDEN_COUNT - 64);
+            hidden = Array.prototype.slice.call(h1).concat(Array.prototype.slice.call(h2));
+        }
+    } catch (e2) { hidden = null; }
     var geom = { canvases: [] };
     try {
         if (dvPatcher) {

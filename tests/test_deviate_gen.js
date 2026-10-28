@@ -22,19 +22,13 @@ function ok(cond, msg) {
 const near = (a, b, tol) => Math.abs(a - b) <= tol * Math.max(1, Math.abs(b));
 
 // ---- the gen text is the build's: fft_init + deviate_conv + deviate_fx + deviate_core with //@hidden replaced (python3 scripts/build_deviate.py) ----
-const coreRaw = read("deviate_core.genexpr");
-const coreLines = coreRaw.split("\n");
-ok(coreLines.filter((l) => l === "//@hidden").length === 1, "the core has the line //@hidden exactly once");
-const hiddenText = cfg.dvHiddenGen();
-const core = coreLines.map((l) => (l === "//@hidden" ? hiddenText : l)).join("\n");
-let full = "";
-{
-    const r = cp.spawnSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import build_deviate; sys.stdout.write(build_deviate.gen_code())"], { cwd: ROOT, encoding: "utf8" });
-    ok(r.status === 0 && r.stdout.length > 1000, "build_deviate.gen_code() works: " + (r.stderr || "").split("\n").slice(-2).join(" "));
-    full = r.stdout;
-    ok(full.includes(hiddenText), "the build embeds dvHiddenGen() from src/deviate_config.js");
-    ok(full.includes(read("deviate_conv.genexpr").trim()) && full.includes(read("deviate_fx.genexpr").trim()), "the build embeds deviate_conv + deviate_fx");
-}
+const simlib = require("./deviate_sim_lib.js");
+const { coreRaw, coreLines, hiddenText, core, full, fns, makeSim, burst, buildStatus } = simlib;
+ok(buildStatus.hiddenLineCount === 1, "the core has the line //@hidden exactly once");
+ok(buildStatus.genOk, "build_deviate.gen_code() works: " + buildStatus.genErr);
+ok(buildStatus.embedsHidden, "the build embeds dvHiddenGen() from src/deviate_config.js");
+ok(buildStatus.embedsConvFx, "the build embeds deviate_conv + deviate_fx");
+
 
 // ---- 1. lint ----
 const lint = lintGenExpr(full, "deviate gen");
@@ -89,7 +83,14 @@ const need = (name, slot) => ok(lit.has(slot), `scope slot ${name} (${slot}) is 
 ok(pokes.includes(`${S.METAS} + i`), "METAS are written as METAS + i");
 ok(pokes.includes(`${S.DRAWS} + i`), "DRAWS are written as DRAWS + i");
 ok(pokes.includes(`${S.HIDDEN} + i`), "HIDDEN are written as HIDDEN + i");
-ok(cfg.DV_HIDDEN_COUNT <= 64, "hidden rows fit the 64 HIDDEN slots");
+ok(pokes.includes(`${S.HIDDEN2} + i`) && S.HIDDEN2 === 160 && cfg.dvHiddenSlot(64) === 160, "rows 64.. are written at HIDDEN2 + i");
+ok(code.includes("hvv2 = peek(dvHV, 64 + i);") && (code.match(/poke\(scope, hvv2?r?2?, 160 \+ i, 0\);/g) || []).length === 1, "apply site writes rows 64..71 at HIDDEN2");
+ok(code.includes("hvr2 = peek(dvHV, 64 + i);") && code.includes("poke(scope, hvr2, 160 + i, 0);"), "repeat site writes rows 64..71 at HIDDEN2");
+ok(cfg.DV_HIDDEN_COUNT <= 80 && cfg.DV_HIDDEN_COUNT > 64 && cfg.DV_MAP.ROW_CAP === 80, "hidden rows fit dvHV(80) / the 80-row map");
+ok(/Data dvHV\(80\);/.test(code) && /Data dvMp\(640\);/.test(code) && code.includes("16 + 640 * clip") && code.includes("i < 640"), "dvHV 80, dvMp 640, bank copy 640 floats");
+ok(cfg.DV_MAP.BANK_STRIDE === 640 && cfg.DV_MAP.SAMPS === 16 + 2 * 640, "DV_MAP: stride 640, 1296 samples");
+ok(code.includes("dv_pg5(dvHV, dvQT);") && code.includes("poke(qt, hvx, 90 + i);") && code.includes("i < 96"), "pg5 -> pv 90..95, dv_pvsm bound 96");
+ok(["92", "93", "94"].every((k) => code.includes(`poke(dvQ, di${k}, ${k});`)), "discrete lfo shape / target / tape direction are hard-copied");
 for (let i = 0; i < 26; i++) need(`ECHO+${i}`, S.ECHO + i);
 ok(S.METAS === 16 && S.DRAWS === 24 && S.HIDDEN === 64 && S.ECHO === 128 && S.WAVE === 256, "scope bases used as literals");
 ok(code.includes(`wb = ${S.WAVE} + whN * ${cfg.DV_WAVE_STRIDE};`), "waveform block address");
@@ -130,8 +131,6 @@ ok(code.includes("dv_hidden(dvE, dvT, dvHV, dvMp);") && code.includes("cwE = pee
 ok(code.includes("applyNow = (mapOk > 0.5) ? applyNow : 0;") && code.includes("mapOk > 0.5) ? 1 : 0;"), "no page and no convolver start before a map exists");
 
 // ---- 3. function parity ----
-globalThis.atan2 = Math.atan2;
-const fns = gx.load(full);
 const mkData = (arr, size) => { const d = new gx.DataSim(size || arr.length); arr.forEach((v, i) => d.poke(v, i)); return d; };
 // dv_hidden vs dvHiddenFromMetas
 {
@@ -143,7 +142,7 @@ const mkData = (arr, size) => { const d = new gx.DataSim(size || arr.length); ar
         if (t < 4) for (let i = 0; i < 8; i++) { E[i] = [0, 100, 50, 33.3][t]; T[i] = [0, 100, 50, 66.6][t]; }
         const arch = t % 4 === 0 ? 0 : 1 + Math.floor(rng() * 1000);
         const map = cfg.dvArchMap(arch, t % 3 === 0 ? 0 : 1 + (t % 3));
-        const mE = mkData(E), mT = mkData(T), hv = new gx.DataSim(64), mp = mkData(cfg.dvMapFloats(map), 512);
+        const mE = mkData(E), mT = mkData(T), hv = new gx.DataSim(80), mp = mkData(cfg.dvMapFloats(map), 640);
         fns.dv_hidden(mE, mT, hv, mp);
         const ref = cfg.dvHiddenFromMetas(E, T, map);
         for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) {
@@ -256,69 +255,6 @@ sys.stdout.write(json.dumps(out))
 
 
 // ---- 5. whole-core simulation: the per-sample statements of the core run in Node (History = old value on read, as in Max) ----
-function makeSim(overrides, fresh) {
-    const FN = fresh ? gx.load(full) : fns; // fft_init keeps a persistent guard per load: a sim that runs the convolver needs its own functions
-    const raw = stripComments(core).split("\n");
-    const decls = { Param: [], History: [], Data: [], Delay: [], Buffer: [] };
-    let lastDecl = -1;
-    raw.forEach((l, i) => {
-        const m = /^(Param|History|Data|Delay|Buffer)\s+(\w+)\(([^)]*)\);/.exec(l);
-        if (m) { decls[m[1]].push({ name: m[2], arg: m[3] }); lastDecl = i; }
-    });
-    let body = raw.slice(lastDecl + 1).join("\n");
-    const rep = (name, to) => { body = body.replace(new RegExp(`(^|[^.\\w])${name}\\b`, "gm"), (m0, a) => a + to); };
-    decls.Param.forEach((d) => rep(d.name, "P." + d.name));
-    decls.History.forEach((d) => rep(d.name, "H." + d.name));
-    decls.History.forEach((d) => { body = body.replace(new RegExp(`^(\\s*)H\\.${d.name} = `, "gm"), `$1W.${d.name} = `); });
-    rep("in1", "IO.in1"); rep("in2", "IO.in2"); rep("in3", "IO.in3"); rep("in4", "IO.in4"); rep("samplerate", "IO.sr");
-    body = body.replace(/^out1 = /m, "IO.out1 = ").replace(/^out2 = /m, "IO.out2 = ");
-    const H = {}, W = {}, P = {};
-    decls.History.forEach((d) => { H[d.name] = Number(d.arg); });
-    decls.Param.forEach((d) => { P[d.name] = Number(d.arg); });
-    Object.assign(P, overrides || {});
-    const data = {};
-    decls.Data.forEach((d) => { const q = d.arg.split(",").map(Number); data[d.name] = new gx.DataSim(q[0], q[1] || 1); });
-    decls.Buffer.forEach((d) => { data[d.name] = new gx.DataSim(d.name === "scope" ? cfg.DV_SCOPE_SAMPS : d.name === "spec" ? cfg.DV_SPEC_N : d.name === "dmap" ? cfg.DV_MAP.SAMPS : 64, d.name === "spec" ? 5 : 1); });
-    // the engine writes the Arch 0 map before the gen exists (overrides.__arch picks another one)
-    {
-        const mp0 = cfg.dvArchMap((overrides && overrides.__arch) || 0, (overrides && overrides.__mode) || 0).map((r) => Object.assign({}, r));
-        for (const [id, lo, hi] of (overrides && overrides.__rows) || []) {
-            const i = cfg.DV_HIDDEN_INDEX[id], d = cfg.DV_HIDDEN[i].kind === "D";
-            mp0[i] = { meta: mp0[i].meta, src: d ? 1 : 0, curve: d ? 3 : 0, lo, hi: d ? lo : hi, jit: 1 };
-        }
-        const mf = cfg.dvMapFloats(mp0);
-        mf.forEach((v, i) => data.dmap.poke(v, cfg.DV_MAP.BASE + i));
-        data.dmap.poke(1, cfg.DV_MAP.VER);
-    }
-    class Dly {
-        constructor(n) { this.n = n; this.a = new Float64Array(n); this.w = 0; }
-        write(x) { this.a[this.w] = x; this.w = (this.w + 1) % this.n; this.last = x; }
-        read(d) { const i = ((this.w - 1 - d) % this.n + this.n) % this.n; return this.a[i]; }
-    }
-    decls.Delay.forEach((d) => { data[d.name] = new Dly(Number(d.arg)); });
-    const wrap = (x, lo, hi) => { const r = hi - lo; return lo + (((x - lo) % r) + r) % r; };
-    const names = Object.keys(data);
-    const B = { max: Math.max, min: Math.min, abs: Math.abs, floor: Math.floor, pow: Math.pow, exp: Math.exp, sin: Math.sin, tanh: Math.tanh,
-        clip: (x, lo, hi) => Math.max(lo, Math.min(hi, x)), peek: (b, i, c) => b.peek(i, c), poke: (b, v, i, c) => b.poke(v, i, c), wrap, dim: (bf) => bf.size,
-        fixnan: (x) => (Number.isFinite(x) ? x : 0), sqrt: Math.sqrt, tan: Math.tan, cos: Math.cos, log: Math.log, log10: Math.log10, round: Math.round };
-    Object.assign(B, FN);
-    const bnames = Object.keys(B);
-    const fn = new Function("H", "W", "P", "IO", ...bnames, ...names, body);
-    const IO = { sr: 48000, in1: 0, in2: 0, in3: 0, in4: 0, out1: 0, out2: 0 };
-    const sim = {
-        P, H, data, IO, n: 0,
-        step(a, b) {
-            IO.in1 = a; IO.in2 = b === undefined ? a : b; IO.in3 = 0; IO.in4 = 0;
-            fn(H, W, P, IO, ...bnames.map((k) => B[k]), ...names.map((k) => data[k]));
-            Object.assign(H, W);
-            sim.n++;
-            return IO.out1;
-        },
-        sc(i) { return data.scope.peek(i); },
-    };
-    return sim;
-}
-function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp * Math.sin(2 * Math.PI * 1000 * t / 48000) : 0; }
 {
     // delayed dry is bit exact at Mix 0 (default metas: effects run, Mix scales their residue) and at every Mix when the metas are neutral
     const NEUTRAL = { dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 0, dvv5: 0, dvv6: 0, dvv7: 0, dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, dvr7: 0 };
@@ -386,7 +322,7 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
         // hidden values equal dvHiddenFromMetas of the applied page
         const hv = cfg.dvHiddenFromMetas(st.E, st.T);
         let he = 0;
-        for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) he = Math.max(he, Math.abs(sim.sc(cfg.DV_SCOPE.HIDDEN + i) - hv[i]) / Math.max(1, Math.abs(hv[i])));
+        for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) he = Math.max(he, Math.abs(sim.sc(cfg.dvHiddenSlot(i)) - hv[i]) / Math.max(1, Math.abs(hv[i])));
         ok(he < 1e-12, `sim: HIDDEN telemetry equals dvHiddenFromMetas (${he})`);
     }
     // reroll baseline (first value 1 is only a baseline), MIDI trigger baseline, dedupe with an audio hit
@@ -492,7 +428,7 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
         ok(d < 1e-9 && sim.sc(cfg.DV_SCOPE.ECHO + cfg.DV_ECHO.CTL_GEN) === 1, `sim: ctl restore loads T/E (diff ${d}) and echoes the generation`);
         const hv = cfg.dvHiddenFromMetas(E, T);
         let he = 0;
-        for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) he = Math.max(he, Math.abs(sim.sc(cfg.DV_SCOPE.HIDDEN + i) - hv[i]) / Math.max(1, Math.abs(hv[i])));
+        for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) he = Math.max(he, Math.abs(sim.sc(cfg.dvHiddenSlot(i)) - hv[i]) / Math.max(1, Math.abs(hv[i])));
         ok(he < 1e-12, "sim: ctl restore applies the page");
         const p = cfg.dvDefaultDrawParams(); p.seed = 9;
         const st = { valid: 1, hits: 0, reroll: 3, serial: 0, gate: 1, T: T.slice(), E: E.slice() };
@@ -650,8 +586,10 @@ const ZERO_R = { dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, 
     }
     for (const [md, arch] of [[2, 417], [1, 37], [3, 913]]) {
         const tr = cfg.dvModeTrMax(md);
-        const end = Math.round((0.15 + tr + 0.02) * sr) + 256 + 96 + 3000 + 400;
-        const sim = makeSim(Object.assign({ dvv0: 100, dvv1: 100, dvv2: 100, dvv3: 100, dvv4: 100, dvv5: 100, dvv6: 100, dvv7: 100, __arch: arch, __mode: md }, ZERO_R), true);
+        const holdMs = cfg.DV_MODE_DEF[md].x && cfg.DV_MODE_DEF[md].x.holdMax ? cfg.DV_MODE_DEF[md].x.holdMax : 150;
+        const hold = holdMs / 1000;
+        const end = Math.round((hold + tr + 0.02) * sr) + 256 + 96 + 3000 + 400;
+        const sim = makeSim(Object.assign({ dvv0: 100, dvv1: 100, dvv2: 100, dvv3: 100, dvv4: 100, dvv5: 100, dvv6: 100, dvv7: 100, __arch: arch, __mode: md }, ZERO_R, holdMs === 150 ? {} : { __rows: [["env_hold_ms", holdMs, holdMs]] }), true);
         let res = 0, mid = 0, nan = 0, pk = 0;
         for (let n = 0; n < end + 2000; n++) {
             const x = burst(n, 3000, 100, 0.8);
@@ -659,9 +597,9 @@ const ZERO_R = { dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, 
             if (!Number.isFinite(y)) nan++;
             pk = Math.max(pk, Math.abs(y));
             if (n > end) res = Math.max(res, Math.abs(y));
-            if (n === Math.round(3000 + 0.6 * tr * sr)) mid = sim.H.envLast;
+            if (n === Math.round(3000 + (hold + 0.6 * tr) * sr)) mid = sim.H.envLast;
         }
-        ok(nan === 0 && res === 0 && mid > 0 && pk < 4, `mode ${cfg.DV_MODES[md]} Arch ${arch}, every meta 100: the life ends by ${(0.17 + tr).toFixed(2)} s (residue after ${res}, envelope at 0.6 Tr ${mid.toExponential(2)}, peak ${pk.toFixed(2)})`);
+        ok(nan === 0 && res === 0 && mid > 0 && pk < 4, `mode ${cfg.DV_MODES[md]} Arch ${arch}, every meta 100: the life ends by ${(0.02 + hold + tr).toFixed(2)} s (hold ${holdMs} ms, scope hold ${sim.sc(cfg.dvHiddenSlot(70))} (residue after ${res}, envelope at 0.6 Tr ${mid.toExponential(2)}, peak ${pk.toFixed(2)})`);
     }
     for (const md of [1, 2, 3]) {
         const rng = cfg.dvRng(40 + md);
@@ -727,6 +665,138 @@ if (process.env.DV_DEBUG_MOD) {
     // Mix 0 selects the delayed dry itself
     ok(code.includes("resL = fixnan(resL);") && code.includes("limL = (wsmN > 0) ? limSL : xdL;") && code.includes("o1 = fixnan(limL * sgN);"), "mix0_exact: residue fixnan'd first, Mix 0 selects xd (no sleep zeroing, no soft limit of the dry)");
     ok(!/outScale/.test(code), "mix0_exact: no outScale zeroing when asleep");
+}
+
+{
+    // ---- the "replace the drum" pass: dry replacement, Ring hold / send close, LFO, in the core (the Node twins of the mod_* audio cases) ----
+    const sr = 48000;
+    const MODV = { dvv0: 0, dvv1: 50, dvv2: 0, dvv3: 0, dvv4: 0, dvv5: 0, dvv6: 0, dvv7: 100 };
+    const kind5 = (n) => 0.3 * Math.sin(2 * Math.PI * 440 * n / sr) + ((n - 4800 >= 0 && n - 4800 < 2) ? 0.8 : 0);
+    const kind2 = (n) => burst(n, 4800, 100, 0.8);
+    // run a case: rows pinned like the probe's `maprow`; returns the max residue (output - delayed source) of each absolute-ms window "a:b"
+    function modRun(rows, src, durMs, wins, extra) {
+        const sim = makeSim(Object.assign({}, MODV, ZERO_R, { __rows: rows }, extra || {}), true);
+        const res = {}, ys = [];
+        const hist = [];
+        let nan = 0;
+        for (let n = 0; n < durMs * 48; n++) {
+            const x = src(n);
+            hist.push(x);
+            const y = sim.step(x);
+            if (!Number.isFinite(y)) nan++;
+            ys.push(y);
+        }
+        for (const w of wins) {
+            const [a, b] = w.split(":").map(Number);
+            let m = 0;
+            for (let n = a * 48; n < b * 48; n++) m = Math.max(m, Math.abs(ys[n] - (n >= 256 ? hist[n - 256] : 0)));
+            res[w] = m;
+        }
+        res.nan = nan;
+        res.sim = sim;
+        res.ys = ys;
+        res.hist = hist;
+        return res;
+    }
+    const shown = (r) => Object.keys(r).filter((k) => k.includes(":")).map((k) => `${k}=${r[k].toFixed(4)}`).join(" ");
+    {
+        const r = modRun([["dry_rep", 1, 1], ["env_hold_ms", 400, 400]], kind5, 3300, ["180:450", "2400:3300"]);
+        ok(r.nan === 0 && r["180:450"] > 0.27 && r["2400:3300"] === 0, `sim: dry_rep 1 with a 400 ms hold takes the dry away during the hold (${shown(r)}) and gives the exact dry after the life`);
+        let bad = 0;
+        for (let n = 2400 * 48; n < 3300 * 48; n++) if (r.ys[n] !== r.hist[n - 256]) bad++;
+        ok(bad === 0, `sim: dry_rep: output is the delayed dry bit for bit after the life (${bad} mismatches)`);
+        const r0 = modRun([["env_hold_ms", 400, 400]], kind5, 1200, ["180:450"]);
+        ok(r0["180:450"] === 0, "sim: dry_rep 0 leaves the dry exactly alone (bit-identical, no effect pinned)");
+        // dry_rep removes only the dry the effects have NOT replaced: with drive at wet 0.9 (crush 0.8, sat 0.9) the output must not carry a phase-inverted drum
+        const corrWin = (r, a0, b0) => { let sxy = 0, sxx = 0, syy = 0; for (let n = a0 * 48; n < b0 * 48; n++) { const x = r.hist[n - 256], y = r.ys[n]; sxy += x * y; sxx += x * x; syy += y * y; } return { c: sxy / Math.sqrt(sxx * syy + 1e-30), rms: Math.sqrt(syy / ((b0 - a0) * 48)), rmsDry: Math.sqrt(sxx / ((b0 - a0) * 48)) }; };
+        const fxRows = [["dry_rep", 1, 1], ["env_hold_ms", 400, 400], ["drive_amt", 0.9, 0.9], ["crush_wet", 0.8, 0.8], ["sat_amt", 0.9, 0.9]];
+        const rf = modRun(fxRows, kind5, 1200, ["180:450"]);
+        const cf = corrWin(rf, 180, 450);
+        ok(rf.nan === 0 && cf.c > -0.2, `sim: dry_rep 1 with effects at high wet is not anti-correlated with the drum (NCC ${cf.c.toFixed(3)})`);
+        const rn = modRun([["dry_rep", 1, 1], ["env_hold_ms", 400, 400]], kind5, 1200, ["180:450"]);
+        const cn = corrWin(rn, 180, 450);
+        ok(cn.rms < 0.6 * cn.rmsDry && cn.c > -0.2, `sim: dry_rep 1 with no effect takes the dry down toward 0 in the hold (rms ${cn.rms.toFixed(3)} vs dry ${cn.rmsDry.toFixed(3)}, NCC ${cn.c.toFixed(3)})`);
+        const cl = corrWin(modRun([["dry_rep", 1, 1], ["env_hold_ms", 400, 400]], kind5, 3300, ["2400:3300"]), 2500, 3300);
+        ok(Math.abs(cl.c - 1) < 1e-9, "sim: dry_rep: exact dry (NCC 1) after the life");
+        // Mix 0 stays the delayed dry whatever dry_rep does
+        const rm = modRun([["dry_rep", 1, 1], ["env_hold_ms", 400, 400]], kind5, 1200, ["180:450"], { dvwet: 0 });
+        ok(rm["180:450"] === 0, "sim: Mix 0 is the exact delayed dry with dry_rep 1");
+    }
+    {
+        // Ring hold: 800 ms keeps the envelope at 1; the default hold has fallen away; the life ends hold + Tr + fade; a Reroll does not re-raise / change the latched hold
+        const hit = 4800;
+        const mk = (rows) => makeSim(Object.assign({}, MODV, ZERO_R, { dvv7: 0, __rows: rows }), true);
+        const at = (sim, n0, n1, f) => { for (let n = n0; n < n1; n++) sim.step(kind2(n)); return f(sim); };
+        const sA = mk([["env_hold_ms", 800, 800]]);
+        const e5 = at(sA, 0, hit + 24000, (q) => q.H.envLast);
+        const e12 = at(sA, hit + 24000, hit + 57600, (q) => q.H.envLast);
+        ok(e5 === 1 && e12 === 0, `sim: env_hold_ms 800 keeps the Ring envelope at 1 for 0.5 s and the life ends by 1.2 s (${e5}, ${e12})`);
+        const sD = mk([]);
+        const d5 = at(sD, 0, hit + 24000, (q) => q.H.envLast);
+        ok(d5 === 0, "sim: the default hold has ended by 0.5 s");
+        ok(Math.abs(sA.H.holdS - 0.8 * sr) < 1e-6 && Math.abs(sD.H.holdS - 0.15 * sr) < 1e-6, `sim: the hold is latched (${sA.H.holdS}, ${sD.H.holdS})`);
+        // Reroll keeps the latched hold; the next hit takes the new map's hold
+        const sR = mk([["env_hold_ms", 800, 800]]);
+        for (let n = 0; n < hit + 14400; n++) sR.step(kind2(n));
+        const mp = cfg.dvArchMap(0, 0).map((r2) => Object.assign({}, r2));
+        mp[cfg.DV_HIDDEN_INDEX.env_hold_ms] = { meta: 7, src: 0, curve: 0, lo: 300, hi: 300, jit: 1 };
+        const fl = cfg.dvMapFloats(mp), M = cfg.DV_MAP;
+        fl.forEach((v, i) => sR.data.dmap.poke(v, M.BASE + M.BANK_STRIDE + i));
+        sR.data.dmap.poke(1, M.BANK); sR.data.dmap.poke(2, M.VER);
+        sR.P.dvreroll = 0; sR.step(0); sR.P.dvreroll = 1;
+        for (let n = 0; n < 4800; n++) sR.step(0);
+        ok(Math.abs(sR.H.holdS - 0.8 * sr) < 1e-6 && sR.H.envLast === 1, `sim: a Reroll applies the page but keeps the latched hold (${sR.H.holdS}) and does not drop the envelope (${sR.H.envLast})`);
+        for (let n = 0; n < 96000; n++) sR.step(0);
+        for (let n = 0; n < 12000; n++) sR.step(kind2(n));
+        ok(Math.abs(sR.H.holdS - 0.3 * sr) < 1e-6, `sim: the next hit latches the new hold (${sR.H.holdS})`);
+        // the life never passes 8 s even at the largest hold + Tr: Tr is cut to 7.98 - hold
+        const hi = cfg.DV_HIDDEN_INDEX;
+        const sG = makeSim(Object.assign({}, MODV, ZERO_R, { __arch: 913, __mode: 3, __rows: [["env_hold_ms", 1200, 1200]] }), true);
+        for (let n = 0; n < 12000; n++) sG.step(kind2(n));
+        ok(sG.H.trS <= 7.98 - 1.2 + 1e-9 + 0.0 || sG.H.trS <= 6.78 + 1e-9, `sim: Tr is guarded so hold + Tr <= 7.98 s (Tr ${sG.H.trS})`);
+    }
+    {
+        // send close: the spectral send hears the hit for snd_close_ms (default 200)
+        const spec3 = [["spec_wet", 1, 1], ["spec_op", 3, 3], ["spec_amt", 0.5, 0.5]];
+        const a = modRun(spec3.concat([["snd_close_ms", 1000, 1000]]), kind5, 1800, ["500:700"]);
+        const b = modRun(spec3, kind5, 1800, ["500:700"]);
+        ok(a["500:700"] > 0.03 && b["500:700"] < 0.005, `sim: snd_close_ms 1000 keeps the spectral send fed (${shown(a)}) while 200 ms closes it (${shown(b)})`);
+    }
+    {
+        // LFO: a square on the zap cutoff alternates the residue; depth 0 does not
+        const kind7 = (n) => 0.3 * Math.sin(2 * Math.PI * 300 * n / sr); // a steady 300 Hz tone: the hit is its start (no click to ring the filter)
+        const zap = (d, shape, tgt) => [["zap_wet", 1, 1], ["zap_f0", 300, 300], ["zap_f1", 300, 300], ["zap_res", 0.3, 0.3],
+            ["lfo_hz", 8, 8], ["lfo_depth", d, d], ["lfo_shape", shape, shape], ["lfo_tgt", tgt, tgt]];
+        const on = modRun(zap(1, 2, 0), kind7, 250, ["40:60", "70:90"]);
+        const off = modRun(zap(0, 2, 0), kind7, 250, ["40:60", "70:90"]);
+        ok(on["70:90"] > 2 * on["40:60"] && on["70:90"] > 0.15, `sim: a square LFO on the zap cutoff alternates the residue (${shown(on)})`);
+        ok(off["40:60"] > 0.1 && off["70:90"] < 1.5 * off["40:60"], `sim: LFO depth 0 does not alternate (${shown(off)})`);
+        {
+            // the cutoff copy itself: 1200 Hz (x4) while the square is +1, 75 Hz (/4) while -1, switching every half period (62.5 ms), exactly
+            const sim = makeSim(Object.assign({}, MODV, ZERO_R, { __rows: zap(1, 2, 0) }), true);
+            const seen = [];
+            for (let n = 0; n < 200 * 48; n++) { sim.step(kind7(n)); if (n % 480 === 0) seen.push(Math.round(sim.data.dvRsp.peek(5))); }
+            const flips = seen.filter((v, i) => i > 0 && v !== seen[i - 1]).length;
+            ok(seen.includes(1200) && seen.includes(75) && flips >= 2 && seen.every((v) => v === 1200 || v === 75 || v === 300 || v === 0), `sim: LFO square swings the zap cutoff x4 / x1/4 (${[...new Set(seen)]}, ${flips} flips)`);
+        }
+        // every shape and target stays finite and bounded
+        let bad = 0;
+        for (let shape = 0; shape < 4; shape++) for (let tgt = 0; tgt < 5; tgt++) {
+            const rows = zap(0.8, shape, tgt).concat([["pitch_wet", 1, 1], ["pitch_st", 3, 3], ["ring_wet", 0.7, 0.7], ["ring_hz", 300, 300], ["form_wet", 0.8, 0.8], ["res_wet", 0.8, 0.8], ["res_f0", 200, 200]]);
+            const r = modRun(rows, kind5, 400, ["112:128"]);
+            if (r.nan || !(r.ys.every((v) => Math.abs(v) < 6))) bad++;
+        }
+        ok(bad === 0, `sim: every LFO shape x target is finite and bounded (${bad} bad)`);
+        // neutral at depth 0 for every target: identical output to the same rows with no LFO rows at all
+        const base = [["pitch_wet", 1, 1], ["pitch_st", 3, 3], ["ring_wet", 0.7, 0.7], ["ring_hz", 300, 300], ["form_wet", 0.8, 0.8], ["res_wet", 0.8, 0.8], ["res_f0", 200, 200], ["zap_wet", 1, 1], ["zap_f0", 1000, 1000], ["zap_f1", 600, 600]];
+        const r0 = modRun(base, kind5, 300, []);
+        let same = true;
+        for (const tgt of [0, 1, 2, 3, 4]) {
+            const r1 = modRun(base.concat([["lfo_hz", 7, 7], ["lfo_depth", 0, 0], ["lfo_shape", tgt % 4, tgt % 4], ["lfo_tgt", tgt, tgt]]), kind5, 300, []);
+            if (!r1.ys.every((v, i) => v === r0.ys[i])) same = false;
+        }
+        ok(same, "sim: LFO depth 0 is bit-identical to no LFO, for every target");
+    }
 }
 
 console.log(`${checks} checks, ${fails} failed`);
