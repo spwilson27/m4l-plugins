@@ -18,43 +18,66 @@
 // GenExpr rules kept here: one return per function at its end, helpers before use, no user call in poke()
 // or an if condition, every variable assigned before an if that might assign it, no e<digit> names.
 
+// Smooth-function table ft (filled once by ac_sample): 3001 nodes on -30..30 (step 0.02), 4 floats per node:
+// log(softplus(u)) and softplus(u), each followed by its slope times the step. Cubic Hermite between nodes
+// (error below 1e-9), so the tube equations need no exp / log pair for softplus. Returns the value, the slope
+// goes to rq[o].
+ac_hm(ft, rq, o, x, col) {
+    q = clip((x + 30) * 50, 0, 2999.999);
+    i = floor(q);
+    t = q - i;
+    b = i * 4 + col;
+    p0 = peek(ft, b);
+    m0 = peek(ft, b + 1);
+    p1 = peek(ft, b + 4);
+    m1 = peek(ft, b + 5);
+    t2 = t * t;
+    t3 = t2 * t;
+    vv = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 + (3 * t2 - 2 * t3) * p1 + (t3 - t2) * m1;
+    poke(rq, ((6 * t2 - 6 * t) * (p0 - p1) + (3 * t2 - 4 * t + 1) * m0 + (3 * t2 - 2 * t) * m1) * 50, o);
+    return vv;
+}
+
 // Koren triode: writes Ip (mA), gm (mA/V), gp (mA/V) to rq[o..o+2], returns Ip.
-ac_kt(rq, o, vgk, vpk, mu, ex, kg1, kp, kvb) {
+// Ip = 2000 / kg1 * (vp / kp * softplus(u))^ex = 2000 / kg1 * exp(ex * (log(vp / kp) + H(u))), H = log softplus.
+ac_kt(ft, rq, o, vgk, vpk, mu, ex, kg1, kp, kvb) {
     vp = max(vpk, 0.001);
     sq = sqrt(kvb + vp * vp);
     u = kp * (1 / mu + vgk / sq);
-    sp = u;
-    sg = 1;
-    if (u < 30) {
-        eu = exp(u);
-        sp = log(1 + eu);
-        sg = eu / (1 + eu);
+    hu = u;
+    hd = 1;
+    if (u > 29.99) {
+        hu = log(u);
+        hd = 1 / u;
+    } else if (u > -29.99) {
+        hu = ac_hm(ft, rq, 12, u, 0);
+        hd = peek(rq, 12);
     }
-    ee = vp / kp * sp;
+    lg = log(vp / kp) + hu;
     ip = 0;
-    di = 0;
-    if (ee > 0.0000001) {
-        ip = 2000 * exp(ex * log(ee)) / kg1;
-        di = ex * ip / ee;
+    if (lg > -16.118) {
+        ip = 2000 * exp(ex * lg) / kg1;
     }
     poke(rq, ip, o);
-    poke(rq, di * vp * sg / sq, o + 1);
-    poke(rq, di * (sp / kp - sg * vgk * vp * vp / (sq * sq * sq)), o + 2);
+    poke(rq, ip * ex * hd * kp / sq, o + 1);
+    poke(rq, ip * ex * (1 / vp - hd * kp * vgk * vp / (sq * sq * sq)), o + 2);
     return ip;
 }
 
 // Koren pentode at screen voltage vs2: writes Ip, gp (d Ip / d Vak), the grid-controlled base current.
-ac_kp(rq, o, vgk, vak, vs2, mu, ex, kg1, kp, kvb) {
+ac_kp(ft, rq, o, vgk, vak, vs2, mu, ex, kg1, kp, kvb) {
     vq = max(vs2, 1);
     u = kp * (1 / mu + vgk / vq);
-    sp = u;
-    if (u < 30) {
-        sp = log(1 + exp(u));
+    hu = u;
+    if (u > 29.99) {
+        hu = log(u);
+    } else if (u > -29.99) {
+        hu = ac_hm(ft, rq, 12, u, 0);
     }
-    ee = vq / kp * sp;
+    lg = log(vq / kp) + hu;
     bs = 0;
-    if (ee > 0.0000001) {
-        bs = 2000 * exp(ex * log(ee)) / kg1;
+    if (lg > -16.118) {
+        bs = 2000 * exp(ex * lg) / kg1;
     }
     va = max(vak, 0);
     ip = bs * atan2(va, kvb);
@@ -67,7 +90,7 @@ ac_kp(rq, o, vgk, vak, vs2, mu, ex, kg1, kp, kvb) {
 // Grid node behind a coupling cap (cc > 0) or direct (cc = 0): source x through rs, leak rgl to vref,
 // grid-cathode conduction (soft diode, gg mS) -> the cap charges on positive peaks (blocking).
 // State: sv[ov] cap voltage, sv[og] grid voltage. Returns the grid voltage.
-ac_grid(sv, ov, og, x, vk, cc, rgl, rs, vref, gg, hh) {
+ac_grid(sv, ft, rq, ov, og, x, vk, cc, rgl, rs, vref, gg, hh) {
     vc = peek(sv, ov);
     vg = peek(sv, og);
     vsrc = x + vref;
@@ -76,26 +99,37 @@ ac_grid(sv, ov, og, x, vk, cc, rgl, rs, vref, gg, hh) {
         vsrc = x - vc;
         gl = 1 / rgl;
     }
-    // four Newton steps: a square wave jumps the grid by tens of volts, and an unconverged grid left a memory
-    // that locked hard-driven stages into slow subharmonic cycles
+    // Without grid current (grid more than 1 V below the cathode) the node is linear and this is its exact
+    // solution; otherwise up to four Newton steps from the last grid voltage, stopping once converged (a square
+    // wave jumps the grid by tens of volts, and an unconverged grid left a memory that locked hard-driven
+    // stages into slow subharmonic cycles).
+    vl = (vsrc / rs + gl * vref) / (1 / rs + gl);
+    dn = 0;
+    if (vl - vk <= -1) {
+        vg = vl;
+        dn = 1;
+    }
     for (j = 0; j < 4; j += 1) {
-        dd = vg - vk;
-        ig = 0;
-        dig = 0;
-        if (dd > -1) {
-            zz = (dd + 0.2) * 10;
-            if (zz < 30) {
-                ez = exp(zz);
-                ig = gg * 0.1 * log(1 + ez);
-                dig = gg * ez / (1 + ez);
-            } else {
-                ig = gg * (dd + 0.2);
-                dig = gg;
+        if (dn < 0.5) {
+            dd = vg - vk;
+            ig = 0;
+            dig = 0;
+            if (dd > -1) {
+                zz = (dd + 0.2) * 10;
+                if (zz < 29.99) {
+                    ig = gg * 0.1 * ac_hm(ft, rq, 12, zz, 2);
+                    dig = gg * peek(rq, 12);
+                } else {
+                    ig = gg * (dd + 0.2);
+                    dig = gg;
+                }
             }
+            ff = (vsrc - vg) / rs - gl * (vg - vref) - ig;
+            fp = -1 / rs - gl - dig;
+            dv = ff / fp;
+            vg = vg - dv;
+            dn = abs(dv) < 0.000001 ? 1 : 0;
         }
-        ff = (vsrc - vg) / rs - gl * (vg - vref) - ig;
-        fp = -1 / rs - gl - dig;
-        vg = vg - ff / fp;
     }
     if (cc > 0) {
         vc = vc + hh * (vsrc - vg) / rs / cc;
@@ -107,25 +141,32 @@ ac_grid(sv, ov, og, x, vk, cc, rgl, rs, vref, gg, hh) {
 
 // Two Newton steps on a triode's plate current with a linear cathode (vk = ka + kb Ip) and plate load rp. The current
 // is carried between the steps in rq[9] (a loop-carried scalar passed into a call kills the gen compile).
-ac_tip(rq, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb) {
-    poke(rq, ip, 9);
+// The start value is the caller's prediction; the second step runs only when the first moved the current by more
+// than 1e-5 of it (quadratic convergence: the skipped correction is then below 1e-10).
+ac_tip(rq, ft, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb) {
     imax = bst / (rp + kb + 0.001);
+    poke(rq, clip(ip, 0, imax), 9);
+    poke(rq, 1, 10);
     for (j = 0; j < 2; j += 1) {
-        iq = peek(rq, 9);
-        vki = ka + kb * iq;
-        vgk = vg - vki;
-        vpk = bst - rp * iq - vki;
-        kv = ac_kt(rq, 3, vgk, vpk, mu, ex, kg1, kp, kvb);
-        gm = peek(rq, 4);
-        gp = peek(rq, 5);
-        poke(rq, clip(iq - (iq - kv) / (1 + gm * kb + gp * (rp + kb)), 0, imax), 9);
+        if (peek(rq, 10) > 0.5) {
+            iq = peek(rq, 9);
+            vki = ka + kb * iq;
+            vgk = vg - vki;
+            vpk = bst - rp * iq - vki;
+            kv = ac_kt(ft, rq, 3, vgk, vpk, mu, ex, kg1, kp, kvb);
+            gm = peek(rq, 4);
+            gp = peek(rq, 5);
+            inew = clip(iq - (iq - kv) / (1 + gm * kb + gp * (rp + kb)), 0, imax);
+            poke(rq, inew, 9);
+            poke(rq, abs(inew - iq) > 0.00001 * (iq + 0.001) ? 1 : 0, 10);
+        }
     }
     return peek(rq, 9);
 }
 
 // Common-cathode / cathode-follower triode stage with self-bias (bias shift), grid blocking, Miller pole
 // that follows the live stage gain, and B+ that sags with the power supply.
-ac_triode(tb, sv, rq, cb, sb, so, hh) {
+ac_triode(tb, sv, rq, ft, cb, sb, so, hh) {
     x = peek(rq, 0);
     mu = peek(tb, cb + 1);
     ex = peek(tb, cb + 2);
@@ -151,6 +192,7 @@ ac_triode(tb, sv, rq, cb, sb, so, hh) {
     ip0 = peek(tb, cb + 22);
     vk = peek(sv, sb + 1);
     ip = peek(sv, sb + 2);
+    ipq = peek(sv, sb + 6);
     lp = peek(sv, sb + 3);
     am = peek(sv, sb + 5);
     act = peek(sv, sb + 23);
@@ -158,7 +200,7 @@ ac_triode(tb, sv, rq, cb, sb, so, hh) {
     bst = bn * (1 - rfr + rfr * rr);
     cm = cgk + cgp * (1 + am);
     lp = lp + hh / (req * cm + hh) * (x - lp);
-    vg = ac_grid(sv, sb, sb + 4, lp, vk, cc, rgl, rs, vg0, gg, hh);
+    vg = ac_grid(sv, ft, rq, sb, sb + 4, lp, vk, cc, rgl, rs, vg0, gg, hh);
     ka = 0;
     kb = rk;
     if (ck > 0) {
@@ -166,12 +208,13 @@ ac_triode(tb, sv, rq, cb, sb, so, hh) {
         ka = vk / den;
         kb = hh / ck / den;
     }
-    ip = ac_tip(rq, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb);
+    // start from the linear prediction of the last two currents
+    ip = ac_tip(rq, ft, vg, 2 * ip - ipq, ka, kb, bst, rp, mu, ex, kg1, kp, kvb);
     // A direct-coupled grid (cathode follower) is solved twice: grid current with the new cathode voltage, then the
     // plate current again (a one-sample-late cathode in this tightly coupled loop turned a driven Plexi chaotic).
     if (cc < 0.5) {
-        vg = ac_grid(sv, sb, sb + 4, lp, ka + kb * ip, cc, rgl, rs, vg0, gg, hh);
-        ip = ac_tip(rq, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb);
+        vg = ac_grid(sv, ft, rq, sb, sb + 4, lp, ka + kb * ip, cc, rgl, rs, vg0, gg, hh);
+        ip = ac_tip(rq, ft, vg, ip, ka, kb, bst, rp, mu, ex, kg1, kp, kvb);
     }
     gm = peek(rq, 4);
     gp = peek(rq, 5);
@@ -181,6 +224,7 @@ ac_triode(tb, sv, rq, cb, sb, so, hh) {
     act = act + 0.002 * (abs(ip - ip0) / (ip0 + 0.01) - act);
     poke(rq, yy * osc, 0);
     poke(sv, fixdenorm(vk), sb + 1);
+    poke(sv, peek(sv, sb + 2), sb + 6);
     poke(sv, ip, sb + 2);
     poke(sv, fixdenorm(lp), sb + 3);
     poke(sv, am, sb + 5);
@@ -235,7 +279,7 @@ ac_rail(tb, sv, cb, sb, so, hh) {
 
 // Push-pull pentode pair (np pairs in parallel) into the output transformer: one Newton step on both
 // plate currents with the reflected speaker load (instantaneous resistance + history from the output network).
-ac_ptubes(tb, sv, rq, cb, sb, so, vb, ga, gb, vk) {
+ac_ptubes(tb, sv, rq, ft, cb, sb, so, vb, ga, gb, vk) {
     mu = peek(tb, cb + 1);
     ex = peek(tb, cb + 2);
     kg1 = peek(tb, cb + 3);
@@ -254,8 +298,8 @@ ac_ptubes(tb, sv, rq, cb, sb, so, vb, ga, gb, vk) {
     vs2 = peek(sv, so + 323) - rscr * ig2 * np;
     rr = nt * nt * rin * np * 0.00025;
     vs = rin * (nt * np * (i1 - i2) * 0.0005 - im) + vh;
-    k1 = ac_kp(rq, 3, ga - vk, vb - 0.5 * nt * vs - vk, vs2, mu, ex, kg1, kp, kvb);
-    k2 = ac_kp(rq, 6, gb - vk, vb + 0.5 * nt * vs - vk, vs2, mu, ex, kg1, kp, kvb);
+    k1 = ac_kp(ft, rq, 3, ga - vk, vb - 0.5 * nt * vs - vk, vs2, mu, ex, kg1, kp, kvb);
+    k2 = ac_kp(ft, rq, 6, gb - vk, vb + 0.5 * nt * vs - vk, vs2, mu, ex, kg1, kp, kvb);
     gp1 = peek(rq, 4);
     gp2 = peek(rq, 7);
     g1 = i1 - k1;
@@ -274,7 +318,7 @@ ac_ptubes(tb, sv, rq, cb, sb, so, vb, ga, gb, vk) {
 
 // Tube power stage: global NFB (from the speaker terminal, presence shelf in the loop) -> long-tail phase
 // inverter -> coupling caps / grid leaks (power-tube blocking) -> fixed or cathode bias -> ac_ptubes.
-ac_pwr(tb, cq, sv, rq, cb, sb, so, hh) {
+ac_pwr(tb, cq, sv, rq, ft, cb, sb, so, hh) {
     x = peek(rq, 0);
     np = peek(tb, cb + 7);
     bmode = peek(tb, cb + 15);
@@ -305,10 +349,10 @@ ac_pwr(tb, cq, sv, rq, cb, sb, so, hh) {
     dd = vsw * tanh(uu / vsw);
     gref = bmode > 0.5 ? 0 : vbias;
     vkk = bmode > 0.5 ? vk : 0;
-    ga = ac_grid(sv, sb, sb + 1, dd, vkk, cc, rgl, rs, gref, gg, hh);
-    gb = ac_grid(sv, sb + 2, sb + 3, 0 - dd, vkk, cc, rgl, rs, gref, gg, hh);
+    ga = ac_grid(sv, ft, rq, sb, sb + 1, dd, vkk, cc, rgl, rs, gref, gg, hh);
+    gb = ac_grid(sv, ft, rq, sb + 2, sb + 3, 0 - dd, vkk, cc, rgl, rs, gref, gg, hh);
     vb = ac_rail(tb, sv, cb, sb, so, hh);
-    ac_ptubes(tb, sv, rq, cb, sb, so, vb, ga, gb, vkk);
+    ac_ptubes(tb, sv, rq, ft, cb, sb, so, vb, ga, gb, vkk);
     if (bmode > 0.5) {
         it = (peek(sv, sb + 4) + peek(sv, sb + 5)) * np;
         vk = (vk + hh / ck * it) / (1 + hh / (rk * ck));
@@ -946,7 +990,7 @@ ac_fet(tb, sv, rq, cb, sb, so, hh) {
 }
 
 // One slot: dispatch on its kind (each helper has exactly one call site, here).
-ac_step(k, so, ch, tb, cq, sv, rq, tq, hh) {
+ac_step(k, so, ch, tb, cq, sv, rq, tq, ft, hh) {
     cb = 64 + k * 32;
     sb = so + k * 24;
     kind = peek(tb, cb);
@@ -967,7 +1011,7 @@ ac_step(k, so, ch, tb, cq, sv, rq, tq, hh) {
         } else if (kind < 7.5) {
             ac_fuzz(tb, sv, rq, cb, sb, hh);
         } else if (kind < 8.5) {
-            ac_triode(tb, sv, rq, cb, sb, so, hh);
+            ac_triode(tb, sv, rq, ft, cb, sb, so, hh);
         } else if (kind < 9.5) {
             ac_tone(tb, cq, sv, rq, cb, sb);
         } else if (kind < 10.5) {
@@ -975,7 +1019,7 @@ ac_step(k, so, ch, tb, cq, sv, rq, tq, hh) {
         } else if (kind < 11.5) {
             ac_xfmr(tb, sv, rq, cb, sb, hh);
         } else if (kind < 12.5) {
-            ac_pwr(tb, cq, sv, rq, cb, sb, so, hh);
+            ac_pwr(tb, cq, sv, rq, ft, cb, sb, so, hh);
         } else if (kind < 13.5) {
             ac_sspwr(tb, sv, rq, cb, sb, so);
         } else {
@@ -1033,8 +1077,20 @@ ac_dn(rq, hq, ch, tb) {
 }
 
 // One sample of the whole chain for every channel. xi / xo: the template's input / output per channel.
-ac_sample(xi, xo, nch, ninit, tb, cq, sv, rq, hq, cr, tq, la, sr) {
+ac_sample(xi, xo, nch, ninit, tb, cq, sv, rq, hq, cr, tq, ft, la, sr) {
     hh = 500 / sr;
+    if (peek(ft, 12004) < 0.5) {
+        for (j = 0; j < 3001; j += 1) {
+            xq = j * 0.02 - 30;
+            sp = max(xq, 0) + log(1 + exp(0 - abs(xq)));
+            sg = 1 / (1 + exp(0 - xq));
+            poke(ft, log(sp), j * 4);
+            poke(ft, sg / sp * 0.02, j * 4 + 1);
+            poke(ft, sp, j * 4 + 2);
+            poke(ft, sg * 0.02, j * 4 + 3);
+        }
+        poke(ft, 1, 12004);
+    }
     if (ninit > 0.5) {
         for (j = 0; j < 352; j += 1) {
             poke(sv, peek(tb, 1536 + j), j);
@@ -1070,7 +1126,7 @@ ac_sample(xi, xo, nch, ninit, tb, cq, sv, rq, hq, cr, tq, la, sr) {
                 ac_dn(rq, hq, ch, tb);
             }
             kk = it < 1 ? 0 : (it < 11 ? it : (it < 21 ? it - 10 : 11));
-            ac_step(kk, so, ch, tb, cq, sv, rq, tq, it < 1 ? 2 * hh : (it > 20 ? 2 * hh : hh));
+            ac_step(kk, so, ch, tb, cq, sv, rq, tq, ft, it < 1 ? 2 * hh : (it > 20 ? 2 * hh : hh));
         }
         yy = peek(rq, 0);
         if (spk > 0.5) {

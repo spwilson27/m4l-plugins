@@ -638,7 +638,7 @@ function aaBankOf(r, sr, speaker) {
         if (!s) continue;
         if (s.k === "triode") {
             var tr = aaPutTriode(t, cb, s, prevDc);
-            st0[so] = tr.vc; st0[so + 1] = tr.vk; st0[so + 2] = tr.ip; st0[so + 4] = tr.vg; st0[so + 5] = tr.gain;
+            st0[so] = tr.vc; st0[so + 1] = tr.vk; st0[so + 2] = tr.ip; st0[so + 6] = tr.ip; st0[so + 4] = tr.vg; st0[so + 5] = tr.gain;
             prevDc = tr.dc;
         } else if (s.k === "pwr") {
             raa = aaPutPwr(t, cb, s, { set: function (o, v) { st0[so + o] = v; }, misc: function (o, v) { st0[o] = v; } }, so, sr).raa;
@@ -711,8 +711,8 @@ function aaInfo(idx) {
 // (src/amp_core.genexpr, both without comments), with the template's hooks filled for the analog engine.
 // The table is copied from buffer `w` (---ampa) into Data wd; the post biquads start at 4 (the tone stack
 // runs inside the chain); the dry path waits for the oversampler's 23-sample delay.
-var AA_GEN_DECL = "Data wd(" + AA_NW + ");\nData anSt(" + 2 * AA_STATE + ");\nData anRq(32);\nData anHq(384);\nData anCr(2048);\nData anTq(4096);\nData lact(48);\nDelay anDl(64);\nDelay anDr(64);";
-var AA_GEN_BODY = "ac_sample(nib, nob, nch, ninit, wd, cfd, anSt, anRq, anHq, anCr, anTq, lact, samplerate);\nnsat = peek(lact, 41);";
+var AA_GEN_DECL = "Data wd(" + AA_NW + ");\nData anSt(" + 2 * AA_STATE + ");\nData anRq(32);\nData anHq(384);\nData anCr(2048);\nData anTq(4096);\nData anFt(12008);\nData lact(48);\nDelay anDl(64);\nDelay anDr(64);";
+var AA_GEN_BODY = "ac_sample(nib, nob, nch, ninit, wd, cfd, anSt, anRq, anHq, anCr, anTq, anFt, lact, samplerate);\nnsat = peek(lact, 41);";
 var AA_GEN_DRY = "anDl.write(in1);\nanDr.write(in2);\ndry1 = anDl.read(23);\ndry2 = anDr.read(23);";
 
 /** @param {string} template the template without comments @param {string} src the circuit functions without comments */

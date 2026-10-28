@@ -63,7 +63,7 @@ const strip = (s) => s.split("\n").map((l) => l.replace(/\/\/(?!@NAM_).*$/, ""))
     for (const f of fns) if (f.name !== "ac_sample") check((calls[f.name] || 0) - 1 >= 1, `${f.name}: called`);
     // assembled gen code: functions first, every hook filled
     const gen = AA.aaGenCode(tmpl, code);
-    check(/^ac_kt\(/.test(gen) && !/@@|\/\/@NAM_/.test(gen) && /ac_sample\(nib, nob, nch, ninit, wd, cfd, anSt/.test(gen), "assembled analog gen code is clean");
+    check(/^ac_hm\(/.test(gen) && !/@@|\/\/@NAM_/.test(gen) && /ac_sample\(nib, nob, nch, ninit, wd, cfd, anSt/.test(gen), "assembled analog gen code is clean");
     check(/^q0 = 4;$/m.test(gen) && /anDl\.read\(23\)/.test(gen), "analog gen: post biquads from 4, dry path delayed 23 samples");
 }
 

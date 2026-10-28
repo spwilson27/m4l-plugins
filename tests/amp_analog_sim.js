@@ -36,7 +36,7 @@ function create(idx, o) {
     const tbl = o.recipe ? AA.aaBankOf(o.recipe, sr, spk) : AA.aaBank(idx, sr, spk);
     const knobs = Object.assign({ bass: 5, mid: 5, treble: 5, presence: 5 }, o.knobs || {});
     const cfv = AA.aaToneTable(o.recipe || idx, knobs, sr);
-    const tb = new D(AA.AA_NW), cq = new D(50), sv = new D(704), rq = new D(32), hq = new D(384), cr = new D(2048), tq = new D(4096), la = new D(48);
+    const tb = new D(AA.AA_NW), cq = new D(50), sv = new D(704), rq = new D(32), hq = new D(384), cr = new D(2048), tq = new D(4096), ft = new D(12008), la = new D(48);
     const xi = new D(2), xo = new D(2);
     for (let i = 0; i < AA.AA_NW; i++) tb.poke(Math.fround(tbl[i]), i);
     for (let i = 0; i < cfv.length; i++) cq.poke(Math.fround(cfv[i]), i);
@@ -45,7 +45,7 @@ function create(idx, o) {
     function step(l, r) {
         xi.poke(l * g, 0);
         xi.poke((r === undefined ? l : r) * g, 1);
-        f.ac_sample(xi, xo, nch, first, tb, cq, sv, rq, hq, cr, tq, la, sr);
+        f.ac_sample(xi, xo, nch, first, tb, cq, sv, rq, hq, cr, tq, ft, la, sr);
         first = 0;
     }
     if (o.settle !== false) for (let i = 0; i < AA.AA_RF + 512; i++) step(0, 0);
