@@ -13095,5 +13095,181 @@
 "style": "enum",
 "invisible": 1,
 "info": "UI Slope Pe (stored with the Set) of Operator+."
+},
+{
+"key": "osc_a_type",
+"name": "Osc-A Type",
+"min": 0.0,
+"max": 3.0,
+"init": 0.0,
+"items": [
+"Operator",
+"Wavetable",
+"Supersaw",
+"PWM"
+],
+"enum": true,
+"extra": true,
+"style": "enum",
+"invisible": 0,
+"info": "Oscillator type of A: Operator (its Wave), Wavetable, Supersaw or PWM."
+},
+{
+"key": "osc_a_shape",
+"name": "Osc-A Shape",
+"min": 0.0,
+"max": 100.0,
+"init": 50.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "Shape of oscillator A: wavetable position, supersaw detune or pulse width."
+},
+{
+"key": "osc_a_shp_lt_lfo",
+"name": "Osc-A Shape < LFO",
+"min": -100.0,
+"max": 100.0,
+"init": 0.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "How much the LFO moves the Shape of oscillator A."
+},
+{
+"key": "osc_b_type",
+"name": "Osc-B Type",
+"min": 0.0,
+"max": 3.0,
+"init": 0.0,
+"items": [
+"Operator",
+"Wavetable",
+"Supersaw",
+"PWM"
+],
+"enum": true,
+"extra": true,
+"style": "enum",
+"invisible": 0,
+"info": "Oscillator type of B: Operator (its Wave), Wavetable, Supersaw or PWM."
+},
+{
+"key": "osc_b_shape",
+"name": "Osc-B Shape",
+"min": 0.0,
+"max": 100.0,
+"init": 50.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "Shape of oscillator B: wavetable position, supersaw detune or pulse width."
+},
+{
+"key": "osc_b_shp_lt_lfo",
+"name": "Osc-B Shape < LFO",
+"min": -100.0,
+"max": 100.0,
+"init": 0.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "How much the LFO moves the Shape of oscillator B."
+},
+{
+"key": "osc_c_type",
+"name": "Osc-C Type",
+"min": 0.0,
+"max": 3.0,
+"init": 0.0,
+"items": [
+"Operator",
+"Wavetable",
+"Supersaw",
+"PWM"
+],
+"enum": true,
+"extra": true,
+"style": "enum",
+"invisible": 0,
+"info": "Oscillator type of C: Operator (its Wave), Wavetable, Supersaw or PWM."
+},
+{
+"key": "osc_c_shape",
+"name": "Osc-C Shape",
+"min": 0.0,
+"max": 100.0,
+"init": 50.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "Shape of oscillator C: wavetable position, supersaw detune or pulse width."
+},
+{
+"key": "osc_c_shp_lt_lfo",
+"name": "Osc-C Shape < LFO",
+"min": -100.0,
+"max": 100.0,
+"init": 0.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "How much the LFO moves the Shape of oscillator C."
+},
+{
+"key": "osc_d_type",
+"name": "Osc-D Type",
+"min": 0.0,
+"max": 3.0,
+"init": 0.0,
+"items": [
+"Operator",
+"Wavetable",
+"Supersaw",
+"PWM"
+],
+"enum": true,
+"extra": true,
+"style": "enum",
+"invisible": 0,
+"info": "Oscillator type of D: Operator (its Wave), Wavetable, Supersaw or PWM."
+},
+{
+"key": "osc_d_shape",
+"name": "Osc-D Shape",
+"min": 0.0,
+"max": 100.0,
+"init": 50.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "Shape of oscillator D: wavetable position, supersaw detune or pulse width."
+},
+{
+"key": "osc_d_shp_lt_lfo",
+"name": "Osc-D Shape < LFO",
+"min": -100.0,
+"max": 100.0,
+"init": 0.0,
+"items": [],
+"enum": false,
+"extra": true,
+"style": "pct",
+"invisible": 0,
+"info": "How much the LFO moves the Shape of oscillator D."
 }
 ]

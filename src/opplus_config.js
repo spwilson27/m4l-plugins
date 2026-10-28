@@ -14,10 +14,32 @@ for (var _i = 0; _i < OP_P.length; _i++) OP_BY_KEY[OP_P[_i].key] = OP_P[_i];
 var OP_NV = 32;            // voices in the gen loop
 var OP_VSTRIDE = 8;        // floats per voice in ---opvoices
 var OP_CFG_SIZE = 448;
-var OP_SCOPE_SIZE = 528;
+// ---opscope: header 0..7 (0 alive counter / 1024, 1 sample rate, 2 active voices, 3 output peak, 4 spectrum ring head),
+// then OP_SCOPE.VS floats per voice from OP_SCOPE.V (written every 16 samples while the voice sounds; slot ON = 0 once it
+// stops), then two mono rings of OP_SCOPE.SPECN samples (the filter's input and output, all voices summed) written only
+// while cfg G+23 is 1 (the face shows the filter display).
+var OP_SCOPE = {
+    V: 8, VS: 24,
+    LVL: 0,        // 7 envelope levels (A B C D LFO Filter Pitch)
+    STG: 7,        // 7 envelope stage + progress (stage 0 idle, 1 attack, 2 decay, 3 sustain, 4 release)
+    LFO: 14,       // LFO output (with amount, envelope, Amt<Vel)
+    FC: 15,        // modulated filter cutoff Hz
+    AMP: 16,       // 4 operator output amplitudes (level x envelope x velocity / key scaling x modulation)
+    LPH: 20,       // LFO phase 0..1
+    ON: 21,        // 1 while the voice sounds
+    NOTE: 22,      // current (gliding) note
+    K: 23,         // filter damping k (1 / Q per stage)
+    SPEC: 776, SPECN: 2048
+};
+var OP_SCOPE_SIZE = OP_SCOPE.SPEC + 2 * OP_SCOPE.SPECN;
+var OP_VSTRIDE_GEN = 256;   // floats per voice in the gen's Data vsd
 var OP_TBL = 2048;         // wavetable length (+1 guard sample)
 var OP_NMIP = 8;
-var OP_NTAB = 26;          // 22 built-in tables (0..21) + 4 user tables (22 + osc)
+var OP_NTAB = 34;          // 22 built-in tables (0..21) + 4 user tables (22 + osc) + 8 wavetable frames (26..33)
+var OP_WT0 = 26;           // first wavetable frame (Type Wavetable morphs through OP_WT_NAMES)
+var OP_WT_NAMES = ["Sine", "Triangle", "Saw", "Square", "Pulse", "Formant", "Organ", "Buzz"];
+var OP_TYPES = ["Operator", "Wavetable", "Supersaw", "PWM"];
+var OP_SAW_TABLE = 9;      // Supersaw and PWM read the band-limited Saw 64 table
 var OP_FMK = 2.0;          // phase modulation in cycles per unit of modulator amplitude (measured: index = 4 pi x level)
 var OP_FB = 0.65;          // feedback in cycles at 100 % (measured: 50 % = 0.325)
 var OP_SECTIONS = ["A", "B", "C", "D", "LFO", "Filter", "Pitch", "Global"];
@@ -26,11 +48,13 @@ var OP_SECTIONS = ["A", "B", "C", "D", "LFO", "Filter", "Pitch", "Global"];
 var OP_CFG = {
     G: 0,          // 0 algo, 1 transpose st, 2 pb range st, 3 volume gain, 4 pan, 5 pan<key, 6 pan<rnd, 7 tone Hz, 8 spread 0..1,
                    // 9 glide on, 10 glide s, 11 time factor, 12 time<key, 13 voices, 14 retrigger, 15 interp, 16 antialias,
-                   // 17 bpm, 18 playing, 19 fm depth (cycles), 20 bend -1..1, 21 mod wheel 0..1, 22 aftertouch 0..1
+                   // 17 bpm, 18 playing, 19 fm depth (cycles), 20 bend -1..1, 21 mod wheel 0..1, 22 aftertouch 0..1,
+                   // 23 spectrum rings on (the face shows the filter display)
     MX: 24,        // 8 matrix slots x (source 0 vel 1 key 2 AT 3 PB 4 MW, target id, amount)
     ALG: 48,       // 4 x 4 modulation matrix [src j][dst k]
     OSC: 64,       // 4 x 32: 0 on, 1 ratio, 2 fixed on, 3 fixed Hz, 4 level, 5 retrig, 6 phase, 7 lev<vel, 8 lev<key, 9 wave,
-                   // 10 feedback (cycles), 11 <pe, 12 <lfo, 13 freq<vel, 14 quantize, 15 carrier, 16 repeat
+                   // 10 feedback (cycles), 11 <pe, 12 <lfo, 13 freq<vel, 14 quantize, 15 carrier, 16 repeat,
+                   // 17 type (0 Operator, 1 Wavetable, 2 Supersaw, 3 PWM), 18 shape 0..1, 19 shape<LFO -1..1
     ENV: 192,      // 7 x 24: 0 attack s, 1 decay s, 2 release s, 3 init, 4 peak, 5 sustain, 6 end, 7..9 slopes, 10 mode,
                    // 11 loop s, 12 retrig beats, 13 r<vel
     LFO: 360,      // 0 on, 1 type, 2 range, 3 rate Hz, 4 sync beats, 5 rate<key, 6 retrig, 7 amt, 8 amt A, 9 dst B, 10 amt B,
@@ -190,14 +214,33 @@ function opWaveHarmonics(w) {
     if (sawN) { for (n = 1; n <= sawN; n++) h[n] = 2 / (Math.PI * n); return h; }
     if (sqN) { for (n = 1; n <= sqN * 2; n += 2) h[n] = 4 / (Math.PI * n); return h; }
     if (w === 19) { for (n = 1, i = 0; n <= 63; n += 2, i++) h[n] = (i % 2 ? -1 : 1) * 8 / (Math.PI * Math.PI * n * n); return h; }
+    if (w >= OP_WT0 && w < OP_WT0 + 8) return opWtHarmonics(w - OP_WT0);
     return null;
+}
+
+/** Harmonics of wavetable frame f (0..7, OP_WT_NAMES; sine series, normalised to peak 1 by opWaveTable). */
+function opWtHarmonics(f) {
+    var h = [0], n;
+    for (n = 1; n <= 64; n++) {
+        var a = 0;
+        if (f === 0) a = n === 1 ? 1 : 0;
+        else if (f === 1) a = n % 2 ? (((n - 1) / 2) % 2 ? -1 : 1) / (n * n) : 0;
+        else if (f === 2) a = 1 / n;
+        else if (f === 3) a = n % 2 ? 1 / n : 0;
+        else if (f === 4) a = Math.abs(Math.sin(n * Math.PI * 0.2)) / n;                       // 20 % pulse (magnitudes)
+        else if (f === 5) a = Math.exp(-Math.pow((n - 7) / 2.2, 2)) + 0.25 * (n === 1 ? 1 : 0);  // formant bump around h7
+        else if (f === 6) a = { 1: 1, 2: 0.8, 3: 0.6, 4: 0.5, 6: 0.4, 8: 0.35, 10: 0.2, 12: 0.15, 16: 0.1 }[n] || 0;   // drawbar organ
+        else a = 1 / Math.sqrt(n);                                                                // buzz
+        h[n] = a;
+    }
+    return h;
 }
 
 /** Fill one table (length OP_TBL + 1) for wave w at mip m: harmonics above the mip's limit are dropped. */
 function opWaveTable(w, m, sr, user, seed) {
     var N = OP_TBL, out = new Array(N + 1), i, n;
     var lim = Math.max(1, Math.floor((sr * 0.5) / (40 * Math.pow(2, m)) - 0.0001));
-    var h = w >= 22 ? user : opWaveHarmonics(w);
+    var h = (w >= 22 && w < OP_WT0) ? user : opWaveHarmonics(w);
     for (i = 0; i < N; i++) out[i] = 0;
     if (h) {
         for (n = 1; n < h.length; n++) {
@@ -269,6 +312,7 @@ function opCfg(vals, rt) {
     c[g + 20] = rt.bend || 0;
     c[g + 21] = rt.mw || 0;
     c[g + 22] = rt.at || 0;
+    c[g + 23] = (Math.round(kv("ui_section")) === 5 && kv("ui_view_filter") > 0.5) ? 1 : 0;
     // MIDI matrix: Vel A/B, Key A, AT A/B, PB A, MW A/B
     var mx = [["vel", "a", 0], ["vel", "b", 0], ["key", "a", 1], ["at", "a", 2], ["at", "b", 2], ["pb", "a", 3], ["mw", "a", 4], ["mw", "b", 4]];
     for (i = 0; i < 8; i++) {
@@ -299,6 +343,9 @@ function opCfg(vals, rt) {
         c[o + 14] = kv(l + "_quantize");
         c[o + 15] = A.c.indexOf(k) >= 0 ? 1 : 0;
         c[o + 16] = OP_REPEAT_BEATS[Math.round(kv("osc_" + l + "_repeat"))] || 0;
+        c[o + 17] = opClamp(Math.round(kv("osc_" + l + "_type")), 0, 3);
+        c[o + 18] = kv("osc_" + l + "_shape") / 100;
+        c[o + 19] = kv("osc_" + l + "_shp_lt_lfo") / 100;
         void U;
     }
     for (k = 0; k < 7; k++) {
@@ -362,6 +409,22 @@ function opCfg(vals, rt) {
     c[pe + 4] = kv("pe_amt_b") / 100;
     return c;
 }
+
+// ---------- Operator+ oscillator types (mirrors of the gen's op_wave, used by the face and the tests) ----------
+
+/** Supersaw: detune ratio offsets of the 6 side saws at Shape d (0..1); the centre saw keeps the operator's frequency. */
+function opSsOffsets(d) {
+    var dt = 0.11 * d * d, out = [];
+    for (var j = 0; j < 6; j++) { var u = (j < 3 ? j - 3 : j - 2) / 3; out.push(u * dt); }
+    return out;
+}
+/** Supersaw: [centre gain, side gain] at Shape d, normalised so the random-phase sum keeps about the level of one saw. */
+function opSsGains(d) {
+    var c = 1 - 0.45 * d, s = 0.55 * d, nrm = 1 / Math.sqrt(c * c + 6 * s * s);
+    return [c * nrm, s * nrm];
+}
+/** PWM: pulse width (fraction of the cycle) at Shape d. */
+function opPwmWidth(d) { return 0.02 + 0.96 * opClamp(d, 0, 1); }
 
 // ---------- voices ----------
 
@@ -441,7 +504,9 @@ var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
         OP_P: OP_P, OP_BY_KEY: OP_BY_KEY, OP_CFG: OP_CFG, OP_ALGOS: OP_ALGOS, OP_MOD_TARGETS: OP_MOD_TARGETS, OP_NV: OP_NV,
-        OP_CFG_SIZE: OP_CFG_SIZE, OP_SCOPE_SIZE: OP_SCOPE_SIZE, OP_TBL: OP_TBL, OP_NMIP: OP_NMIP, OP_NTAB: OP_NTAB, OP_FMK: OP_FMK,
+        OP_CFG_SIZE: OP_CFG_SIZE, OP_SCOPE_SIZE: OP_SCOPE_SIZE, OP_SCOPE: OP_SCOPE, OP_VSTRIDE_GEN: OP_VSTRIDE_GEN, OP_WT0: OP_WT0,
+        OP_WT_NAMES: OP_WT_NAMES, OP_TYPES: OP_TYPES, OP_SAW_TABLE: OP_SAW_TABLE, opWtHarmonics: opWtHarmonics, opSsOffsets: opSsOffsets,
+        opSsGains: opSsGains, opPwmWidth: opPwmWidth, OP_TBL: OP_TBL, OP_NMIP: OP_NMIP, OP_NTAB: OP_NTAB, OP_FMK: OP_FMK,
         OP_SECTIONS: OP_SECTIONS, opFormat: opFormat, opCfg: opCfg, opWaveTable: opWaveTable, opWaveHarmonics: opWaveHarmonics,
         opCreateAllocator: opCreateAllocator, opAttackMs: opAttackMs, opDecayMs: opDecayMs, opLoopMs: opLoopMs, opFixHz: opFixHz,
         opFilterHz: opFilterHz, opLfoHz: opLfoHz, opAmp: opAmp, opDb: opDb, opNorm: opNorm, opCoarse: opCoarse, opDefaultUser: opDefaultUser,

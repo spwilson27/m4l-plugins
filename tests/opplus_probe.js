@@ -16,12 +16,13 @@ function init() {
     var cfg = new Buffer(names.cfg);
     cfg.poke(1, 0, opCfg(CASE.vals || {}, { bpm: 120, playing: 0 }));
     var wb = new Buffer(names.waves);
-    var need = { 0: 1 };
+    var need = { 0: 1, 9: 1 };   // Saw 64: Supersaw / PWM
+    for (var f = 0; f < 8; f++) need[OP_WT0 + f] = 1;   // wavetable frames
     var L = ["a", "b", "c", "d"];
     for (var k = 0; k < 4; k++) need[Math.round((CASE.vals || {})["osc_" + L[k] + "_wave"] || 0)] = 1;
     for (var w in need) {
         var wi = Number(w);
-        if (wi >= 21) continue;
+        if (wi >= 21 && wi < OP_WT0) continue;
         for (var m = 0; m < OP_NMIP; m++) wb.poke(1, (wi * OP_NMIP + m) * (OP_TBL + 1), opWaveTable(wi, m, 48000, null, 12345 + wi));
     }
     for (k = 0; k < 4; k++) {
@@ -72,6 +73,9 @@ function analyze(ms) {
     out.push("frames " + n, "sr " + sr, "peak " + peak, "nan " + nan);
     var a = Math.round((CASE.from_ms || 100) * sr / 1000), b = Math.min(n, a + Math.round((CASE.win_ms || 200) * sr / 1000));
     out.push("f0 " + zcFreq(L, a, b, sr));
+    var ss = 0;
+    for (i = a; i < b; i++) ss += L[i] * L[i];
+    out.push("rms " + Math.sqrt(ss / Math.max(1, b - a)));
     var f0 = CASE.f0 || 220;
     for (var h = 1; h <= 8; h++) out.push("h" + h + " " + goertzel(L, a, b, f0 * h, sr));
     for (i = 0; i < (CASE.extra_f || []).length; i++) out.push("x" + i + " " + goertzel(L, a, b, CASE.extra_f[i], sr));

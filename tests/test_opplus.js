@@ -129,12 +129,13 @@ function render(vals, opts) {
     const cfgArr = C.opCfg(vals, { bpm: 120 });
     const cf = new G.DataSim(448);
     cfgArr.forEach((v, i) => cf.poke(v, i));
-    const vs = new G.DataSim(6144);
+    const vs = new G.DataSim(8192);
     const wt = new G.DataSim(C.OP_NTAB * 8 * 2049);
     const needed = new Set([0, 9, 19]);
     for (const k of ["a", "b", "c", "d"]) needed.add(Math.round(vals["osc_" + k + "_wave"] || 0));
+    for (let f = 0; f < 8; f++) needed.add(C.OP_WT0 + f);
     for (const w of needed) {
-        if (w >= 21) continue;
+        if (w >= 21 && w < C.OP_WT0) continue;
         for (let m = 0; m < 8; m++) {
             const t = C.opWaveTable(w, m, sr, null, 1);
             for (let i = 0; i < t.length; i++) wt.poke(t[i], (w * 8 + m) * 2049 + i);
@@ -224,6 +225,78 @@ const solo = { osc_b_level: 0, osc_c_level: 0, osc_d_level: 0, osc_a_lev_lt_vel:
     ok(r8 < 0.01, `lowpass: 1760 Hz cut (${r8.toFixed(4)})`);
 }
 
+// ---------- 5b. Operator+ additions: oscillator types, telemetry ----------
+{
+    // parameters appended after Operator's (and after the UI state): ORDER IS FOREVER
+    const ix = (k) => C.OP_P.findIndex((p) => p.key === k);
+    ok(ix("osc_a_type") > ix("ui_slope_pe"), "new parameters come after every existing one");
+    for (const l of "abcd") {
+        const t = C.OP_BY_KEY["osc_" + l + "_type"], sh = C.OP_BY_KEY["osc_" + l + "_shape"], sl = C.OP_BY_KEY["osc_" + l + "_shp_lt_lfo"];
+        ok(t && JSON.stringify(t.items) === JSON.stringify(C.OP_TYPES) && t.init === 0, `osc ${l} Type: Operator by default`);
+        ok(sh && sh.min === 0 && sh.max === 100 && sh.init === 50 && !sh.invisible, `osc ${l} Shape 0..100 %, automatable`);
+        ok(sl && sl.min === -100 && sl.max === 100 && sl.init === 0, `osc ${l} Shape < LFO -100..100 %`);
+        ok(C.opFormat(sh, 25) === "25 %" && C.opFormat(t, 2) === "Supersaw", `osc ${l} display strings`);
+    }
+    const cf = C.opCfg({ osc_b_type: 3, osc_b_shape: 25, osc_b_shp_lt_lfo: -40 });
+    ok(cf[C.OP_CFG.OSC + 32 + 17] === 3 && Math.abs(cf[C.OP_CFG.OSC + 32 + 18] - 0.25) < 1e-9 && Math.abs(cf[C.OP_CFG.OSC + 32 + 19] + 0.4) < 1e-9, "cfg: type / shape / shape<LFO");
+    ok(C.opCfg({})[23] === 0 && C.opCfg({ ui_section: 5, ui_view_filter: 1 })[23] === 1, "cfg 23: spectrum rings only while the filter display shows");
+    ok(C.OP_SCOPE_SIZE === 776 + 4096 && C.OP_SCOPE.V + 32 * C.OP_SCOPE.VS === C.OP_SCOPE.SPEC, "scope layout: 32 voice blocks then the rings");
+    const bsrc = fs.readFileSync(path.join(ROOT, "scripts", "build_opplus.py"), "utf8");
+    ok(new RegExp("OP_NTAB, OP_SCOPE_SIZE = " + C.OP_NTAB + ", 776 \\+ 2 \\* 2048").test(bsrc), "build buffer sizes = config");
+    ok(/poke\(scope, spre \* gv, 776 \+ shead\)/.test(coreSrc) && /poke\(scope, spst \* gv, 2824 \+ shead\)/.test(coreSrc), "gen rings at OP_SCOPE.SPEC");
+
+    const h = (x, f) => goertzel(x, f, 48000);
+    const wt0 = render(Object.assign({}, solo, { osc_a_type: 1, osc_a_shape: 0 })).slice(4800, 14400);
+    const op0 = render(solo).slice(4800, 14400);
+    let dmax = 0;
+    for (let i = 0; i < wt0.length; i++) dmax = Math.max(dmax, Math.abs(wt0[i] - op0[i]));
+    ok(dmax < 1e-4, `Wavetable at Shape 0 = Operator's sine (max diff ${dmax.toExponential(2)})`);
+    const wt100 = render(Object.assign({}, solo, { osc_a_type: 1, osc_a_shape: 100 })).slice(4800, 14400);
+    const bz = C.opWtHarmonics(7);
+    near(h(wt100, 660) / h(wt100, 220), bz[3] / bz[1], 0.02, "Wavetable at Shape 100 = the Buzz frame (h3/h1)");
+    const wtm = render(Object.assign({}, solo, { osc_a_type: 1, osc_a_shape: 100 / 7 * 1.5 })).slice(4800, 14400);   // half way Triangle -> Saw
+    const r2m = h(wtm, 440) / h(wtm, 220);
+    ok(r2m > 0.1 && r2m < 0.45, `Wavetable morph: half way Triangle -> Saw has half the Saw's 2nd harmonic (h2/h1 ${r2m.toFixed(2)})`);
+
+    const pw50 = render(Object.assign({}, solo, { osc_a_type: 3, osc_a_shape: (0.5 - 0.02) / 0.96 * 100 })).slice(4800, 14400);
+    ok(h(pw50, 440) < 0.02 * h(pw50, 220), "PWM 50 % = square: no 2nd harmonic");
+    near(h(pw50, 660) / h(pw50, 220), 1 / 3, 0.02, "PWM 50 %: h3/h1 = 1/3");
+    const pw25 = render(Object.assign({}, solo, { osc_a_type: 3, osc_a_shape: (0.25 - 0.02) / 0.96 * 100 })).slice(4800, 14400);
+    near(h(pw25, 440) / h(pw25, 220), Math.SQRT1_2, 0.03, "PWM 25 %: h2/h1 = sin(pi/2)/(2 sin(pi/4))");
+    ok(h(pw25, 880) < 0.03 * h(pw25, 220), "PWM 25 %: no 4th harmonic");
+    const pwl = render(Object.assign({}, solo, { osc_a_type: 3, osc_a_shape: 50, osc_a_shp_lt_lfo: 100, lfo_on: 1, lfo_type: 0, lfo_range: 0, lfo_rate: 100, lfo_amt: 1, le_attack: 0 }), { secs: 1.0 });
+    const r2 = [];
+    for (let i = 4800; i + 4800 <= pwl.length; i += 4800) { const s2 = pwl.slice(i, i + 4800); r2.push(h(s2, 440) / Math.max(h(s2, 220), 1e-9)); }
+    ok(Math.max(...r2) - Math.min(...r2) > 0.3, `Shape < LFO moves the pulse width (h2/h1 ${Math.min(...r2).toFixed(2)}..${Math.max(...r2).toFixed(2)})`);
+
+    const ss0 = render(Object.assign({}, solo, { osc_a_type: 2, osc_a_shape: 0 })).slice(4800, 14400);
+    const ss1 = render(Object.assign({}, solo, { osc_a_type: 2, osc_a_shape: 100 }), { secs: 1.0 }).slice(4800, 43200);
+    near(h(ss0, 440) / h(ss0, 220), 0.5, 0.03, "Supersaw Shape 0 = the centre saw alone (h2/h1 0.5)");
+    const rms = (x) => Math.sqrt(x.reduce((a, b) => a + b * b, 0) / x.length);
+    const e220 = h(ss1, 220) / (rms(ss1) * Math.SQRT2);
+    ok(e220 < 0.6, `Supersaw Shape 100: the fundamental is spread over the detuned saws (${e220.toFixed(2)} of the level at 220 Hz)`);
+    const pk1 = Math.max(...ss1.map(Math.abs));
+    ok(pk1 > 0.05 && pk1 < 0.5 && ss1.every(Number.isFinite), `Supersaw level sane (peak ${pk1.toFixed(3)})`);
+    const offs = C.opSsOffsets(1);
+    ok(offs.length === 6 && Math.abs(offs[0] + 0.11) < 1e-9 && Math.abs(offs[5] - 0.11) < 1e-9, "Supersaw offsets +-11 % at Shape 100");
+    const fmss = render(Object.assign({}, solo, { osc_a_type: 2, osc_a_shape: 60, algorithm: 0, osc_b_level: 0.75, osc_b_lev_lt_vel: 0, be_sustain: 1 }));
+    ok(fmss.every(Number.isFinite) && Math.max(...fmss.map(Math.abs)) < 1, "FM into a Supersaw stays finite");
+
+    // telemetry block of a sounding voice (op_tel)
+    const sc = new G.DataSim(C.OP_SCOPE_SIZE), vs = new G.DataSim(8192), cfd = new G.DataSim(448);
+    C.opCfg(Object.assign({}, solo, { osc_a_level: 1 })).forEach((v, i) => cfd.poke(v, i));
+    core.op_on(vs, cfd, 3 * 256, 60, 100, 0.5, -1);
+    for (let i = 0; i < 40; i++) core.op_ctl(vs, cfd, 3 * 256, 1, 16 / 48000, 0, -1, 48000, 1);
+    core.op_tel(vs, sc, 3);
+    const b = C.OP_SCOPE.V + 3 * C.OP_SCOPE.VS;
+    ok(sc.peek(b + C.OP_SCOPE.ON) === 1 && Math.abs(sc.peek(b + C.OP_SCOPE.NOTE) - 60) < 1e-9, "telemetry: ON and note");
+    ok(sc.peek(b + C.OP_SCOPE.AMP) > 0.5 && sc.peek(b + C.OP_SCOPE.AMP + 1) === 0, `telemetry: operator A amplitude ${sc.peek(b + C.OP_SCOPE.AMP).toFixed(3)}, B silent`);
+    ok(Math.floor(sc.peek(b + C.OP_SCOPE.STG)) >= 1 && sc.peek(b + C.OP_SCOPE.FC) > 20, "telemetry: envelope stage and cutoff");
+    vs.poke(0, 3 * 256);
+    core.op_tel(vs, sc, 3);
+    ok(sc.peek(b + C.OP_SCOPE.ON) === 0, "telemetry: ON = 0 once the voice stops");
+}
+
 // ---------- 6. layout and device ----------
 const layout = JSON.parse(execFileSync("python3", ["-c", "import sys,json;sys.path.insert(0,'scripts');import opplus_layout as L;print(json.dumps({'items':L.items(),'ub':L.ubuttons()}))"], { cwd: ROOT }).toString());
 const P = {};
@@ -268,7 +341,7 @@ for (let s = 0; s < 8; s++) {
         if (a.cond && b.cond && a.cond !== b.cond && (a.cond.replace(/^no/, "") === b.cond.replace(/^no/, "") ||
             /^(times|slopes)/.test(a.cond) && /^(times|slopes)/.test(b.cond) || /^m(loop|beat)/.test(a.cond) && /^m(loop|beat)/.test(b.cond) ||
             /^lfo(no)?sync$/.test(a.cond) && /^lfo(no)?sync$/.test(b.cond) || /^(morph|drive)$/.test(a.cond) && /^(morph|drive)$/.test(b.cond) ||
-            /^(no)?lphp$/.test(a.cond) && /^(no)?lphp$/.test(b.cond))) continue;   // mutually exclusive: never shown together
+            /^(no)?lphp$/.test(a.cond) && /^(no)?lphp$/.test(b.cond) || /^(wave|shape)[A-D]$/.test(a.cond) && /^(wave|shape)[A-D]$/.test(b.cond))) continue;   // mutually exclusive: never shown together
         ok(!overlap(rectOf(a), rectOf(b)), `section ${s}: ${a.key} / ${b.key} do not overlap`);
     }
 }

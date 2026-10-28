@@ -28,6 +28,7 @@ for _o in "ABCD":
               "%se R < Vel" % _o}
 VOICES = ["1", "2", "3", "4", "5", "6", "7", "8", "10", "12", "14", "16", "20", "24", "32"]
 REPEAT = ["Off", "1/4", "1/2", "1", "2", "4"]
+OSC_TYPES = ["Operator", "Wavetable", "Supersaw", "PWM"]
 
 
 def key_of(name):
@@ -200,6 +201,16 @@ def spec():
         extra("ui_view_%s" % s.lower(), "UI View %s" % s, ["Envelope", "Other"])
     extra("ui_slope_fe", "UI Slope Fe", ["Times", "Slopes"])
     extra("ui_slope_pe", "UI Slope Pe", ["Times", "Slopes"])
+    # Operator+ additions (automatable, appended: ORDER IS FOREVER). Type picks the oscillator engine: Operator = Operator's
+    # own Wave (unchanged), Wavetable = morph through OSC_TABLE_FRAMES, Supersaw = 7 detuned saws, PWM = pulse of variable width.
+    # Shape is the type's one control (table position / detune / pulse width), Shape < LFO lets the LFO move it.
+    for o in "ABCD":
+        extra("osc_%s_type" % o.lower(), "Osc-%s Type" % o, OSC_TYPES, invisible=0,
+              info="Oscillator type of %s: Operator (its Wave), Wavetable, Supersaw or PWM." % o)
+        extra("osc_%s_shape" % o.lower(), "Osc-%s Shape" % o, mn=0.0, mx=100.0, init=50.0, style="pct", invisible=0,
+              info="Shape of oscillator %s: wavetable position, supersaw detune or pulse width." % o)
+        extra("osc_%s_shp_lt_lfo" % o.lower(), "Osc-%s Shape < LFO" % o, mn=-100.0, mx=100.0, init=0.0, style="pct", invisible=0,
+              info="How much the LFO moves the Shape of oscillator %s." % o)
     keys = [p["key"] for p in out]
     assert len(keys) == len(set(keys)), "duplicate keys"
     return out

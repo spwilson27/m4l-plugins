@@ -46,6 +46,17 @@ CASES = [
      "notes": [(0, 57)], "dur": 1000, "track": True, "vib": True},
     {"name": "spread", "vals": S(spread=50), "notes": [(0, 57)], "dur": 400, "stereo": True},
     {"name": "noise", "vals": S(osc_a_wave=21), "notes": [(0, 57)], "dur": 300, "noise": True},
+    # Operator+ oscillator types (no Operator reference: the expected values are the waveforms' own spectra)
+    {"name": "wt_sine", "vals": S(osc_a_type=1, osc_a_shape=0), "notes": [(0, 57)], "dur": 400, "check": {"f0": (220, 0.3), "peak": (OP, 0.004)},
+     "ratio": {"h2/h1": (0, 0.01)}},
+    {"name": "wt_buzz", "vals": S(osc_a_type=1, osc_a_shape=100), "notes": [(0, 57)], "dur": 400, "ratio": {"h3/h1": (0.5774, 0.03)}},
+    {"name": "pwm50", "vals": S(osc_a_type=3, osc_a_shape=50), "notes": [(0, 57)], "dur": 400, "ratio": {"h2/h1": (0, 0.02), "h3/h1": (1 / 3.0, 0.02)}},
+    {"name": "pwm25", "vals": S(osc_a_type=3, osc_a_shape=(0.25 - 0.02) / 0.96 * 100), "notes": [(0, 57)], "dur": 400,
+     "ratio": {"h2/h1": (0.7071, 0.03), "h4/h1": (0, 0.03)}},
+    {"name": "ssaw0", "vals": S(osc_a_type=2, osc_a_shape=0), "notes": [(0, 57)], "dur": 400, "ratio": {"h2/h1": (0.5, 0.03)}},
+    {"name": "ssaw100", "vals": S(osc_a_type=2, osc_a_shape=100), "notes": [(0, 57)], "dur": 900, "win_ms": 700, "spread": 0.6},
+    {"name": "ssaw_fm", "vals": S(osc_a_type=2, osc_a_shape=60, algorithm=0, osc_b_level=0.75, osc_b_lev_lt_vel=0, be_sustain=1),
+     "notes": [(0, 57), (0, 64), (0, 69)], "dur": 400, "check": {"peak": (0.3, 0.29)}},
 ]
 
 
@@ -67,8 +78,8 @@ def run_case(case):
         mh.msg("obj-names", "setnames #0-opcfg #0-opvoices #0-opwaves #0-opscope, init", 200, 90, 420),
         mh.box("obj-cfg", "buffer~ #0-opcfg @samps 448", 540, 60, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-voices", "buffer~ #0-opvoices @samps 256", 540, 90, 200, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("obj-waves", "buffer~ #0-opwaves @samps %d" % (26 * 8 * 2049), 540, 120, 240, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("obj-scope", "buffer~ #0-opscope @samps 528", 540, 150, 200, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-waves", "buffer~ #0-opwaves @samps %d" % (34 * 8 * 2049), 540, 120, 240, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-scope", "buffer~ #0-opscope @samps 4872", 540, 150, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-phasor", "phasor~ 2", 200, 180, 60, numinlets=2, numoutlets=1, outlettype=["signal"]),
         mh.box("obj-order", "t b b", 200, 30, 40, numoutlets=2, outlettype=["bang", "bang"]),
         mh.gen_box("obj-gen", gen, 200, 215),
@@ -136,6 +147,15 @@ def check(case, r):
         errs.append("spread: left == right")
     if case.get("noise") and float(r["peak"]) < 0.05:
         errs.append("noise silent")
+    for k, (want, tol) in case.get("ratio", {}).items():
+        num, den = k.split("/")
+        got = float(r[num]) / max(float(r[den]), 1e-12)
+        if abs(got - want) > tol:
+            errs.append("%s %.4f vs %.4f" % (k, got, want))
+    if "spread" in case:
+        frac = float(r["h1"]) / max(float(r["rms"]) * 2 ** 0.5, 1e-12)
+        if frac > case["spread"]:
+            errs.append("supersaw fundamental not spread: %.2f of the level at f0" % frac)
     if float(r.get("alive", 0)) <= 0:
         errs.append("scope alive counter did not move")
     return errs

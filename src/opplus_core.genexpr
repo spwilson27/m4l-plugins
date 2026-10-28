@@ -2,8 +2,10 @@
 // The face (src/opplus_engine.js) owns every parameter and writes engineering values into buffer ---opcfg (layout:
 // OP_CFG in src/opplus_config.js; copied into Data cfd a few floats per sample), the voice table ---opvoices (8 floats
 // per voice: gate, note, vel 0..127, trigger counter, glide-from note, random 0..1, legato counter, 0) and the band-limited
-// wavetables ---opwaves (OP_NWAVE tables x OP_NMIP mip levels x 2049 samples). in1 = plugphasor~ (song beat phase 0..1).
+// wavetables ---opwaves (OP_NTAB tables x OP_NMIP mip levels x 2049 samples). in1 = plugphasor~ (song beat phase 0..1).
 // Telemetry ---opscope: OP_SCOPE in the config. Every big helper has ONE call site inside a loop (AGENTS.md 1d).
+// Per voice 256 floats of Data vsd (OP_VSTRIDE_GEN): 0..191 Operator's state (below), 172 / 173 the voice's filter input /
+// output of the current sample (spectrum rings), 192..255 the 6 extra Supersaw phases of each of the 8 sub-voice operators.
 
 // Fraction 0..1 of an envelope segment travelled at progress u: s > 0 fast first, s < 0 fast last, s = 0 linear.
 op_slope(u, s) {
@@ -145,6 +147,10 @@ op_on(vs, cf, vb0, note, vel, rnd, gfrom) {
 			poke(vs, 0, vb0 + f);
 		}
 	}
+	for (q = 0; q < 64; q += 1) {
+		hq = (q + 1) * 0.6180339887 + rnd * 7.13;
+		poke(vs, hq - floor(hq), vb0 + 192 + q);
+	}
 	return wasOn;
 }
 
@@ -206,9 +212,44 @@ op_read(wt, t, m, x, interp) {
 	return a + (b - a) * fr * interp;
 }
 
+// Operator+ oscillator types for one operator sample (ty 1 Wavetable, 2 Supersaw, 3 PWM; Operator's own Wave is op_read in
+// op_ops). ph = the operator's phase, dph = the phase modulation added to every read (FM + feedback), sh = Shape 0..1,
+// xb = this operator's 6 extra Supersaw phases. Mirrors opSsOffsets / opSsGains / opPwmWidth in src/opplus_config.js.
+op_wave(vs, wt, xb, ty, sh, ph, dph, inc, mip, interp) {
+	y = 0;
+	if (ty < 1.5) {
+		pos = sh * 7;
+		f0 = floor(min(pos, 6.999));
+		fr = pos - f0;
+		wa = op_read(wt, 26 + f0, mip, ph + dph, interp);
+		wb = op_read(wt, 27 + f0, mip, ph + dph, interp);
+		y = wa + (wb - wa) * fr;
+	} else if (ty < 2.5) {
+		dt = 0.11 * sh * sh;
+		cg = 1 - 0.45 * sh;
+		sg = 0.55 * sh;
+		nrm = 1 / sqrt(cg * cg + 6 * sg * sg);
+		acc = op_read(wt, 9, mip, ph + dph, interp) * cg;
+		for (j = 0; j < 6; j += 1) {
+			uu = (j < 3 ? j - 3 : j - 2) / 3;
+			pj = peek(vs, xb + j) + inc * (1 + uu * dt);
+			pj = pj - floor(pj);
+			poke(vs, pj, xb + j);
+			acc = acc + op_read(wt, 9, mip, pj + dph, interp) * sg;
+		}
+		y = acc * nrm;
+	} else {
+		pw = 0.02 + 0.96 * clamp(sh, 0, 1);
+		sa = op_read(wt, 9, mip, ph + dph, interp);
+		sb = op_read(wt, 9, mip, ph + dph + pw, interp);
+		y = sa - sb;
+	}
+	return y;
+}
+
 // The four operators of sub-voice sub for one sample, computed D, C, B, A (every edge of every algorithm goes from a
 // higher letter to a lower one). Returns the carrier sum. lm = LFO pitch multiplier, fmk = FM depth in cycles.
-op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp) {
+op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp, lv) {
 	ob = vb0 + 32 + sub * 32;
 	acc = 0;
 	for (k = 3; k >= 0; k -= 1) {
@@ -230,8 +271,15 @@ op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp) {
 		tb = wv >= 22 ? 22 + k : wv;
 		mip = peek(vs, ib + 5);
 		xph = ph - m * fmk + fbk;   // Operator subtracts the modulation (measured: a ratio-2 modulator fits only with the sign inverted)
-		yr = op_read(wt, tb, mip, xph, interp);
-		y = (wv == 21 ? nz : yr) * peek(vs, ib + 2);
+		ty = peek(cf, cb + 17);
+		yr = 0;
+		if (ty < 0.5) {
+			yr = op_read(wt, tb, mip, xph, interp);
+		} else {
+			shp = clamp(peek(cf, cb + 18) + lv * peek(cf, cb + 19), 0, 1);
+			yr = op_wave(vs, wt, vb0 + 192 + (sub * 4 + k) * 8, ty, shp, ph, xph - ph, inc, mip, interp);
+		}
+		y = (wv == 21 && ty < 0.5 ? nz : yr) * peek(vs, ib + 2);
 		poke(vs, peek(vs, ib + 3), ib + 4);
 		poke(vs, y, ib + 3);
 		poke(vs, y, ib + 7);
@@ -388,6 +436,31 @@ op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, sr, nsub) {
 	return act;
 }
 
+// Telemetry block of voice tv (OP_SCOPE in src/opplus_config.js): at 8 + tv * 24 while it sounds, else only ON = 0.
+op_tel(vs, sc, tv) {
+	tb = tv * 256;
+	sb = 8 + tv * 24;
+	on = peek(vs, tb);
+	if (on > 0.5) {
+		for (te = 0; te < 7; te += 1) {
+			poke(sc, peek(vs, tb + 96 + te * 6 + 2), sb + te);
+			poke(sc, peek(vs, tb + 96 + te * 6) + min(peek(vs, tb + 96 + te * 6 + 1), 0.999), sb + 7 + te);
+		}
+		poke(sc, peek(vs, tb + 8), sb + 14);
+		poke(sc, peek(vs, tb + 15), sb + 15);
+		for (tk = 0; tk < 4; tk += 1) {
+			poke(sc, peek(vs, tb + 32 + tk * 8 + 2), sb + 16 + tk);
+		}
+		poke(sc, peek(vs, tb + 6), sb + 20);
+		poke(sc, 1, sb + 21);
+		poke(sc, peek(vs, tb + 2), sb + 22);
+		poke(sc, peek(vs, tb + 17), sb + 23);
+	} else {
+		poke(sc, 0, sb + 21);
+	}
+	return on;
+}
+
 // One sample of one voice (both channels).
 op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp) {
 	lfo = op_lfo(vs, cf, vb0, sbeat, nz);
@@ -397,12 +470,18 @@ op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp) {
 	vol = peek(vs, vb0 + 27);
 	l = 0;
 	r = 0;
+	pre = 0;
+	pst = 0;
 	for (sub = 0; sub < nsub; sub += 1) {
-		x = op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp);
+		x = op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp, lfo);
 		y = op_post(vs, cf, vb0, sub, x) * vol;
+		pre = pre + x * vol;
+		pst = pst + y;
 		l = l + (nsub > 1 ? (sub == 0 ? y : 0) : y * peek(vs, vb0 + 19));
 		r = r + (nsub > 1 ? (sub == 1 ? y : 0) : y * peek(vs, vb0 + 20));
 	}
+	poke(vs, pre, vb0 + 172);
+	poke(vs, pst, vb0 + 173);
 	return l, r;
 }
 
@@ -411,7 +490,7 @@ Buffer vbuf("opvoices");
 Buffer wtab("opwaves");
 Buffer scope("opscope");
 Data cfd(448);
-Data vsd(6144);
+Data vsd(8192);
 Data seen(32);
 Data leg(32);
 History kc(0);
@@ -421,6 +500,7 @@ History bcnt(0);
 History alive(0);
 History tlp(0);
 History tlpr(0);
+History shead(0);
 
 // copy the configuration a few floats per sample (the whole block every 56 samples)
 for (q = 0; q < 8; q += 1) {
@@ -446,8 +526,10 @@ interp = peek(cfd, 15) > 0.5 ? 1 : 0;
 nv = 0;
 outl = 0;
 outr = 0;
+spre = 0;
+spst = 0;
 for (v = 0; v < 32; v += 1) {
-	vb0 = v * 192;
+	vb0 = v * 256;
 	vo = v * 8;
 	gt = peek(vbuf, vo);
 	tr = peek(vbuf, vo + 3);
@@ -477,6 +559,8 @@ for (v = 0; v < 32; v += 1) {
 		yl, yr = op_voice(vsd, cfd, wtab, vb0, sbeat, nz, nsub, interp);
 		outl = outl + yl;
 		outr = outr + yr;
+		spre = spre + peek(vsd, vb0 + 172);
+		spst = spst + peek(vsd, vb0 + 173);
 		nv = nv + 1;
 	}
 }
@@ -490,19 +574,21 @@ gv = peek(cfd, 3);
 out1 = fixnan(clamp(tlp * gv, -4, 4));
 out2 = fixnan(clamp(tlpr * gv, -4, 4));
 
-// telemetry: alive counter (moves in silence too), active voices, levels; per voice the 7 envelope levels / stages
+// telemetry: alive counter (moves in silence too), active voices, levels; per sounding voice its block (op_tel); the
+// filter's input / output rings while the face shows the filter display (cfg 23)
 alive = alive + 1;
+if (peek(cfd, 23) > 0.5) {
+	shead = shead + 1 >= 2048 ? 0 : shead + 1;
+	poke(scope, spre * gv, 776 + shead);
+	poke(scope, spst * gv, 2824 + shead);
+}
 if (ctl) {
 	poke(scope, floor(alive / 1024), 0);
 	poke(scope, samplerate, 1);
 	poke(scope, nv, 2);
 	poke(scope, max(abs(out1), abs(out2)), 3);
+	poke(scope, shead, 4);
 	for (tv = 0; tv < 32; tv += 1) {
-		for (te = 0; te < 7; te += 1) {
-			poke(scope, peek(vsd, tv * 192 + 96 + te * 6 + 2), 8 + tv * 16 + te);
-			poke(scope, peek(vsd, tv * 192 + 96 + te * 6) + min(peek(vsd, tv * 192 + 96 + te * 6 + 1), 0.999), 8 + tv * 16 + 7 + te);
-		}
-		poke(scope, peek(vsd, tv * 192 + 8), 8 + tv * 16 + 14);
-		poke(scope, peek(vsd, tv * 192 + 15), 8 + tv * 16 + 15);
+		op_tel(vsd, scope, tv);
 	}
 }
