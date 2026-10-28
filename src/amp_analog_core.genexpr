@@ -1082,7 +1082,8 @@ ac_sample(xi, xo, nch, ninit, tb, cq, sv, rq, hq, cr, tq, ft, la, sr) {
     if (peek(ft, 12004) < 0.5) {
         for (j = 0; j < 3001; j += 1) {
             xq = j * 0.02 - 30;
-            sp = max(xq, 0) + log(1 + exp(0 - abs(xq)));
+            ez = exp(-abs(xq));
+            sp = max(xq, 0) + (ez < 0.00001 ? ez - ez * ez / 2 : log(1 + ez));
             sg = 1 / (1 + exp(0 - xq));
             poke(ft, log(sp), j * 4);
             poke(ft, sg / sp * 0.02, j * 4 + 1);

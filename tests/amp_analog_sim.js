@@ -50,7 +50,7 @@ function create(idx, o) {
     }
     if (o.settle !== false) for (let i = 0; i < AA.AA_RF + 512; i++) step(0, 0);
     const api = {
-        sr, table: tbl, tb, cq, sv, la,
+        sr, table: tbl, tb, cq, sv, la, ft,
         /** raw model output (what the gen's tapraw 1 shows) for one sample, both channels */
         raw(l, r) { step(l, r); return [xo.peek(0), nch > 1 ? xo.peek(1) : xo.peek(0)]; },
         /** process a mono buffer: raw model output, then the template's DC block */

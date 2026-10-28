@@ -67,6 +67,18 @@ const strip = (s) => s.split("\n").map((l) => l.replace(/\/\/(?!@NAM_).*$/, ""))
     check(/^q0 = 4;$/m.test(gen) && /anDl\.read\(23\)/.test(gen), "analog gen: post biquads from 4, dry path delayed 23 samples");
 }
 
+// 1b. softplus / log softplus table (filled by ac_sample) against libm
+{
+    const f = S.fns(), sim = S.create(1), ft = sim.ft, rq = new S.FastData(32);
+    let es = 0, eh = 0;
+    for (let u = -29.98; u < 29.98; u += 0.0113) {
+        const sp = Math.max(u, 0) + Math.log1p(Math.exp(-Math.abs(u)));
+        es = Math.max(es, Math.abs(f.ac_hm(ft, rq, 12, u, 2) - sp) / Math.max(sp, 1e-12));
+        eh = Math.max(eh, Math.abs(f.ac_hm(ft, rq, 12, u, 0) - Math.log(sp)));
+    }
+    check(es < 1e-6 && eh < 1e-6, `softplus / log softplus tables: ${es.toExponential(1)} / ${eh.toExponential(1)}`);
+}
+
 // 2. halfband 2x up / down: exactly 23 samples, flat
 {
     const f = S.fns(), D = S.FastData, tb = new D(AA.AA_NW), rq = new D(32);
