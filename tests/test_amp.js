@@ -176,7 +176,7 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
 // 3d. Analog engine parameters: appended after the original 13 (Live stores parameters by order), 16 short circuit labels
 {
     const orig = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix"];
-    check(orig.every((k, i) => A.AMP_PARAM_KEYS[i] === k) && A.AMP_PARAM_KEYS.slice(13).join() === "engine,circuit,speaker", "parameter order: the analog ones appended");
+    check(orig.every((k, i) => A.AMP_PARAM_KEYS[i] === k) && A.AMP_PARAM_KEYS.slice(13).join() === "engine,circuit,speaker,sag", "parameter order: the analog ones, then Sag, appended");
     const labels = A.AMP_PARAMS.circuit[8];
     check(labels.length === 16 && new Set(labels).size === 16 && labels.every((l) => l.length <= 6), `16 circuit labels, unique, <= 6 characters (${labels.join(" ")})`);
     check(A.AMP_PARAMS.engine[8].join() === "Neural,Analog" && A.AMP_ENGINE.NEURAL === 0 && A.AMP_ENGINE.ANALOG === 1 && A.AMP_PARAMS.engine[4] === 0, "Engine: Neural (default) / Analog");
@@ -186,6 +186,53 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
     global.ampFillHooks = A.ampFillHooks; global.ampBiquad = A.ampBiquad;
     const AA = require("../src/amp_analog.js");
     check(AA.AMP_ANALOG.map((r) => r.label).join() === labels.join(), "Circuit enum = the recipes in order");
+}
+
+// 3e. Sag: parameter, the reference rule (src/amp_config.js ampSagStep) and the template that mirrors it
+{
+    const sp = A.AMP_PARAMS.sag;
+    check(sp[0] === "Sag" && sp[2] === 0 && sp[3] === 100 && sp[4] === 0 && sp[7] === "sagamt" && A.ampGenValue("sag", 50) === 0.5, "Sag: 0..100 %, default 0, gen sagamt = % / 100");
+    const SR = 48000, model = (x) => 0.3 * Math.tanh(4 * x);           // memoryless stand-in for a capture
+    // closed loop as in the gen: gains from the state, model, then the output power feeds the next sample
+    function run(amt, x, opts) {
+        const o = opts || {}, st = { p: 0, d: 0, a: amt }, gin = new Float64Array(x.length), gout = new Float64Array(x.length);
+        let q = 0;
+        for (let i = 0; i < x.length; i++) {
+            const g = A.ampSagStep(st, q, amt, o.sref || 0, SR);
+            gin[i] = g.gin; gout[i] = g.gout;
+            const y = (o.scale || 1) * model(x[i] * g.gin);
+            q = y * y;
+        }
+        return { gin, gout };
+    }
+    const n = Math.round(2.5 * SR), burstEnd = Math.round(0.4 * SR), x = new Float64Array(n);
+    for (let i = 0; i < n; i++) x[i] = (i < burstEnd ? 0.5 : 0.02) * Math.sin(2 * Math.PI * 200 * i / SR);
+    const off = run(0, x);
+    check(off.gin.every((v) => v === 1) && off.gout.every((v) => v === 1), "Sag 0: input and output gains exactly 1 (bit-identical output)");
+    const db = (v) => 20 * Math.log10(v);
+    const depth = (r) => db(r.gin[burstEnd - 1]);
+    const r30 = run(0.3, x), r100 = run(1, x);
+    check(depth(r100) < depth(r30) && depth(r30) < -0.5 && depth(r100) > -12.01, `Sag droop deepens with the amount (30 %: ${depth(r30).toFixed(2)} dB, 100 %: ${depth(r100).toFixed(2)} dB into the model)`);
+    // attack: 90 % of the droop within 80 ms of the burst start
+    const t90 = r100.gin.findIndex((v) => db(v) < 0.9 * depth(r100));
+    check(t90 > 0 && t90 < 0.08 * SR, `Sag attack: 90 % of the droop after ${(1000 * t90 / SR).toFixed(1)} ms`);
+    // recovery after the burst: back within 1 dB, slower at higher Sag
+    const rec = (r) => { for (let i = burstEnd; i < n; i++) if (db(r.gin[i]) > -1) return (i - burstEnd) / SR; return Infinity; };
+    check(rec(r100) > rec(r30) && rec(r100) < 2.0, `Sag recovery to -1 dB: 30 % ${(1000 * rec(r30)).toFixed(0)} ms, 100 % ${(1000 * rec(r100)).toFixed(0)} ms`);
+    check(Math.abs(db(r100.gout[burstEnd - 1]) / depth(r100) - 4 / 12) < 1e-9, "Sag output droop = 1/3 of the input droop (4 dB vs 12 dB)");
+    // level-independent: a capture 6 dB louder with sagref -6 dB sags the same
+    const loud = run(1, x, { scale: 2, sref: -20 * Math.log10(2) });
+    check(loud.gin.every((v, i) => Math.abs(v - r100.gin[i]) < 1e-12), "Sag follows the normalized level (sagref cancels a capture's loudness)");
+    // the template mirrors the reference: same constants, sag gain before the model, output power after it
+    const t = read("src/amp_core.genexpr");
+    check(/Param sagamt\(0\);/.test(t) && /Param sagref\(0\);/.test(t), "template: sagamt / sagref Params (default 0)");
+    check(t.includes("nin = xg * gGain * sgIn;") && t.includes("ninR = xgR * gGain * sgIn;") && t.indexOf("sgQ = (nout * nout + noutR * noutR) * 0.5;") > t.indexOf("//@NAM_BODY"), "template: sag input gain before the model, output power after it");
+    check(t.includes("nzL = nout * nG * sgOut;") && t.includes("dbtoa(-sgA * " + A.AMP_SAG.inDb + " * sgD)") && t.includes("dbtoa(-sgA * " + A.AMP_SAG.outDb + " * sgD)")
+        && t.includes("exp(-1 / (" + A.AMP_SAG.pMs / 1000 + " * samplerate))") && t.includes("exp(-1 / (" + A.AMP_SAG.aMs / 1000 + " * samplerate))")
+        && t.includes("(" + A.AMP_SAG.rMs / 1000 + " + " + A.AMP_SAG.rMsAmt / 1000 + " * clip(sagamt, 0, 1))") && t.includes(String(A.AMP_SAG.ref)), "template: sag constants = AMP_SAG");
+    check(t.includes("sgIn = sgA > 0 ?") && t.includes("sgOut = sgA > 0 ?"), "template: Sag 0 takes gain 1 exactly");
+    const eng = read("src/amp_engine.js");
+    check(/outlet\(1, "sagref", amp\.loudDb\)/.test(eng) && /ampGenA\("sagref", 0\)/.test(eng), "engine: sagref = the capture's Normalize offset (Neural), 0 (Analog, calibrated to -18 dB)");
 }
 
 // 4. built-in captures

@@ -60,14 +60,16 @@ var AMP_PARAMS = {
     // appended (order is forever): the Analog engine
     engine: ["Engine", "Engine", 0, 1, 0, 2, 0, null, ["Neural", "Analog"], "Neural plays NAM captures (Model). Analog plays modelled circuits (Circuit): tubes with bias shift, grid blocking and power-supply sag, pedals, tape, transformers, compressors, a speaker that moves and a cab."],
     circuit: ["Circuit", "Circuit", 0, 15, 1, 2, 0, null, ["Tweed", "Twin", "AC30", "Plexi", "JCM800", "Modern", "SVT", "Hiwatt", "TS", "RAT", "Fuzz", "Muff", "Tape", "Opto", "Desk", "JC120"], "Analog circuit. Amps: Tweed (5E3), Twin (blackface), AC30 (Top Boost), Plexi (1959), JCM800 (2203), Modern (5150 type), SVT (bass), Hiwatt (DR103). Pedals into an amp: TS (Tube Screamer into the Twin), RAT (into the Plexi), Fuzz (Fuzz Face into the AC30), Muff (Big Muff into the Tweed). Studio: Tape (15 ips machine), Opto (optical leveler), Desk (console channel and FET limiter), JC120 (solid state)."],
-    speaker: ["Speaker", "Speaker", 0, 1, 1, 2, 0, null, ["Off", "On"], "Analog: the circuit's speaker (a moving cone the amp drives) and its cab. Off: the amp drives a load resistor, the Cabinet voicing applies instead."]
+    speaker: ["Speaker", "Speaker", 0, 1, 1, 2, 0, null, ["Off", "On"], "Analog: the circuit's speaker (a moving cone the amp drives) and its cab. Off: the amp drives a load resistor, the Cabinet voicing applies instead."],
+    // appended: power-supply sag (both engines)
+    sag: ["Sag", "Sag", 0, 100, 0, 0, 5, "sagamt", null, "Power-supply sag: hard playing pulls the supply down, so the amp drives softer and quieter, then swells back as it recovers. 0 % plays the model as captured / designed."]
 };
-var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix", "engine", "circuit", "speaker"];
+var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix", "engine", "circuit", "speaker", "sag"];
 var AMP_ENGINE = { NEURAL: 0, ANALOG: 1 };
 
 /** @param {string} key @param {number} v */
 function ampGenValue(key, v) {
-    if (key === "mix") return v / 100;
+    if (key === "mix" || key === "sag") return v / 100;
     return v;
 }
 
@@ -850,6 +852,27 @@ function ampResponseDb(bqs, f, sr) {
 }
 
 /** Normalize gain in dB for a model (NAM: loudness -> -18 dB). @param {any} m */
+// Power-supply sag (src/amp_core.genexpr, the same arithmetic): the model's output power (made level-independent with
+// sagref = the capture's Normalize offset) is followed over 5 ms; its rms relative to -18 dBFS, halved and capped at 1,
+// is the supply droop target, reached with a 20 ms attack and a 120..400 ms recovery (slower with more Sag). The droop
+// lowers the model's input by up to 12 dB and its output by up to 4 dB, times Sag. Sag 0 = unity gains, bit-exact.
+var AMP_SAG = { pMs: 5, aMs: 20, rMs: 120, rMsAmt: 280, inDb: 12, outDb: 4, ref: 7.943282347 };
+/** One sample of the sag state; returns the input / output gains for this sample (before the model runs).
+ * @param {{p: number, d: number, a: number}} st @param {number} q previous sample's model output power (L^2 + R^2) / 2
+ * @param {number} amt Sag 0..1 @param {number} sref sagref dB @param {number} sr */
+function ampSagStep(st, q, amt, sref, sr) {
+    var cp = 1 - Math.exp(-1 / (AMP_SAG.pMs * 0.001 * sr));
+    var ca = 1 - Math.exp(-1 / (AMP_SAG.aMs * 0.001 * sr));
+    st.a = st.a + (amt - st.a) * 0.002;
+    if (amt <= 0 && st.a < 0.0001) st.a = 0;
+    var cr = 1 - Math.exp(-1 / ((AMP_SAG.rMs + AMP_SAG.rMsAmt * amt) * 0.001 * sr));
+    st.p = st.p + (q * Math.pow(10, sref / 10) - st.p) * cp;
+    var tgt = Math.min(Math.sqrt(st.p) * AMP_SAG.ref, 2) * 0.5;
+    st.d = st.d + (tgt - st.d) * (tgt > st.d ? ca : cr);
+    if (st.a <= 0) return { gin: 1, gout: 1 };
+    return { gin: Math.pow(10, -st.a * AMP_SAG.inDb * st.d / 20), gout: Math.pow(10, -st.a * AMP_SAG.outDb * st.d / 20) };
+}
+
 function ampNormDb(m) {
     if (!m || m.loudness == null || !isFinite(m.loudness)) return 0;
     return Math.max(-36, Math.min(36, AMP_NORM_TARGET_DB - m.loudness));
@@ -857,7 +880,7 @@ function ampNormDb(m) {
 
 var ampNodeModule = (typeof module !== "undefined") ? module : undefined;
 if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
-    AMP_VERSION: AMP_VERSION, AMP_WBANK: AMP_WBANK, AMP_SCOPE: AMP_SCOPE, AMP_PARAMS: AMP_PARAMS, AMP_PARAM_KEYS: AMP_PARAM_KEYS,
+    AMP_VERSION: AMP_VERSION, AMP_WBANK: AMP_WBANK, AMP_SCOPE: AMP_SCOPE, AMP_PARAMS: AMP_PARAMS, AMP_PARAM_KEYS: AMP_PARAM_KEYS, AMP_SAG: AMP_SAG, ampSagStep: ampSagStep,
     AMP_NBQ: AMP_NBQ, AMP_CF_SAMPS: AMP_CF_SAMPS, AMP_CABS: AMP_CABS, AMP_MAX_LAYERS: AMP_MAX_LAYERS,
     ampParseNam: ampParseNam, ampForward: ampForward, ampFastTanh: ampFastTanh, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampWaveMacs: ampWaveMacs, ampGendsp: ampGendsp,
     ampArchKey: ampArchKey, ampArchLabel: ampArchLabel, ampRingSize: ampRingSize, ampLayerCount: ampLayerCount,

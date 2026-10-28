@@ -17,6 +17,8 @@ code per reference model, its weights, a stimulus and the reference output of am
   chain          the full chain (gate, normalize, DC block, biquads, volume, dry/wet) stays finite and
                  audible with a model running, mono and stereo
   sleep          silent input puts the model to sleep (telemetry) and outputs exact zeros
+  sag            Sag 100 % (tapraw 3): the sag input gain and the raw model output equal the closed-loop reference
+                 (ampSagStep around ampForward); sag_off = Sag 0: the raw output is the plain reference, the gain exactly 1
   an_cpu_<circuit> real-time CPU of an analog circuit (an_cpu_st_<circuit>: Stereo)
   an_<circuit>   analog engine: the raw chain output (tapraw) equals the Node twin (tests/amp_analog_sim.js)
                  running the same GenExpr on the same table (an_all = every circuit)
@@ -126,7 +128,7 @@ def check(ok, msg):
 
 
 def main():
-    want = sys.argv[1:] or MODELS + ["stereo_feather", "stereo_lstm", "stereo_iso", "pre_feather", "pre_lstm", "post_feather", "chain", "chain_stereo", "sleep"] + ["cpu_" + m for m in ["none", "nano", "feather", "standard", "lstm"]]
+    want = sys.argv[1:] or MODELS + ["stereo_feather", "stereo_lstm", "stereo_iso", "pre_feather", "pre_lstm", "post_feather", "chain", "chain_stereo", "sleep", "sag", "sag_off"] + ["cpu_" + m for m in ["none", "nano", "feather", "standard", "lstm"]]
     bad = 0
     for case in want:
         if case in MODELS:
@@ -191,6 +193,16 @@ def main():
         elif case == "chain":
             r = run(case, "feather", "tapraw 0, gatedb -60, outdb -3, normdb 6", 1300, ref=False)
             bad += not check(r["nans"] == 0 and 0.001 < r["peakout"] < 4, f"chain: peak out {r['peakout']:.3g}, rms {r['rmsout']:.3g}")
+        elif case == "sag":
+            r = run(case, "feather", "tapraw 3, sagamt 1, sagref 0, mixamt 1", 1300, ref_name="feather_sag_ref")
+            rel = r["maxerr"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and rel < 2e-3 and r["maxerr1"] < 2e-3 and r["min1"] < 0.8,
+                             f"sag: raw maxerr {r['maxerr']:.3g} (rel {rel:.2g}), gain maxerr {r['maxerr1']:.3g}, min gain {r['min1']:.3f}")
+        elif case == "sag_off":
+            r = run(case, "feather", "tapraw 3, sagamt 0, sagref 0, mixamt 1", 1300)
+            rel = r["maxerr"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and rel < 2e-3 and r["min1"] == 1 and r["peakout"] == 1,
+                             f"sag_off: raw maxerr {r['maxerr']:.3g} (rel {rel:.2g}), gain min {r['min1']} max {r['peakout']}")
         elif case == "sleep":
             r = run(case, "feather", "tapraw 1", 1300, ref=False, src_params="silent 1")
             bad += not check(r["tailpeak"] == 0 and r["asleep"] == 1, f"sleep: tail raw peak {r['tailpeak']}, asleep {r['asleep']}")

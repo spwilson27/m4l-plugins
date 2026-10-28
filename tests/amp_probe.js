@@ -1,7 +1,8 @@
 // Amp audio probe. rec ch1 = device out 1, ch2 = raw model output (tapraw 1) or out 2.
 // jsarguments: [ref buffer name] [settle samples]. Reports the error of ch2 against the reference
 // buffer (offset by the settle period, which the scaffold drops from rec) and simple levels; maxerr1 is
-// ch1 against the same reference (stereo cases: ch1 = raw left model output), span2 = max - min of ch2.
+// ch1 against the same reference (stereo cases: ch1 = raw left model output) or, for a 2-channel reference,
+// against its channel 2 (sag: ch1 = the sag input gain); span2 = max - min of ch2, min1 = min of ch1.
 inlets = 1;
 outlets = 1;
 var resultPath = "/tmp/amp_audio.txt";
@@ -42,24 +43,27 @@ function analyze(durMs) {
     var settle = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
     var a = rd(rec, 1, 0, frames), b = rd(rec, 2, 0, frames);
     var err = 0, err1 = 0, mn2 = 1e9, mx2 = -1e9, peakRef = 0, peakB = 0, peakA = 0, nans = 0, rmsA = 0, sumsq = 0;
-    var ref = null;
+    var ref = null, ref1 = null, min1 = 1e9;
     if (refName) {
         var rb = new Buffer(refName);
         var rf = rb.framecount();
         var n = Math.max(0, Math.min(frames, rf - settle));
         ref = rd(rb, 1, settle, n);
+        // a 2-channel reference: ch1 (out 1 of the device) is checked against its channel 2 (the sag case)
+        if (rb.channelcount() > 1) ref1 = rd(rb, 2, settle, n);
     }
     for (var i = 0; i < frames; i++) {
         var va = a[i], vb = b[i];
         if (va !== va || vb !== vb) { nans++; continue; }
         peakA = Math.max(peakA, Math.abs(va));
+        min1 = Math.min(min1, va);
         peakB = Math.max(peakB, Math.abs(vb));
         rmsA += va * va;
         mn2 = Math.min(mn2, vb); mx2 = Math.max(mx2, vb);
         if (ref && i < ref.length) {
             var d = Math.abs(vb - ref[i]);
             if (d > err) err = d;
-            var d1 = Math.abs(va - ref[i]);
+            var d1 = Math.abs(va - (ref1 ? ref1[i] : ref[i]));
             if (d1 > err1) err1 = d1;
             peakRef = Math.max(peakRef, Math.abs(ref[i]));
             sumsq += (vb - ref[i]) * (vb - ref[i]);
@@ -78,6 +82,7 @@ function analyze(durMs) {
     f.writeline("peakout " + peakA);
     f.writeline("rmsout " + Math.sqrt(rmsA / Math.max(1, frames)));
     f.writeline("nans " + nans);
+    f.writeline("min1 " + min1);
     var tail = 0;
     for (i = Math.floor(frames * 0.75); i < frames; i++) tail = Math.max(tail, Math.abs(b[i]));
     f.writeline("tailpeak " + tail);

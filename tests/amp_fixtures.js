@@ -26,6 +26,43 @@ function wav32(file, data) {
     fs.writeFileSync(file, b);
 }
 
+// Stereo float32 WAV (interleaved).
+function wav32x2(file, a, b) {
+    const n = a.length;
+    const buf = Buffer.alloc(44 + n * 8);
+    buf.write("RIFF", 0); buf.writeUInt32LE(36 + n * 8, 4); buf.write("WAVE", 8);
+    buf.write("fmt ", 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(3, 20); buf.writeUInt16LE(2, 22);
+    buf.writeUInt32LE(SR, 24); buf.writeUInt32LE(SR * 8, 28); buf.writeUInt16LE(8, 32); buf.writeUInt16LE(32, 34);
+    buf.write("data", 36); buf.writeUInt32LE(n * 8, 40);
+    for (let i = 0; i < n; i++) { buf.writeFloatLE(a[i], 44 + i * 8); buf.writeFloatLE(b[i], 48 + i * 8); }
+    fs.writeFileSync(file, buf);
+}
+
+// Sag fixture (Sag 100 %, sagref 0): the closed loop (the sag gain at sample i depends on the model's output up to
+// i - 1) solved by fixed-point iteration over whole runs of the reference model; ch1 = raw model output, ch2 = the
+// sag input gain (what tapraw 3 records on out 2 / out 1).
+function sagFixture(m, x) {
+    let g = new Float64Array(x.length).fill(1), y = null;
+    for (let it = 0; it < 40; it++) {
+        y = A.ampForward(m, x.map((v, i) => v * g[i]));
+        const st = { p: 0, d: 0, a: 0 }, ng = new Float64Array(x.length);   // sgA ramps up from 0 as in the gen
+        let q = 0, ch = 0;
+        for (let i = 0; i < x.length; i++) {
+            ng[i] = A.ampSagStep(st, q, 1, 0, SR).gin;
+            const yc = Math.max(-8, Math.min(8, y[i]));
+            q = yc * yc;
+            ch = Math.max(ch, Math.abs(ng[i] - g[i]));
+        }
+        g = ng;
+        if (ch < 1e-12) break;
+    }
+    y = A.ampForward(m, x.map((v, i) => v * g[i]));
+    wav32x2(path.join(OUT, "feather_sag_ref.wav"), Array.from(y, Math.fround), Array.from(g, Math.fround));
+    let mn = 1;
+    for (const v of g) mn = Math.min(mn, v);
+    console.log("sag fixture: min input gain", (20 * Math.log10(mn)).toFixed(2), "dB");
+}
+
 function stimulus(n) {
     const x = new Float64Array(n);
     const notes = [[0, 82.41, 0.7], [0.35, 110, 0.5], [0.7, 146.8, 0.9], [1.05, 98, 0.25]];
@@ -115,6 +152,7 @@ function main() {
         wav32(path.join(OUT, name + "_w.wav"), m.weights);
         wav32(path.join(OUT, name + "_ref.wav"), A.ampForward(m, x));
         wav32(path.join(OUT, name + "_pre_ref.wav"), A.ampForward(m, preEq(x)));
+        if (name === "feather") sagFixture(m, x);
         console.log(name, A.ampArchLabel(m), "rf", m.receptiveField);
     }
 }

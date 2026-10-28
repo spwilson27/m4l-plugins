@@ -3,8 +3,8 @@
 // layer count and @@NW@@ with its weight count. The engine writes the weights into buffer~ ---ampw (bank offset `wbase`), the
 // tone stack / cab biquads into ---ampcf (slot 50 = 1 once valid) and reads ---ampscope.
 //
-// Signal: Mono = (in1 + in2) / 2, Stereo = in1 and in2 -> Gain -> gate (linked) -> [Pre-EQ: tone stack] -> model (once per
-// channel) -> Normalize -> DC block -> 10 biquads -> Volume -> Dry/Wet with the dry stereo input. Model or mode
+// Signal: Mono = (in1 + in2) / 2, Stereo = in1 and in2 -> Gain -> gate (linked) -> sag input gain -> [Pre-EQ: tone stack] -> model (once per
+// channel) -> Normalize, sag output gain -> DC block -> 10 biquads -> Volume -> Dry/Wet with the dry stereo input. Model or mode
 // switch: fade out 128 samples, take the new bank / mode, copy the bank into Data wd (128 weights per
 // sample, so no single sample copies a whole model), stay muted for the receptive field (so the history
 // is the new model's) and fade in.
@@ -27,6 +27,8 @@ Param mok(0);
 Param tapraw(0);
 Param testamp(0);
 Param active(1);
+Param sagamt(0);
+Param sagref(0);
 Buffer w("ampw");
 Buffer cf("ampcf");
 Buffer scope("ampscope");
@@ -72,6 +74,14 @@ History cNrm(1);
 History cOut(1);
 History cfv(0);
 History actG(0);
+History sgA(0);
+History sgP(0);
+History sgD(0);
+History sgQ(0);
+History cSp(0);
+History cSa(0);
+History cSr(0);
+History cSref(1);
 Data bz(40);
 Data nib(2);
 Data nob(2);
@@ -98,6 +108,10 @@ if (cblk <= 0) {
     cIn = dbtoa(indb);
     cNrm = dbtoa(normdb);
     cOut = dbtoa(outdb);
+    cSp = 1 - exp(-1 / (0.005 * samplerate));
+    cSa = 1 - exp(-1 / (0.02 * samplerate));
+    cSr = 1 - exp(-1 / ((0.12 + 0.28 * clip(sagamt, 0, 1)) * samplerate));
+    cSref = dbtoa(2 * sagref);
 }
 cblk = cblk - 1;
 xm = (in1 + in2) * 0.5;
@@ -116,9 +130,20 @@ gtgt = gatedb <= -99.9 ? 1 : gOpen;
 gk = gtgt > gGain ? cGkO : cGkC;
 gGain = gGain + (gtgt - gGain) * gk;
 
+// Power-supply sag (src/amp_config.js ampSagStep is the reference): the previous sample's model output power,
+// made level-independent with sagref, drives the supply droop; the droop lowers the model's input (up to 12 dB)
+// and output (up to 4 dB), times Sag. Sag 0 = gains exactly 1 (the output is bit-identical to no sag).
+sgA = sgA + (clip(sagamt, 0, 1) - sgA) * 0.002;
+sgA = (sagamt <= 0) && (sgA < 0.0001) ? 0 : sgA;
+sgP = sgP + (sgQ * cSref - sgP) * cSp;
+sgT = min(sqrt(sgP) * 7.943282347, 2) * 0.5;
+sgD = sgD + (sgT - sgD) * (sgT > sgD ? cSa : cSr);
+sgIn = sgA > 0 ? dbtoa(-sgA * 12 * sgD) : 1;
+sgOut = sgA > 0 ? dbtoa(-sgA * 4 * sgD) : 1;
+
 // Model switch.
-nin = xg * gGain;
-ninR = xgR * gGain;
+nin = xg * gGain * sgIn;
+ninR = xgR * gGain * sgIn;
 tgt = wbase;
 stp = stmode > 0.5 ? 1 : 0;
 ep = eqpre > 0.5 ? 1 : 0;
@@ -211,9 +236,10 @@ if (run) {
 nout = clip(fixnan(peek(nob, 0)), -8, 8);
 noutR = scur > 0.5 ? clip(fixnan(peek(nob, 1)), -8, 8) : nout;
 yn = nout;
+sgQ = (nout * nout + noutR * noutR) * 0.5;
 nG = nG + (cNrm - nG) * 0.002;
-nzL = nout * nG;
-nzR = noutR * nG;
+nzL = nout * nG * sgOut;
+nzR = noutR * nG * sgOut;
 
 // DC block (about 4 Hz) per channel, then tone stack + cab (biquad state per channel).
 dcy = fixdenorm(nzL - dcx + 0.9995 * dcy);
@@ -251,9 +277,10 @@ wetR = clip(yR * outG * fadeG, -4, 4);
 mx = clip(mixamt, 0, 1);
 o1 = (dry1 * (1 - mx) + wet * mx) * actG;
 o2 = (dry2 * (1 - mx) + wetR * mx) * actG;
-// Test hook tapraw: 1 = out 2 is the raw (left) model output, 2 = out 1 / out 2 are the raw L / R outputs.
-out1 = tapraw > 1.5 ? nout : o1;
-out2 = tapraw > 1.5 ? noutR : (tapraw > 0.5 ? nout : o2);
+// Test hook tapraw: 1 = out 2 is the raw (left) model output, 2 = out 1 / out 2 are the raw L / R outputs,
+// 3 = out 1 is the sag input gain and out 2 the raw (left) model output.
+out1 = tapraw > 2.5 ? sgIn : (tapraw > 1.5 ? nout : o1);
+out2 = tapraw > 1.5 ? (tapraw > 2.5 ? nout : noutR) : (tapraw > 0.5 ? nout : o2);
 
 // GenExpr has no bitwise &: it silently kills the compile (measured), so counters wrap by compare.
 // Telemetry. (tapraw is a test hook: out 2 = the raw model output.)

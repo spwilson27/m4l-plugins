@@ -452,6 +452,7 @@ function ampSendGen() {
         if (AMP_PARAMS[k][7]) outlet(1, AMP_PARAMS[k][7], ampGenValue(k, ampP[k]));
     }
     outlet(1, "normdb", ampP.normalize > 0.5 ? amp.loudDb : 0);
+    outlet(1, "sagref", amp.loudDb);
     outlet(1, "active", 1 - an);
     if (amp.testAmp) outlet(1, "testamp", amp.testAmp);
     if (amp.model.arch) {
@@ -466,6 +467,7 @@ function ampSendGen() {
             if (AMP_PARAMS[ka][7]) ampGenA(AMP_PARAMS[ka][7], ka === "eqpos" ? 0 : ampGenValue(ka, ampP[ka]));
         }
         ampGenA("normdb", 0);
+        ampGenA("sagref", 0);
         ampGenA("active", an);
         if (amp.testAmp) ampGenA("testamp", amp.testAmp);
         if (amp.analog.idx >= 0) {
