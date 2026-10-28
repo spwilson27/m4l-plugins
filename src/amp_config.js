@@ -44,7 +44,7 @@ var AMP_ACTS = ["Tanh", "Fasttanh", "ReLU", "LeakyReLU", "Sigmoid", "Hardtanh", 
 // unitstyle, gen message (null = engine only), enum, help]
 /** @type {Object<string, [string, string, number, number, number, number, number, (string|null), (string[]|null), string]>} */
 var AMP_PARAMS = {
-    model: ["Model", "Model", 0, 12, 4, 2, 0, null, ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz", "Magna", "DS-1", "Splawn", "Mark IV", "File"], "Built-in capture or the .nam file you loaded. Magna, DS-1, Splawn and Mark IV are trained from community NAM captures licensed GPL-3.0 (github.com/pelennor2170/NAM_models)."],
+    model: ["Model", "Model", 0, 12, 5, 2, 0, null, ["Clean", "Magna", "Bass", "Chime", "Drive", "Crunch", "Splawn", "Mark IV", "Lead", "Metal", "Fuzz", "DS-1", "File"], "Built-in capture (ordered from clean to high gain) or the .nam file you loaded. Magna, DS-1, Splawn and Mark IV are trained from community NAM captures licensed GPL-3.0 (github.com/pelennor2170/NAM_models)."],
     gain: ["Gain", "Gain", -24, 24, 0, 0, 4, "indb", null, "Level into the model, in decibels. Captures react to level like the real amp: more gain, more drive."],
     gate: ["Gate", "Gate", -100, -20, -100, 0, 4, "gatedb", null, "Noise gate threshold. -100 dB is off."],
     bass: ["Bass", "Bass", 0, 10, 5, 0, 1, null, null, "Low shelf at 150 Hz (NAM tone stack)."],

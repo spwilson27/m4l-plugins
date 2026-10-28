@@ -41,8 +41,11 @@ import spectral_common as sc
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 DESIGNS = os.path.join(ROOT, "scripts", "amp_designs")
-BUILTIN = ["clean", "chime", "bass", "drive", "crunch", "lead", "metal", "fuzz",
-           "magna", "ds1", "splawn", "markiv"]   # the last four: GPL-3.0 capture students (third_party/nam_gpl)   # Model enum order
+# Model enum order, clean to high gain (by measured THD of a 200 Hz sine at -24 / -12 dBFS, grouped by kind: cleans,
+# edge of breakup, crunch, high-gain amps, saturated pedals). Magna, Splawn, Mark IV, DS-1 are the GPL-3.0 capture
+# students (third_party/nam_gpl).
+BUILTIN = ["clean", "magna", "bass", "chime", "drive", "crunch", "splawn",
+           "markiv", "lead", "metal", "fuzz", "ds1"]
 
 
 def amp_params():

@@ -134,20 +134,21 @@ let r0 = report(face);
 const arch0 = r0.genArch;
 // Model through the LOM: same architecture -> bank switch, no hot-load.
 const tr0 = trace().length;
-setParam(dev, "Model", 5);
+setParam(dev, "Model", 8);
 sleep(1500);
 let r = report(face);
 check(r.model.name === "Lead" && r.genArch === arch0, `Model -> Lead through the LOM: ${r.model.name}, arch unchanged`);
 check(!/hot-load/.test(trace().slice(tr0)), "same architecture: no gen hot-load");
 check(maxOut(face, 1500).rms > 0.005, "Lead plays");
 // Every built-in capture loads and plays (all Feather: bank switches, no hot-load).
-const NAMES = ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz", "Magna", "DS-1", "Splawn", "Mark IV"];
+const NAMES = ["Clean", "Magna", "Bass", "Chime", "Drive", "Crunch", "Splawn", "Mark IV", "Lead", "Metal", "Fuzz", "DS-1"];
+const GPL_NAMES = ["Magna", "Splawn", "Mark IV", "DS-1"];
 for (let i = 0; i < NAMES.length; i++) {
     setParam(dev, "Model", i);
     sleep(900);
     const ri = report(face), oi = maxOut(face, 900);
     check(ri.model.name === NAMES[i] && oi.rms > 0.002, `built-in ${NAMES[i]}: loaded and plays (out rms ${oi.rms.toFixed(4)})`);
-    if (i >= 8) check(/GPL-3\.0/.test(ri.model.credit || ""), `built-in ${NAMES[i]}: GPL credit on the display ("${ri.model.credit}")`);
+    if (GPL_NAMES.includes(NAMES[i])) check(/GPL-3\.0/.test(ri.model.credit || ""), `built-in ${NAMES[i]}: GPL credit on the display ("${ri.model.credit}")`);
 }
 check(!/hot-load/.test(trace().slice(tr0)), "every built-in: no gen hot-load");
 // A Standard WaveNet file: new architecture -> hot-load.
@@ -198,7 +199,7 @@ sleep(1500);
 setParam(dev, "Output", 0);
 sleep(1500);
 check(maxOut(face, 1500).rms > 0.002 && report(face).p.stereo === 0, "back to Mono, still playing");
-for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Normalize", 1], ["EQ Pos", 0], ["Model", 4]]) setParam(dev, n, v);
+for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Normalize", 1], ["EQ Pos", 0], ["Model", 5]]) setParam(dev, n, v);
 // --shots <dir>: a host screenshot of the VM (scripts/vm_shot.sh) with each device's track selected, tone playing.
 const SHOTS = arg("--shots", "");
 if (SHOTS) {

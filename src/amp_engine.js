@@ -496,7 +496,7 @@ var ampPreviewData = null;
 function ampPreviewSetup(drive) {
     var d = drive == null ? 0.7 : drive;
     amp.dsp.ready = 1;
-    amp.model = ampModelInfo(ampParseNam(AMP_BUILTIN[1]), "Crunch", "preview", "");
+    amp.model = ampModelInfo(ampParseNam(AMP_BUILTIN[5]), "Crunch", "preview", "");
     ampP.model = 1;
     ampTel = { frames: 100, sr: 48000, in_pk: 0.35 * d + 0.05, out_pk: 0.5 * d + 0.1, gate: 1, sat: 0.25 + 0.55 * d,
         in_rms: 0.12 * d + 0.02, out_rms: 0.2 * d + 0.03, model_ok: 1, nlayers: 20, nam_pk: 0.6 * d + 0.1, asleep: 0, switching: 0, alive: 100 };

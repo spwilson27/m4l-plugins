@@ -123,13 +123,13 @@ function runDesign(slug) {
     // The gen code this device generates: the network is spliced in as code, not into a comment
     // (a comment mentioning the placeholder once swallowed it and the gen~ never ran in Live).
     try {
-        const code = vm.runInContext("ampGenCode(AMP_TEMPLATE, ampParseNam(AMP_BUILTIN[1]))", sb);
+        const code = vm.runInContext("ampGenCode(AMP_TEMPLATE, ampParseNam(AMP_BUILTIN[5]))", sb);
         const lines = code.split("\n");
         check(/^Param /.test(lines[0]) && lines.some((l) => /^Data wd\(\d+\);$/.test(l)) && lines.some((l) => /^zq0 = peek\(wd, \d+\) \+ /.test(l)) && lines.some((l) => /^pk0 = 0; .*tq0 = 0;/.test(l))
             && !/@NAM|@@/.test(code),`${slug}: generated gen code is clean (declarations and body outside comments)`);
     } catch (err) { check(false, slug + ": ampGenCode: " + err.stack); }
     // setnames + a model through the engine (no Buffer data: exercises the load path)
-    try { vm.runInContext("setnames('s','w','c'); ampLoadModel(AMP_BUILTIN[1], 'Crunch', '');", sb); } catch (err) { check(false, slug + ": model load path: " + err.stack); }
+    try { vm.runInContext("setnames('s','w','c'); ampLoadModel(AMP_BUILTIN[5], 'Crunch', '');", sb); } catch (err) { check(false, slug + ": model load path: " + err.stack); }
     for (const d of [0, 0.3, 1]) {
         try { vm.runInContext(`ampPreviewSetup(${d});`, sb); call("paint"); call("paint"); } catch (err) { check(false, `${slug}: paint at drive ${d}: ${err.stack}`); }
     }

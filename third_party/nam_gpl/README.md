@@ -19,7 +19,7 @@ unmodified copies. The students are derivative works and are distributed under t
 (GPL-3.0-or-later); each student's `metadata` carries `license`, `credit`, `modeled_by` and `teacher`, and
 the device shows the credit on its display when one of them is selected.
 
-**Scope of the license.** The other eight built-ins (Clean ... Fuzz) are trained on this project's own
+**Scope of the license.** The other eight built-ins (Clean, Bass, Chime, Drive, Crunch, Lead, Metal, Fuzz) are trained on this project's own
 synthetic circuits (`scripts/amp_fit_circuits.py`); from the GPL captures only measured numbers were used to
 fit them. Whether GPL obligations extend from a bundled student model to the whole device is not settled
 law; this project treats the four students and their teachers as GPL-3.0 and keeps their source (the

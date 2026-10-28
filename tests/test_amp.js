@@ -174,7 +174,7 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
 }
 
 // 4. built-in captures
-const BUILTINS = ["clean", "chime", "bass", "drive", "crunch", "lead", "metal", "fuzz", "magna", "ds1", "splawn", "markiv"];
+const BUILTINS = ["clean", "magna", "bass", "chime", "drive", "crunch", "splawn", "markiv", "lead", "metal", "fuzz", "ds1"];
 const GPL_BUILTINS = ["magna", "ds1", "splawn", "markiv"];
 check(A.AMP_PARAMS.model[8].length === BUILTINS.length + 1 && A.AMP_PARAMS.model[8][A.AMP_FILE_INDEX] === "File", "Model enum = 12 captures + File");
 // GPL-3.0 students: license, credit and teacher in the metadata, the teacher and the license text next to them
