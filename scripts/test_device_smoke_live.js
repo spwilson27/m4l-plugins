@@ -291,8 +291,13 @@ async function selectDevice(trackIdx, devId) {
         say(`sweep: ${tested}/${total} parameters, ${results.reduce((n, r) => n + (r.tests ? r.tests.length : 0), 0)} sets in ${Math.round((Date.now() - tSweep) / 1000)} s`);
 
         // ---- 4. after-sweep state
-        const fin = await readValues(devA); let drift = 0;
-        for (const k of Object.keys(initial)) if (Math.abs(fin[k] - initial[k]) > 1e-3 * (1 + Math.abs(initial[k]))) { drift++; if (drift <= 5) WARN(`restore drift ${k}: ${initial[k]} -> ${fin[k]}`); }
+        // Linked instances (the Spectral Split racks) pass a restore on to their peers on an 80 ms poll,
+        // so the last restore needs up to ~160 ms to reach the other chains: wait for it before judging.
+        const drifted = (vals) => Object.keys(initial).filter((k) => Math.abs(vals[k] - initial[k]) > 1e-3 * (1 + Math.abs(initial[k])));
+        let fin = await readValues(devA);
+        for (let t0 = Date.now(); drifted(fin).length && Date.now() - t0 < 2000;) { await sleep(100); fin = await readValues(devA); }
+        let drift = 0;
+        for (const k of drifted(fin)) { drift++; if (drift <= 5) WARN(`restore drift ${k}: ${initial[k]} -> ${fin[k]}`); }
         const post = await maxMeter(TS, 2000, 50);
         say(`after sweep meters A ${post[0].toFixed(3)} B ${post[1].toFixed(3)}`);
         if (cfg.needsSignal && post[0] <= 0.001) WARN("output silent after restoring defaults");
