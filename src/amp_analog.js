@@ -463,7 +463,7 @@ function aaRng(seed) { var a = seed >>> 0; return function () { a = (a + 0x6D2B7
 /** Cab impulse response at sr (<= 512 taps, unit gain at 1 kHz). */
 function aaCabIr(name, sr) {
     var c = AA_CABS[name];
-    var L = Math.min(AA_IRMAX, Math.round(sr * 0.0107));
+    var L = Math.min(AA_IRMAX, Math.round(sr * 0.00533));   // 5.33 ms: past 256 taps (48 kHz) every cab is 45-52 dB down
     var x = new Float64Array(L);
     x[0] = 1;
     var bq = [ampBiquad("lp", c.lp[0], c.lp[1], 0, sr)];
