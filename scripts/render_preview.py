@@ -754,6 +754,9 @@ def render_v8ui(cmds, w, h):
                         box = [ax - ar, ay - ar, ax + ar, ay + ar]
                         if op == "fill":
                             d.ellipse(box, fill=cur_color)
+                        elif abs(a2 - a1) < 2 * math.pi - 1e-3:
+                            # partial arc: mgraphics angles run clockwise from 3 o'clock (y down), like PIL's
+                            d.arc(box, start=math.degrees(min(a1, a2)), end=math.degrees(max(a1, a2)), fill=cur_color, width=line_w)
                         else:
                             d.ellipse(box, outline=cur_color, width=line_w)
                 if not cmd.get("preserve", False):

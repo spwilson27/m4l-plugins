@@ -52,6 +52,10 @@ const BUILTINS = {
     sin: Math.sin, cos: Math.cos, exp: Math.exp, log: Math.log, log10: Math.log10, sqrt: Math.sqrt, pow: Math.pow, floor: Math.floor,
     round: Math.round, abs: Math.abs, min: Math.min, max: Math.max, tanh: Math.tanh, tan: Math.tan,
     clip: (x, lo, hi) => Math.max(lo, Math.min(hi, x)),
+    clamp: (x, lo, hi) => Math.max(lo, Math.min(hi, x)),
+    exp2: (x) => Math.pow(2, x), log2: Math.log2, ceil: Math.ceil, atan2: Math.atan2,
+    dbtoa: (x) => Math.pow(10, x / 20), atodb: (x) => 20 * Math.log10(x), mtof: (m) => 440 * Math.pow(2, (m - 69) / 12),
+    fixdenorm: (x) => (Math.abs(x) < 1e-30 ? 0 : x), fixnan: (x) => (Number.isFinite(x) ? x : 0),
     // Buffer-style access on a DataSim (a buffer~ is simulated as a one-channel Data)
     peek: (b, i, c) => b.peek(i, c),
     poke: (b, v, i, c) => b.poke(v, i, c),

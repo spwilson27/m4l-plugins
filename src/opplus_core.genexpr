@@ -1,0 +1,493 @@
+// Operator+ gen core: a polyphonic 4-operator phase-modulation voice engine (AGENTS.md section "Operator+").
+// The face (src/opplus_engine.js) owns every parameter and writes engineering values into buffer ---opcfg (layout:
+// OP_CFG in src/opplus_config.js; copied into Data cf a few floats per sample), the voice table ---opvoices (8 floats
+// per voice: gate, note, vel 0..127, trigger counter, glide-from note, random 0..1, legato counter, 0) and the band-limited
+// wavetables ---opwaves (OP_NWAVE tables x OP_NMIP mip levels x 2049 samples). in1 = plugphasor~ (song beat phase 0..1).
+// Telemetry ---opscope: OP_SCOPE in the config. Every big helper has ONE call site inside a loop (AGENTS.md 1d).
+
+// Fraction 0..1 of an envelope segment travelled at progress u: s > 0 fast first, s < 0 fast last, s = 0 linear.
+op_slope(u, s) {
+	kk = 6 * abs(s) + 0.000001;
+	dn = 1 - exp(-kk);
+	ff = (1 - exp(-kk * u)) / dn;
+	gg = 1 - (1 - exp(-kk * (1 - u))) / dn;
+	r = s > 0.0001 ? ff : (s < -0.0001 ? gg : u);
+	return r;
+}
+
+// One envelope (e 0..3 = osc A..D, 4 LFO, 5 Filter, 6 Pitch) advanced by one control block of dt seconds.
+// State per envelope at vb0 + 96 + e * 6: stage (0 idle, 1 attack, 2 decay, 3 sustain, 4 release), progress,
+// level, segment start level, loop timer, last song-grid index.
+op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid) {
+	eb = 192 + e * 24;
+	sb = vb0 + 96 + e * 6;
+	st = peek(vs, sb);
+	u = peek(vs, sb + 1);
+	lv = peek(vs, sb + 2);
+	s0 = peek(vs, sb + 3);
+	tm = peek(vs, sb + 4);
+	lg = peek(vs, sb + 5);
+	vel = peek(vs, vb0 + 3);
+	fac = max(peek(vs, vb0 + 13) * exp2(-peek(cf, eb + 13) * (vel - 0.5) * 2), 0.0001);
+	pk = peek(cf, eb + 4);
+	su = peek(cf, eb + 5);
+	en = peek(cf, eb + 6);
+	md = peek(cf, eb + 10);
+	rb = max(peek(cf, eb + 12), 0.001);
+	tm = tm + (md == 1 ? dt : bdt);
+	rt = 0;
+	if (md == 1 && st == 3 && tm >= peek(cf, eb + 11)) {
+		rt = 1;
+	}
+	if (md == 2 && st >= 1 && st <= 3 && tm >= rb) {
+		rt = 1;
+	}
+	gi = floor(sgrid / rb);
+	if (md == 3 && st >= 1 && st <= 3 && lg >= 0 && gi != lg) {
+		rt = 1;
+	}
+	lg = gi;
+	if (rt > 0.5) {
+		st = 1;
+		u = 0;
+		s0 = lv;
+		tm = 0;
+	}
+	if (gt < 0.5 && st >= 1 && st <= 3 && md != 4) {
+		st = 4;
+		u = 0;
+		s0 = lv;
+	}
+	if (st == 1) {
+		at = peek(cf, eb) * fac;
+		u = at > 0.00001 ? u + dt / at : 1;
+		lv = s0 + (pk - s0) * op_slope(min(u, 1), peek(cf, eb + 7));
+		if (u >= 1) {
+			st = 2;
+			u = 0;
+			s0 = pk;
+			lv = pk;
+		}
+	} else if (st == 2) {
+		dc = peek(cf, eb + 1) * fac;
+		u = u + dt / max(dc, 0.0001);
+		lv = su + (s0 - su) * (1 - op_slope(min(u, 1), peek(cf, eb + 8)));
+		if (u >= 1) {
+			st = md == 4 ? 4 : 3;
+			u = 0;
+			s0 = su;
+			lv = su;
+			tm = md == 1 ? 0 : tm;
+		}
+	} else if (st == 3) {
+		lv = su;
+	} else if (st == 4) {
+		rl = peek(cf, eb + 2) * fac;
+		u = u + dt / max(rl, 0.0001);
+		lv = en + (s0 - en) * (1 - op_slope(min(u, 1), peek(cf, eb + 9)));
+		if (u >= 1) {
+			st = 0;
+			lv = en;
+		}
+	}
+	poke(vs, st, sb);
+	poke(vs, u, sb + 1);
+	poke(vs, lv, sb + 2);
+	poke(vs, s0, sb + 3);
+	poke(vs, tm, sb + 4);
+	poke(vs, lg, sb + 5);
+	return lv;
+}
+
+// Note on: initialise voice state from the voice table entry. New note (not a legato change).
+op_on(vs, cf, vb0, note, vel, rnd, gfrom) {
+	wasOn = peek(vs, vb0);
+	poke(vs, 1, vb0);
+	gl = peek(cf, 9) > 0.5 && gfrom >= 0;
+	poke(vs, gl ? gfrom : note, vb0 + 2);
+	poke(vs, gl ? gfrom : note, vb0 + 10);
+	poke(vs, gl ? 0 : 1, vb0 + 11);
+	poke(vs, note, vb0 + 12);
+	poke(vs, vel / 127, vb0 + 3);
+	poke(vs, rnd, vb0 + 5);
+	tf = peek(cf, 11) * exp2(-peek(cf, 12) * (note - 60) / 12);
+	poke(vs, tf, vb0 + 13);
+	for (e = 0; e < 7; e += 1) {
+		sb = vb0 + 96 + e * 6;
+		poke(vs, 1, sb);
+		poke(vs, 0, sb + 1);
+		ini = peek(cf, 192 + e * 24 + 3);
+		cur = peek(vs, sb + 2);
+		st0 = wasOn > 0.5 && e < 4 ? cur : ini;
+		poke(vs, st0, sb + 3);
+		poke(vs, st0, sb + 2);
+		poke(vs, 0, sb + 4);
+		poke(vs, -1, sb + 5);
+	}
+	for (j = 0; j < 8; j += 1) {
+		ob = vb0 + 32 + j * 8;
+		k = j - floor(j / 4) * 4;
+		if (peek(cf, 64 + k * 32 + 5) > 0.5 || wasOn < 0.5) {
+			poke(vs, peek(cf, 64 + k * 32 + 6), ob);
+		}
+	}
+	if (peek(cf, 366) > 0.5 || wasOn < 0.5) {
+		poke(vs, 0, vb0 + 6);
+	}
+	if (wasOn < 0.5) {
+		for (f = 140; f < 148; f += 1) {
+			poke(vs, 0, vb0 + f);
+		}
+	}
+	return wasOn;
+}
+
+// Modulation targets (the 24-entry list of LFO / Pitch Dest B; OP_MOD_TARGETS) summed into vs[vb0 + 148 + d].
+op_mods(vs, cf, vb0, lfo, pe) {
+	for (d = 0; d < 24; d += 1) {
+		poke(vs, 0, vb0 + 148 + d);
+	}
+	vel = peek(vs, vb0 + 3);
+	key = (peek(vs, vb0 + 12) - 60) / 64;
+	d1 = peek(cf, 369);
+	poke(vs, peek(vs, vb0 + 148 + d1) + lfo * peek(cf, 370), vb0 + 148 + d1);
+	d2 = peek(cf, 411);
+	poke(vs, peek(vs, vb0 + 148 + d2) + pe * peek(cf, 412), vb0 + 148 + d2);
+	for (s = 0; s < 8; s += 1) {
+		src = peek(cf, 24 + s * 3);
+		sv = src == 0 ? vel : (src == 1 ? key : (src == 2 ? peek(cf, 22) : (src == 3 ? peek(cf, 20) : peek(cf, 21))));
+		dd = peek(cf, 25 + s * 3);
+		poke(vs, peek(vs, vb0 + 148 + dd) + sv * peek(cf, 26 + s * 3), vb0 + 148 + dd);
+	}
+	return 0;
+}
+
+// Operator k of sub-voice sub: phase increment, mip level, amplitude and feedback for the next control block.
+op_freq(vs, cf, vb0, sub, k, notep, pe, det, sr) {
+	ob = 64 + k * 32;
+	sb = vb0 + 32 + (sub * 4 + k) * 8;
+	vel = peek(vs, vb0 + 3);
+	md = vb0 + 148;
+	rr = peek(cf, ob + 1) * (1 + peek(cf, ob + 13) * vel);
+	rr = peek(cf, ob + 14) > 0.5 && peek(cf, ob + 13) != 0 ? max(floor(rr * 2 + 0.5) / 2, 0.5) : rr;
+	pt = notep + (peek(cf, ob + 11) > 0.5 ? pe : 0) + det;
+	fx = peek(cf, ob + 3) * exp2(peek(vs, md + 8) * 4);
+	fq = peek(cf, ob + 2) > 0.5 ? fx : 440 * exp2((pt - 69) / 12) * rr;
+	poke(vs, fq / sr, sb + 1);
+	mip = peek(cf, 16) > 0.5 ? clamp(ceil(log2(max(fq, 1) / 40)), 0, 7) : 0;
+	poke(vs, mip, sb + 5);
+	env = peek(vs, vb0 + 96 + k * 6 + 2);
+	lvv = peek(cf, ob + 7);
+	vg = lvv >= 0 ? 1 - lvv * (1 - vel) : 1 + lvv * vel;
+	kg = clamp(1 + peek(cf, ob + 8) * (peek(vs, vb0 + 12) - 60) / 48, 0, 4);
+	xf = k == 0 ? 1 - max(peek(vs, md + 5), 0) : (k == 2 ? 1 + min(peek(vs, md + 5), 0) : (k == 1 ? 1 - max(peek(vs, md + 6), 0) : 1 + min(peek(vs, md + 6), 0)));
+	vm = max(1 + peek(vs, md + 1 + k), 0);
+	am = peek(cf, ob) * peek(cf, ob + 4) * env * vg * kg * xf * vm;
+	poke(vs, am, sb + 2);
+	poke(vs, clamp(peek(cf, ob + 10) + peek(vs, md + 7) * 0.65, 0, 2), sb + 6);
+	return am;
+}
+
+// Wavetable read with linear interpolation (interp 0: nearest lower sample). Table t, mip m, phase x (cycles).
+op_read(wt, t, m, x, interp) {
+	xs = x - floor(x);
+	pos = xs * 2048;
+	i = floor(pos);
+	fr = pos - i;
+	base = (t * 8 + m) * 2049;
+	a = peek(wt, base + i);
+	b = peek(wt, base + i + 1);
+	return a + (b - a) * fr * interp;
+}
+
+// The four operators of sub-voice sub for one sample, computed D, C, B, A (every edge of every algorithm goes from a
+// higher letter to a lower one). Returns the carrier sum. lm = LFO pitch multiplier, fmk = FM depth in cycles.
+op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp) {
+	ob = vb0 + 32 + sub * 32;
+	acc = 0;
+	for (k = 3; k >= 0; k -= 1) {
+		ib = ob + k * 8;
+		cb = 64 + k * 32;
+		m = 0;
+		nin = 0;
+		for (j = k + 1; j < 4; j += 1) {
+			w = peek(cf, 48 + j * 4 + k);
+			m = m + peek(vs, ob + j * 8 + 7) * w;
+			nin = nin + w;
+		}
+		fbk = nin < 0.5 ? peek(vs, ib + 6) * (peek(vs, ib + 3) + peek(vs, ib + 4)) * 0.5 : 0;
+		inc = peek(vs, ib + 1) * (peek(cf, cb + 12) > 0.5 ? lm : 1);
+		ph = peek(vs, ib) + inc;
+		ph = ph - floor(ph);
+		poke(vs, ph, ib);
+		wv = peek(cf, cb + 9);
+		tb = wv >= 22 ? 22 + k : wv;
+		yr = op_read(wt, tb, peek(vs, ib + 5), ph + m * fmk + fbk, interp);
+		y = (wv == 21 ? nz : yr) * peek(vs, ib + 2);
+		poke(vs, peek(vs, ib + 3), ib + 4);
+		poke(vs, y, ib + 3);
+		poke(vs, y, ib + 7);
+		acc = acc + y * peek(cf, cb + 15);
+	}
+	return acc;
+}
+
+// LFO (per voice, audio rate). Returns the bipolar LFO value scaled by Amount, its envelope and Amt<Vel.
+op_lfo(vs, cf, vb0, sbeat, nz) {
+	ty = peek(cf, 361);
+	ph = peek(vs, vb0 + 6);
+	np = ph + peek(vs, vb0 + 22);
+	np = peek(cf, 362) == 2 && peek(cf, 366) < 0.5 && peek(cf, 18) > 0.5 ? sbeat / max(peek(cf, 364), 0.001) : np;
+	np = np - floor(np);
+	wrapped = np < ph;
+	poke(vs, np, vb0 + 6);
+	sh = peek(vs, vb0 + 7);
+	sh = wrapped && ty == 5 ? nz : sh;
+	sm = peek(vs, vb0 + 9);
+	sm = sm + (nz - sm) * min(peek(vs, vb0 + 22) * 6.283, 1);
+	poke(vs, sh, vb0 + 7);
+	poke(vs, sm, vb0 + 9);
+	w = ty == 0 ? sin(np * 6.283185307) : (ty == 1 ? (np < 0.5 ? 1 : -1) : (ty == 2 ? 1 - 4 * abs(np - 0.5) : (ty == 3 ? 2 * np - 1 : (ty == 4 ? 1 - 2 * np : (ty == 5 ? sh : clamp(sm * 3, -1, 1))))));
+	vel = peek(vs, vb0 + 3);
+	la = peek(cf, 371);
+	vg = la >= 0 ? 1 - la * (1 - vel) : 1 + la * vel;
+	am = clamp(peek(cf, 367) * (1 + peek(vs, vb0 + 148 + 18)), 0, 1) * peek(vs, vb0 + 96 + 24 + 2) * vg;
+	r = peek(cf, 360) > 0.5 ? w * am : 0;
+	poke(vs, r, vb0 + 8);
+	return r;
+}
+
+// Filter coefficients for the next control block (TPT state-variable, Zavalishin): cutoff from the base frequency,
+// the filter envelope, velocity, key, the LFO (FIL) and modulation; stored at vb0 + 15..17.
+op_fcoef(vs, cf, vb0, lfo, sr) {
+	md = vb0 + 148;
+	vel = peek(vs, vb0 + 3);
+	fe = peek(vs, vb0 + 96 + 30 + 2);
+	ea = clamp(peek(cf, 394) + peek(vs, md + 15), -1, 1);
+	oc = ea * fe * 9 + peek(cf, 392) * (vel - 0.5) * 4 + peek(cf, 393) * (peek(vs, vb0 + 12) - 60) / 12;
+	oc = oc + (peek(cf, 373) > 0.5 ? lfo * peek(cf, 368) * 4 : 0) + peek(vs, md + 10) * 5;
+	fc = clamp(peek(cf, 388) * exp2(oc), 20, sr * 0.45);
+	g = tan(3.14159265 * fc / sr);
+	rs = clamp(peek(cf, 389) + peek(vs, md + 12) + peek(vs, md + 11), 0, 1.25);
+	ci = peek(cf, 386);
+	k = 1.4142 * (1 - 0.985 * (rs / 1.25) * (ci == 4 ? 1.01 : 1));
+	poke(vs, fc, vb0 + 15);
+	poke(vs, g, vb0 + 16);
+	poke(vs, max(k, 0.02), vb0 + 17);
+	return fc;
+}
+
+// One state-variable stage. State at sb (ic1, ic2). Type 0 LP, 1 HP, 2 BP, 3 Notch, 4 Morph (mo 0..1: LP > BP > HP > Notch > LP).
+// Circuit ci: 0 Clean, 1 OSR (hard-clipped states), 2 MS2 (soft-clipped input), 3 SMP (soft-clipped output), 4 PRD (ladder-ish, driven).
+op_svf(vs, sb, x, g, k, ty, mo, ci) {
+	ic1 = peek(vs, sb);
+	ic2 = peek(vs, sb + 1);
+	xi = ci == 2 || ci == 4 ? tanh(x) : x;
+	a1 = 1 / (1 + g * (g + k));
+	a2 = g * a1;
+	a3 = g * a2;
+	v3 = xi - ic2;
+	v1 = a1 * ic1 + a2 * v3;
+	v2 = ic2 + a2 * ic1 + a3 * v3;
+	ic1 = 2 * v1 - ic1;
+	ic2 = 2 * v2 - ic2;
+	ic1 = ci == 1 ? clamp(ic1, -1.6, 1.6) : ic1;
+	ic2 = ci == 1 ? clamp(ic2, -1.6, 1.6) : ic2;
+	poke(vs, fixdenorm(ic1), sb);
+	poke(vs, fixdenorm(ic2), sb + 1);
+	lp = v2;
+	bp = v1 * k;
+	hp = xi - k * v1 - v2;
+	nt = xi - k * v1;
+	sg = mo * 4;
+	si = floor(min(sg, 3.999));
+	fr = sg - si;
+	ma = si == 0 ? lp : (si == 1 ? bp : (si == 2 ? hp : nt));
+	mb = si == 0 ? bp : (si == 1 ? hp : (si == 2 ? nt : lp));
+	y = ty == 0 ? lp : (ty == 1 ? hp : (ty == 2 ? bp : (ty == 3 ? nt : ma + (mb - ma) * fr)));
+	return ci == 3 ? tanh(y) : y;
+}
+
+// Filter (12 / 24 dB), then the shaper (Off, Soft, Hard, Sine, 4Bit) with drive and dry/wet. ch = output channel.
+op_post(vs, cf, vb0, ch, x) {
+	md = vb0 + 148;
+	fo = peek(cf, 384) > 0.5;
+	ci = peek(cf, 386);
+	dg = ci > 0 ? dbtoa(clamp(peek(cf, 391) + peek(vs, md + 14) * 24, 0, 24)) : 1;
+	g = peek(vs, vb0 + 16);
+	k = peek(vs, vb0 + 17);
+	ty = peek(cf, 385);
+	mo = clamp(peek(cf, 390) + peek(vs, md + 13), 0, 1);
+	ns = peek(cf, 387) > 0.5 ? 2 : 1;
+	y = x;
+	if (fo) {
+		y = x * dg;
+		for (s = 0; s < ns; s += 1) {
+			y = op_svf(vs, vb0 + 140 + ch * 4 + s * 2, y, g, k, ty, mo, ci);
+		}
+		y = y / sqrt(dg);
+	}
+	st = peek(cf, 395);
+	sd = dbtoa(clamp(peek(cf, 397) + peek(vs, md + 16) * 12, -12, 12));
+	xs = y * sd;
+	sh = st == 1 ? tanh(xs) : (st == 2 ? clamp(xs, -1, 1) : (st == 3 ? sin(xs * 1.5707963) : (st == 4 ? floor(xs * 8 + 0.5) / 8 : xs)));
+	sw = st > 0.5 ? peek(cf, 396) : 0;
+	return y + (sh - y) * sw;
+}
+
+// Control block of one voice: glide, envelopes, modulation, pitch, operator frequencies / amplitudes, LFO rate, filter.
+op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, sr, nsub) {
+	gtm = max(peek(cf, 10), 0.0001);
+	gu = min(peek(vs, vb0 + 11) + dt / gtm, 1);
+	poke(vs, gu, vb0 + 11);
+	gn = peek(vs, vb0 + 10) + (peek(vs, vb0 + 12) - peek(vs, vb0 + 10)) * gu;
+	poke(vs, gn, vb0 + 2);
+	act = 0;
+	pev = 0;
+	for (e = 0; e < 7; e += 1) {
+		lv = op_env(vs, cf, vb0, e, dt, gt, bdt, sgrid);
+		act = e < 4 && peek(vs, vb0 + 96 + e * 6) > 0.5 && peek(cf, 64 + e * 32 + 15) > 0.5 ? 1 : act;
+		pev = e == 6 ? lv : pev;
+	}
+	lfo = peek(vs, vb0 + 8);
+	pon = peek(cf, 408) > 0.5;
+	pe = pon ? pev * clamp(peek(cf, 409) + peek(vs, vb0 + 148 + 19), -1, 1) : 0;
+	op_mods(vs, cf, vb0, lfo, pon ? pev / 48 : 0);
+	pa = pe * peek(cf, 410);
+	notep = gn + peek(cf, 1) + peek(cf, 20) * peek(cf, 2);
+	det = peek(cf, 8) * 0.25;
+	for (j = 0; j < 8; j += 1) {
+		sub = floor(j / 4);
+		k = j - sub * 4;
+		dd = nsub > 1 ? (sub == 0 ? -det : det) : 0;
+		if (sub < nsub) {
+			op_freq(vs, cf, vb0, sub, k, notep, pa, dd, sr);
+		}
+	}
+	lr = peek(cf, 363) * exp2(peek(cf, 365) * (gn - 60) / 12 + (peek(cf, 372) > 0.5 && pon ? pev * peek(cf, 409) / 12 : 0) + peek(vs, vb0 + 148 + 17) * 4);
+	lr = peek(cf, 362) == 2 ? peek(cf, 17) / 60 / max(peek(cf, 364), 0.001) : lr;
+	poke(vs, lr / sr, vb0 + 22);
+	op_fcoef(vs, cf, vb0, lfo, sr);
+	pan = clamp(peek(cf, 4) + peek(cf, 5) * (gn - 60) / 64 + peek(cf, 6) * (peek(vs, vb0 + 5) * 2 - 1) + peek(vs, vb0 + 148 + 21), -1, 1);
+	poke(vs, cos((pan + 1) * 0.785398163), vb0 + 19);
+	poke(vs, sin((pan + 1) * 0.785398163), vb0 + 20);
+	poke(vs, max(peek(cf, 19) * (1 + peek(vs, vb0 + 148 + 9)), 0), vb0 + 26);
+	poke(vs, max(1 + peek(vs, vb0 + 148 + 20), 0), vb0 + 27);
+	poke(vs, act, vb0);
+	return act;
+}
+
+// One sample of one voice (both channels).
+op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp) {
+	lfo = op_lfo(vs, cf, vb0, sbeat, nz);
+	lp = lfo * peek(cf, 368) * 12;
+	lm = exp2(lp / 12);
+	fmk = peek(vs, vb0 + 26);
+	vol = peek(vs, vb0 + 27);
+	l = 0;
+	r = 0;
+	for (sub = 0; sub < nsub; sub += 1) {
+		x = op_ops(vs, cf, wt, vb0, sub, lm, fmk, nz, interp);
+		y = op_post(vs, cf, vb0, sub, x) * vol;
+		l = l + (nsub > 1 ? (sub == 0 ? y * 1.4142 : 0) : y * peek(vs, vb0 + 19));
+		r = r + (nsub > 1 ? (sub == 1 ? y * 1.4142 : 0) : y * peek(vs, vb0 + 20));
+	}
+	return l, r;
+}
+
+Buffer cfgb("opcfg");
+Buffer vbuf("opvoices");
+Buffer wt("opwaves");
+Buffer scope("opscope");
+Data cf(448);
+Data vs(6144);
+Data seen(32);
+Data leg(32);
+History kc(0);
+History cp(0);
+History bph(0);
+History bcnt(0);
+History alive(0);
+History tlp(0);
+History tlpr(0);
+
+// copy the configuration a few floats per sample (the whole block every 56 samples)
+for (q = 0; q < 8; q += 1) {
+	poke(cf, peek(cfgb, cp + q), cp + q);
+}
+cp = cp + 8 >= 448 ? 0 : cp + 8;
+
+// song beat: plugphasor~ phase + counted wraps (in2 is unused; the shared .gendsp template wires two inlets)
+sph = in1 + in2 * 0;
+bcnt = sph < bph - 0.5 ? bcnt + 1 : bcnt;
+bph = sph;
+sbeat = bcnt + sph;
+playing = peek(cf, 18) > 0.5;
+sgrid = playing ? sbeat : -1;
+
+ctl = kc == 0;
+kc = kc + 1 >= 16 ? 0 : kc + 1;
+dt = 16 / samplerate;
+bdt = dt * peek(cf, 17) / 60;
+nz = noise();
+nsub = peek(cf, 8) > 0.001 ? 2 : 1;
+interp = peek(cf, 15) > 0.5 ? 1 : 0;
+nv = 0;
+outl = 0;
+outr = 0;
+for (v = 0; v < 32; v += 1) {
+	vb0 = v * 192;
+	vo = v * 8;
+	gt = peek(vbuf, vo);
+	tr = peek(vbuf, vo + 3);
+	lc = peek(vbuf, vo + 6);
+	fresh = 0;
+	if (tr != peek(seen, v)) {
+		poke(seen, tr, v);
+		poke(leg, lc, v);
+		fresh = 1;
+		op_on(vs, cf, vb0, peek(vbuf, vo + 1), peek(vbuf, vo + 2), peek(vbuf, vo + 5), peek(vbuf, vo + 4));
+	}
+	if (lc != peek(leg, v)) {
+		poke(leg, lc, v);
+		poke(vs, peek(vs, vb0 + 2), vb0 + 10);
+		poke(vs, 0, vb0 + 11);
+		poke(vs, peek(vbuf, vo + 1), vb0 + 12);
+		poke(vs, peek(cf, 9) > 0.5 ? 0 : 1, vb0 + 11);
+	}
+	if (peek(vs, vb0) > 0.5) {
+		if (ctl || fresh) {
+			op_ctl(vs, cf, vb0, gt, dt, bdt, sgrid, samplerate, nsub);
+		}
+		yl, yr = op_voice(vs, cf, wt, vb0, sbeat, nz, nsub, interp);
+		outl = outl + yl;
+		outr = outr + yr;
+		nv = nv + 1;
+	}
+}
+
+// Tone (output low-pass), volume, safety
+tc = peek(cf, 7);
+tk = 1 - exp(-6.2831853 * tc / samplerate);
+tlp = tc >= 19999 ? outl : tlp + (outl - tlp) * tk;
+tlpr = tc >= 19999 ? outr : tlpr + (outr - tlpr) * tk;
+gv = peek(cf, 3);
+out1 = fixnan(clamp(tlp * gv, -4, 4));
+out2 = fixnan(clamp(tlpr * gv, -4, 4));
+
+// telemetry: alive counter (moves in silence too), active voices, levels; per voice the 7 envelope levels / stages
+alive = alive + 1;
+if (ctl) {
+	poke(scope, floor(alive / 1024), 0);
+	poke(scope, samplerate, 1);
+	poke(scope, nv, 2);
+	poke(scope, max(abs(out1), abs(out2)), 3);
+	for (tv = 0; tv < 32; tv += 1) {
+		for (te = 0; te < 7; te += 1) {
+			poke(scope, peek(vs, tv * 192 + 96 + te * 6 + 2), 8 + tv * 16 + te);
+			poke(scope, peek(vs, tv * 192 + 96 + te * 6) + min(peek(vs, tv * 192 + 96 + te * 6 + 1), 0.999), 8 + tv * 16 + 7 + te);
+		}
+		poke(scope, peek(vs, tv * 192 + 8), 8 + tv * 16 + 14);
+		poke(scope, peek(vs, tv * 192 + 15), 8 + tv * 16 + 15);
+	}
+}

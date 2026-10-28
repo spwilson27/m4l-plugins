@@ -1,0 +1,6769 @@
+[
+ {
+  "i": 0,
+  "name": "Device On",
+  "original_name": "Device On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 1,
+  "name": "Algorithm",
+  "original_name": "Algorithm",
+  "min": 0.0,
+  "max": 10.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Alg. 1",
+   "Alg. 2",
+   "Alg. 3",
+   "Alg. 4",
+   "Alg. 5",
+   "Alg. 6",
+   "Alg. 7",
+   "Alg. 8",
+   "Alg. 9",
+   "Alg. 10",
+   "Alg. 11"
+  ],
+  "str": [
+   [
+    0.0,
+    "Alg. 1"
+   ],
+   [
+    2.5,
+    "Alg. 3"
+   ],
+   [
+    5.0,
+    "Alg. 6"
+   ],
+   [
+    7.5,
+    "Alg. 8"
+   ],
+   [
+    10.0,
+    "Alg. 11"
+   ]
+  ]
+ },
+ {
+  "i": 2,
+  "name": "Transpose",
+  "original_name": "Transpose",
+  "min": -48.0,
+  "max": 48.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -48.0,
+    "-48 st"
+   ],
+   [
+    -24.0,
+    "-24 st"
+   ],
+   [
+    0.0,
+    "0 st"
+   ],
+   [
+    24.0,
+    "+24 st"
+   ],
+   [
+    48.0,
+    "+48 st"
+   ]
+  ]
+ },
+ {
+  "i": 3,
+  "name": "PB Range",
+  "original_name": "PB Range",
+  "min": 0.0,
+  "max": 24.0,
+  "value": 5.0,
+  "q": false,
+  "default": 5.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 st"
+   ],
+   [
+    6.0,
+    "+6 st"
+   ],
+   [
+    12.0,
+    "+12 st"
+   ],
+   [
+    18.0,
+    "+18 st"
+   ],
+   [
+    24.0,
+    "+24 st"
+   ]
+  ]
+ },
+ {
+  "i": 4,
+  "name": "Volume",
+  "original_name": "Volume",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.39999979734420776,
+  "q": false,
+  "default": 0.5499998927116394,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-29 dB"
+   ],
+   [
+    0.5,
+    "-14 dB"
+   ],
+   [
+    0.75,
+    "-4.0 dB"
+   ],
+   [
+    1.0,
+    "6.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 5,
+  "name": "Panorama",
+  "original_name": "Panorama",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "50L"
+   ],
+   [
+    -0.5,
+    "25L"
+   ],
+   [
+    0.0,
+    "C"
+   ],
+   [
+    0.5,
+    "25R"
+   ],
+   [
+    1.0,
+    "50R"
+   ]
+  ]
+ },
+ {
+  "i": 6,
+  "name": "Pan < Key",
+  "original_name": "Pan < Key",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    25.0,
+    "25"
+   ],
+   [
+    50.0,
+    "50"
+   ],
+   [
+    75.0,
+    "75"
+   ],
+   [
+    100.0,
+    "100"
+   ]
+  ]
+ },
+ {
+  "i": 7,
+  "name": "Pan < Rnd",
+  "original_name": "Pan < Rnd",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    25.0,
+    "25"
+   ],
+   [
+    50.0,
+    "50"
+   ],
+   [
+    75.0,
+    "75"
+   ],
+   [
+    100.0,
+    "100"
+   ]
+  ]
+ },
+ {
+  "i": 8,
+  "name": "Tone",
+  "original_name": "Tone",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.699999988079071,
+  "q": false,
+  "default": 0.699999988079071,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 9,
+  "name": "Spread",
+  "original_name": "Spread",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 10,
+  "name": "Glide On",
+  "original_name": "Glide On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 11,
+  "name": "Glide Time",
+  "original_name": "Glide Time",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.10 ms"
+   ],
+   [
+    0.25,
+    "1.78 ms"
+   ],
+   [
+    0.5,
+    "31.6 ms"
+   ],
+   [
+    0.75,
+    "562 ms"
+   ],
+   [
+    1.0,
+    "10.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 12,
+  "name": "Osc-A On",
+  "original_name": "Osc-A On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 13,
+  "name": "A Coarse",
+  "original_name": "A Coarse",
+  "min": 0.0,
+  "max": 48.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.5"
+   ],
+   [
+    12.0,
+    "12"
+   ],
+   [
+    24.0,
+    "24"
+   ],
+   [
+    36.0,
+    "36"
+   ],
+   [
+    48.0,
+    "48"
+   ]
+  ]
+ },
+ {
+  "i": 14,
+  "name": "A Fine",
+  "original_name": "A Fine",
+  "min": 0.0,
+  "max": 1000.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    250.0,
+    "250"
+   ],
+   [
+    500.0,
+    "500"
+   ],
+   [
+    750.0,
+    "750"
+   ],
+   [
+    1000.0,
+    "1000"
+   ]
+  ]
+ },
+ {
+  "i": 15,
+  "name": "A Freq<Vel",
+  "original_name": "A Freq<Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100"
+   ],
+   [
+    -50.0,
+    "-50"
+   ],
+   [
+    0.0,
+    "0"
+   ],
+   [
+    50.0,
+    "50"
+   ],
+   [
+    100.0,
+    "100"
+   ]
+  ]
+ },
+ {
+  "i": 16,
+  "name": "A Quantize",
+  "original_name": "A Quantize",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 17,
+  "name": "A Fix On ",
+  "original_name": "A Fix On ",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 18,
+  "name": "A Fix Freq",
+  "original_name": "A Fix Freq",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.4345879852771759,
+  "q": false,
+  "default": 0.4345879852771759,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "10.0 Hz"
+   ],
+   [
+    0.25,
+    "37.6 Hz"
+   ],
+   [
+    0.5,
+    "141 Hz"
+   ],
+   [
+    0.75,
+    "532 Hz"
+   ],
+   [
+    1.0,
+    "2.00 kHz"
+   ]
+  ]
+ },
+ {
+  "i": 19,
+  "name": "A Fix Freq Mul",
+  "original_name": "A Fix Freq Mul",
+  "min": 0.0,
+  "max": 5.0,
+  "value": 4.0,
+  "q": false,
+  "default": 4.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    1.25,
+    "0.001"
+   ],
+   [
+    2.5,
+    "0.01"
+   ],
+   [
+    3.75,
+    "0.1"
+   ],
+   [
+    5.0,
+    "10"
+   ]
+  ]
+ },
+ {
+  "i": 20,
+  "name": "Osc-A Level",
+  "original_name": "Osc-A Level",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 21,
+  "name": "Osc-A Retrig",
+  "original_name": "Osc-A Retrig",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 22,
+  "name": "Osc-A Phase",
+  "original_name": "Osc-A Phase",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 23,
+  "name": "Osc-A Lev < Vel",
+  "original_name": "Osc-A Lev < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 50.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 24,
+  "name": "Osc-A Lev < Key",
+  "original_name": "Osc-A Lev < Key",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 25,
+  "name": "Osc-A Wave",
+  "original_name": "Osc-A Wave",
+  "min": 0.0,
+  "max": 22.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Sine",
+   "Sine 4 Bit",
+   "Sine 8 Bit",
+   "Saw 3",
+   "Saw 4",
+   "Saw 6",
+   "Saw 8",
+   "Saw 16",
+   "Saw 32",
+   "Saw 64",
+   "Saw D",
+   "Square 3",
+   "Square 4",
+   "Square 6",
+   "Square 8",
+   "Square 16",
+   "Square 32",
+   "Square 64",
+   "Square D",
+   "Triangle",
+   "Noise Looped",
+   "Noise White",
+   "User"
+  ],
+  "str": [
+   [
+    0.0,
+    "Sine"
+   ],
+   [
+    5.5,
+    "Saw 6"
+   ],
+   [
+    11.0,
+    "Square 3"
+   ],
+   [
+    16.5,
+    "Square 32"
+   ],
+   [
+    22.0,
+    "User"
+   ]
+  ]
+ },
+ {
+  "i": 26,
+  "name": "Osc-A Feedb",
+  "original_name": "Osc-A Feedb",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 27,
+  "name": "Osc-A < Pe",
+  "original_name": "Osc-A < Pe",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 28,
+  "name": "Osc-A < LFO",
+  "original_name": "Osc-A < LFO",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 29,
+  "name": "Ae Attack",
+  "original_name": "Ae Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 30,
+  "name": "Ae Init",
+  "original_name": "Ae Init",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 31,
+  "name": "Ae Decay",
+  "original_name": "Ae Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.6278579235076904,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 32,
+  "name": "Ae Peak",
+  "original_name": "Ae Peak",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 33,
+  "name": "Ae Sustain",
+  "original_name": "Ae Sustain",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 34,
+  "name": "Ae Release",
+  "original_name": "Ae Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 35,
+  "name": "Ae Mode",
+  "original_name": "Ae Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 36,
+  "name": "Ae Loop",
+  "original_name": "Ae Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 37,
+  "name": "Ae Retrig",
+  "original_name": "Ae Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 38,
+  "name": "Ae R < Vel",
+  "original_name": "Ae R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 39,
+  "name": "Osc-B On",
+  "original_name": "Osc-B On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 40,
+  "name": "B Coarse",
+  "original_name": "B Coarse",
+  "min": 0.0,
+  "max": 48.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.5"
+   ],
+   [
+    12.0,
+    "12"
+   ],
+   [
+    24.0,
+    "24"
+   ],
+   [
+    36.0,
+    "36"
+   ],
+   [
+    48.0,
+    "48"
+   ]
+  ]
+ },
+ {
+  "i": 41,
+  "name": "B Fine",
+  "original_name": "B Fine",
+  "min": 0.0,
+  "max": 1000.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    250.0,
+    "250"
+   ],
+   [
+    500.0,
+    "500"
+   ],
+   [
+    750.0,
+    "750"
+   ],
+   [
+    1000.0,
+    "1000"
+   ]
+  ]
+ },
+ {
+  "i": 42,
+  "name": "B Freq<Vel",
+  "original_name": "B Freq<Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100"
+   ],
+   [
+    -50.0,
+    "-50"
+   ],
+   [
+    0.0,
+    "0"
+   ],
+   [
+    50.0,
+    "50"
+   ],
+   [
+    100.0,
+    "100"
+   ]
+  ]
+ },
+ {
+  "i": 43,
+  "name": "B Quantize",
+  "original_name": "B Quantize",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 44,
+  "name": "B Fix On ",
+  "original_name": "B Fix On ",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 45,
+  "name": "B Fix Freq",
+  "original_name": "B Fix Freq",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.4345879852771759,
+  "q": false,
+  "default": 0.4345879852771759,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "10.0 Hz"
+   ],
+   [
+    0.25,
+    "37.6 Hz"
+   ],
+   [
+    0.5,
+    "141 Hz"
+   ],
+   [
+    0.75,
+    "532 Hz"
+   ],
+   [
+    1.0,
+    "2.00 kHz"
+   ]
+  ]
+ },
+ {
+  "i": 46,
+  "name": "B Fix Freq Mul",
+  "original_name": "B Fix Freq Mul",
+  "min": 0.0,
+  "max": 5.0,
+  "value": 4.0,
+  "q": false,
+  "default": 4.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    1.25,
+    "0.001"
+   ],
+   [
+    2.5,
+    "0.01"
+   ],
+   [
+    3.75,
+    "0.1"
+   ],
+   [
+    5.0,
+    "10"
+   ]
+  ]
+ },
+ {
+  "i": 47,
+  "name": "Osc-B Level",
+  "original_name": "Osc-B Level",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 48,
+  "name": "Osc-B Retrig",
+  "original_name": "Osc-B Retrig",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 49,
+  "name": "Osc-B Phase",
+  "original_name": "Osc-B Phase",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 50,
+  "name": "Osc-B Lev < Vel",
+  "original_name": "Osc-B Lev < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 50.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 51,
+  "name": "Osc-B Lev < Key",
+  "original_name": "Osc-B Lev < Key",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 52,
+  "name": "Osc-B Wave",
+  "original_name": "Osc-B Wave",
+  "min": 0.0,
+  "max": 22.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Sine",
+   "Sine 4 Bit",
+   "Sine 8 Bit",
+   "Saw 3",
+   "Saw 4",
+   "Saw 6",
+   "Saw 8",
+   "Saw 16",
+   "Saw 32",
+   "Saw 64",
+   "Saw D",
+   "Square 3",
+   "Square 4",
+   "Square 6",
+   "Square 8",
+   "Square 16",
+   "Square 32",
+   "Square 64",
+   "Square D",
+   "Triangle",
+   "Noise Looped",
+   "Noise White",
+   "User"
+  ],
+  "str": [
+   [
+    0.0,
+    "Sine"
+   ],
+   [
+    5.5,
+    "Saw 6"
+   ],
+   [
+    11.0,
+    "Square 3"
+   ],
+   [
+    16.5,
+    "Square 32"
+   ],
+   [
+    22.0,
+    "User"
+   ]
+  ]
+ },
+ {
+  "i": 53,
+  "name": "Osc-B Feedb",
+  "original_name": "Osc-B Feedb",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 54,
+  "name": "Osc-B < Pe",
+  "original_name": "Osc-B < Pe",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 55,
+  "name": "Osc-B < LFO",
+  "original_name": "Osc-B < LFO",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 56,
+  "name": "Be Attack",
+  "original_name": "Be Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 57,
+  "name": "Be Init",
+  "original_name": "Be Init",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 58,
+  "name": "Be Decay",
+  "original_name": "Be Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 59,
+  "name": "Be Peak",
+  "original_name": "Be Peak",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 60,
+  "name": "Be Sustain",
+  "original_name": "Be Sustain",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.3999996781349182,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 61,
+  "name": "Be Release",
+  "original_name": "Be Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 62,
+  "name": "Be Mode",
+  "original_name": "Be Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 63,
+  "name": "Be Loop",
+  "original_name": "Be Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 64,
+  "name": "Be Retrig",
+  "original_name": "Be Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 65,
+  "name": "Be R < Vel",
+  "original_name": "Be R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 66,
+  "name": "Osc-C On",
+  "original_name": "Osc-C On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 67,
+  "name": "C Coarse",
+  "original_name": "C Coarse",
+  "min": 0.0,
+  "max": 48.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.5"
+   ],
+   [
+    12.0,
+    "12"
+   ],
+   [
+    24.0,
+    "24"
+   ],
+   [
+    36.0,
+    "36"
+   ],
+   [
+    48.0,
+    "48"
+   ]
+  ]
+ },
+ {
+  "i": 68,
+  "name": "C Fine",
+  "original_name": "C Fine",
+  "min": 0.0,
+  "max": 1000.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    250.0,
+    "250"
+   ],
+   [
+    500.0,
+    "500"
+   ],
+   [
+    750.0,
+    "750"
+   ],
+   [
+    1000.0,
+    "1000"
+   ]
+  ]
+ },
+ {
+  "i": 69,
+  "name": "C Freq<Vel",
+  "original_name": "C Freq<Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100"
+   ],
+   [
+    -50.0,
+    "-50"
+   ],
+   [
+    0.0,
+    "0"
+   ],
+   [
+    50.0,
+    "50"
+   ],
+   [
+    100.0,
+    "100"
+   ]
+  ]
+ },
+ {
+  "i": 70,
+  "name": "C Quantize",
+  "original_name": "C Quantize",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 71,
+  "name": "C Fix On ",
+  "original_name": "C Fix On ",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 72,
+  "name": "C Fix Freq",
+  "original_name": "C Fix Freq",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.4345879852771759,
+  "q": false,
+  "default": 0.4345879852771759,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "10.0 Hz"
+   ],
+   [
+    0.25,
+    "37.6 Hz"
+   ],
+   [
+    0.5,
+    "141 Hz"
+   ],
+   [
+    0.75,
+    "532 Hz"
+   ],
+   [
+    1.0,
+    "2.00 kHz"
+   ]
+  ]
+ },
+ {
+  "i": 73,
+  "name": "C Fix Freq Mul",
+  "original_name": "C Fix Freq Mul",
+  "min": 0.0,
+  "max": 5.0,
+  "value": 4.0,
+  "q": false,
+  "default": 4.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    1.25,
+    "0.001"
+   ],
+   [
+    2.5,
+    "0.01"
+   ],
+   [
+    3.75,
+    "0.1"
+   ],
+   [
+    5.0,
+    "10"
+   ]
+  ]
+ },
+ {
+  "i": 74,
+  "name": "Osc-C Level",
+  "original_name": "Osc-C Level",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 75,
+  "name": "Osc-C Retrig",
+  "original_name": "Osc-C Retrig",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 76,
+  "name": "Osc-C Phase",
+  "original_name": "Osc-C Phase",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 77,
+  "name": "Osc-C Lev < Vel",
+  "original_name": "Osc-C Lev < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 50.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 78,
+  "name": "Osc-C Lev < Key",
+  "original_name": "Osc-C Lev < Key",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 79,
+  "name": "Osc-C Wave",
+  "original_name": "Osc-C Wave",
+  "min": 0.0,
+  "max": 22.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Sine",
+   "Sine 4 Bit",
+   "Sine 8 Bit",
+   "Saw 3",
+   "Saw 4",
+   "Saw 6",
+   "Saw 8",
+   "Saw 16",
+   "Saw 32",
+   "Saw 64",
+   "Saw D",
+   "Square 3",
+   "Square 4",
+   "Square 6",
+   "Square 8",
+   "Square 16",
+   "Square 32",
+   "Square 64",
+   "Square D",
+   "Triangle",
+   "Noise Looped",
+   "Noise White",
+   "User"
+  ],
+  "str": [
+   [
+    0.0,
+    "Sine"
+   ],
+   [
+    5.5,
+    "Saw 6"
+   ],
+   [
+    11.0,
+    "Square 3"
+   ],
+   [
+    16.5,
+    "Square 32"
+   ],
+   [
+    22.0,
+    "User"
+   ]
+  ]
+ },
+ {
+  "i": 80,
+  "name": "Osc-C Feedb",
+  "original_name": "Osc-C Feedb",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 81,
+  "name": "Osc-C < Pe",
+  "original_name": "Osc-C < Pe",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 82,
+  "name": "Osc-C < LFO",
+  "original_name": "Osc-C < LFO",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 83,
+  "name": "Ce Attack",
+  "original_name": "Ce Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 84,
+  "name": "Ce Init",
+  "original_name": "Ce Init",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 85,
+  "name": "Ce Decay",
+  "original_name": "Ce Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 86,
+  "name": "Ce Peak",
+  "original_name": "Ce Peak",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 87,
+  "name": "Ce Sustain",
+  "original_name": "Ce Sustain",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.3999996781349182,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 88,
+  "name": "Ce Release",
+  "original_name": "Ce Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 89,
+  "name": "Ce Mode",
+  "original_name": "Ce Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 90,
+  "name": "Ce Loop",
+  "original_name": "Ce Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 91,
+  "name": "Ce Retrig",
+  "original_name": "Ce Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 92,
+  "name": "Ce R < Vel",
+  "original_name": "Ce R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 93,
+  "name": "Osc-D On",
+  "original_name": "Osc-D On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 94,
+  "name": "D Coarse",
+  "original_name": "D Coarse",
+  "min": 0.0,
+  "max": 48.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.5"
+   ],
+   [
+    12.0,
+    "12"
+   ],
+   [
+    24.0,
+    "24"
+   ],
+   [
+    36.0,
+    "36"
+   ],
+   [
+    48.0,
+    "48"
+   ]
+  ]
+ },
+ {
+  "i": 95,
+  "name": "D Fine",
+  "original_name": "D Fine",
+  "min": 0.0,
+  "max": 1000.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    250.0,
+    "250"
+   ],
+   [
+    500.0,
+    "500"
+   ],
+   [
+    750.0,
+    "750"
+   ],
+   [
+    1000.0,
+    "1000"
+   ]
+  ]
+ },
+ {
+  "i": 96,
+  "name": "D Freq<Vel",
+  "original_name": "D Freq<Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100"
+   ],
+   [
+    -50.0,
+    "-50"
+   ],
+   [
+    0.0,
+    "0"
+   ],
+   [
+    50.0,
+    "50"
+   ],
+   [
+    100.0,
+    "100"
+   ]
+  ]
+ },
+ {
+  "i": 97,
+  "name": "D Quantize",
+  "original_name": "D Quantize",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 98,
+  "name": "D Fix On ",
+  "original_name": "D Fix On ",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 99,
+  "name": "D Fix Freq",
+  "original_name": "D Fix Freq",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.4345879852771759,
+  "q": false,
+  "default": 0.4345879852771759,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "10.0 Hz"
+   ],
+   [
+    0.25,
+    "37.6 Hz"
+   ],
+   [
+    0.5,
+    "141 Hz"
+   ],
+   [
+    0.75,
+    "532 Hz"
+   ],
+   [
+    1.0,
+    "2.00 kHz"
+   ]
+  ]
+ },
+ {
+  "i": 100,
+  "name": "D Fix Freq Mul",
+  "original_name": "D Fix Freq Mul",
+  "min": 0.0,
+  "max": 5.0,
+  "value": 4.0,
+  "q": false,
+  "default": 4.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0"
+   ],
+   [
+    1.25,
+    "0.001"
+   ],
+   [
+    2.5,
+    "0.01"
+   ],
+   [
+    3.75,
+    "0.1"
+   ],
+   [
+    5.0,
+    "10"
+   ]
+  ]
+ },
+ {
+  "i": 101,
+  "name": "Osc-D Level",
+  "original_name": "Osc-D Level",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 102,
+  "name": "Osc-D Retrig",
+  "original_name": "Osc-D Retrig",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 103,
+  "name": "Osc-D Phase",
+  "original_name": "Osc-D Phase",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 104,
+  "name": "Osc-D Lev < Vel",
+  "original_name": "Osc-D Lev < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 50.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 105,
+  "name": "Osc-D Lev < Key",
+  "original_name": "Osc-D Lev < Key",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 106,
+  "name": "Osc-D Wave",
+  "original_name": "Osc-D Wave",
+  "min": 0.0,
+  "max": 22.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Sine",
+   "Sine 4 Bit",
+   "Sine 8 Bit",
+   "Saw 3",
+   "Saw 4",
+   "Saw 6",
+   "Saw 8",
+   "Saw 16",
+   "Saw 32",
+   "Saw 64",
+   "Saw D",
+   "Square 3",
+   "Square 4",
+   "Square 6",
+   "Square 8",
+   "Square 16",
+   "Square 32",
+   "Square 64",
+   "Square D",
+   "Triangle",
+   "Noise Looped",
+   "Noise White",
+   "User"
+  ],
+  "str": [
+   [
+    0.0,
+    "Sine"
+   ],
+   [
+    5.5,
+    "Saw 6"
+   ],
+   [
+    11.0,
+    "Square 3"
+   ],
+   [
+    16.5,
+    "Square 32"
+   ],
+   [
+    22.0,
+    "User"
+   ]
+  ]
+ },
+ {
+  "i": 107,
+  "name": "Osc-D Feedb",
+  "original_name": "Osc-D Feedb",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 108,
+  "name": "Osc-D < Pe",
+  "original_name": "Osc-D < Pe",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 109,
+  "name": "Osc-D < LFO",
+  "original_name": "Osc-D < LFO",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 110,
+  "name": "De Attack",
+  "original_name": "De Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 111,
+  "name": "De Init",
+  "original_name": "De Init",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 112,
+  "name": "De Decay",
+  "original_name": "De Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 113,
+  "name": "De Peak",
+  "original_name": "De Peak",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 114,
+  "name": "De Sustain",
+  "original_name": "De Sustain",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.3999996781349182,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 115,
+  "name": "De Release",
+  "original_name": "De Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 116,
+  "name": "De Mode",
+  "original_name": "De Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 117,
+  "name": "De Loop",
+  "original_name": "De Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 118,
+  "name": "De Retrig",
+  "original_name": "De Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 119,
+  "name": "De R < Vel",
+  "original_name": "De R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 120,
+  "name": "Time",
+  "original_name": "Time",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 121,
+  "name": "Time < Key",
+  "original_name": "Time < Key",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 122,
+  "name": "Pe On",
+  "original_name": "Pe On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 123,
+  "name": "Pe Attack",
+  "original_name": "Pe Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 124,
+  "name": "Pe Init",
+  "original_name": "Pe Init",
+  "min": -48.0,
+  "max": 48.0,
+  "value": 12.0,
+  "q": false,
+  "default": 12.0,
+  "items": [],
+  "str": [
+   [
+    -48.0,
+    "-48 st"
+   ],
+   [
+    -24.0,
+    "-24 st"
+   ],
+   [
+    0.0,
+    "0 st"
+   ],
+   [
+    24.0,
+    "+24 st"
+   ],
+   [
+    48.0,
+    "+48 st"
+   ]
+  ]
+ },
+ {
+  "i": 125,
+  "name": "Pe A Slope",
+  "original_name": "Pe A Slope",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 126,
+  "name": "Pe Decay",
+  "original_name": "Pe Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5445746183395386,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 127,
+  "name": "Pe Peak",
+  "original_name": "Pe Peak",
+  "min": -48.0,
+  "max": 48.0,
+  "value": 12.0,
+  "q": false,
+  "default": 12.0,
+  "items": [],
+  "str": [
+   [
+    -48.0,
+    "-48 st"
+   ],
+   [
+    -24.0,
+    "-24 st"
+   ],
+   [
+    0.0,
+    "0 st"
+   ],
+   [
+    24.0,
+    "+24 st"
+   ],
+   [
+    48.0,
+    "+48 st"
+   ]
+  ]
+ },
+ {
+  "i": 128,
+  "name": "Pe D Slope",
+  "original_name": "Pe D Slope",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 129,
+  "name": "Pe Sustain",
+  "original_name": "Pe Sustain",
+  "min": -48.0,
+  "max": 48.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -48.0,
+    "-48 st"
+   ],
+   [
+    -24.0,
+    "-24 st"
+   ],
+   [
+    0.0,
+    "0 st"
+   ],
+   [
+    24.0,
+    "+24 st"
+   ],
+   [
+    48.0,
+    "+48 st"
+   ]
+  ]
+ },
+ {
+  "i": 130,
+  "name": "Pe Release",
+  "original_name": "Pe Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.35557058453559875,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 131,
+  "name": "Pe End",
+  "original_name": "Pe End",
+  "min": -48.0,
+  "max": 48.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -48.0,
+    "-48 st"
+   ],
+   [
+    -24.0,
+    "-24 st"
+   ],
+   [
+    0.0,
+    "0 st"
+   ],
+   [
+    24.0,
+    "+24 st"
+   ],
+   [
+    48.0,
+    "+48 st"
+   ]
+  ]
+ },
+ {
+  "i": 132,
+  "name": "Pe R Slope",
+  "original_name": "Pe R Slope",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 133,
+  "name": "Pe Mode",
+  "original_name": "Pe Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 134,
+  "name": "Pe Loop",
+  "original_name": "Pe Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 135,
+  "name": "Pe Retrig",
+  "original_name": "Pe Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 136,
+  "name": "Pe R < Vel",
+  "original_name": "Pe R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 137,
+  "name": "Pe Amount",
+  "original_name": "Pe Amount",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 138,
+  "name": "Pe Amt A",
+  "original_name": "Pe Amt A",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 100.0,
+  "q": false,
+  "default": 100.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 139,
+  "name": "Pe Dst B",
+  "original_name": "Pe Dst B",
+  "min": 0.0,
+  "max": 23.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "OSC Volume A",
+   "OSC Volume B",
+   "OSC Volume C",
+   "OSC Volume D",
+   "OSC Crossfade A/C",
+   "OSC Crossfade B/D",
+   "OSC Feedback",
+   "OSC Fixed Frequency",
+   "FM Drive",
+   "Filter Freq",
+   "Filter Q (Legacy)",
+   "Filter Res",
+   "Filter Morph",
+   "Filter Drive",
+   "Filter Envelope Amount",
+   "Shaper Drive",
+   "LFO Rate",
+   "LFO Amount",
+   "Aux Envelope Amount",
+   "Volume",
+   "Panorama",
+   "Tone",
+   "Time"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    5.75,
+    "OSC Crossfade A/C"
+   ],
+   [
+    11.5,
+    "Filter Q (Legacy)"
+   ],
+   [
+    17.25,
+    "LFO Rate"
+   ],
+   [
+    23.0,
+    "Time"
+   ]
+  ]
+ },
+ {
+  "i": 140,
+  "name": "Pe Amt B",
+  "original_name": "Pe Amt B",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 100.0,
+  "q": false,
+  "default": 100.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 141,
+  "name": "LFO On",
+  "original_name": "LFO On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 142,
+  "name": "LFO Type",
+  "original_name": "LFO Type",
+  "min": 0.0,
+  "max": 6.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Sine",
+   "Square",
+   "Triangle",
+   "SwUp",
+   "SwDown",
+   "S&H",
+   "Noise"
+  ],
+  "str": [
+   [
+    0.0,
+    "Sine"
+   ],
+   [
+    1.5,
+    "Square"
+   ],
+   [
+    3.0,
+    "SwUp"
+   ],
+   [
+    4.5,
+    "SwDown"
+   ],
+   [
+    6.0,
+    "Noise"
+   ]
+  ]
+ },
+ {
+  "i": 143,
+  "name": "LFO Range",
+  "original_name": "LFO Range",
+  "min": 0.0,
+  "max": 2.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Low",
+   "High",
+   "Sync"
+  ],
+  "str": [
+   [
+    0.0,
+    "Low"
+   ],
+   [
+    0.5,
+    "Low"
+   ],
+   [
+    1.0,
+    "High"
+   ],
+   [
+    1.5,
+    "High"
+   ],
+   [
+    2.0,
+    "Sync"
+   ]
+  ]
+ },
+ {
+  "i": 144,
+  "name": "LFO Rate",
+  "original_name": "LFO Rate",
+  "min": 0.0,
+  "max": 127.0,
+  "value": 100.0,
+  "q": false,
+  "default": 64.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00"
+   ],
+   [
+    31.75,
+    "31.75"
+   ],
+   [
+    63.5,
+    "63.50"
+   ],
+   [
+    95.25,
+    "95.25"
+   ],
+   [
+    127.0,
+    "127.00"
+   ]
+  ]
+ },
+ {
+  "i": 145,
+  "name": "LFO Sync",
+  "original_name": "LFO Sync",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 146,
+  "name": "LFO R < K",
+  "original_name": "LFO R < K",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 147,
+  "name": "LFO Retrigger",
+  "original_name": "LFO Retrigger",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 148,
+  "name": "LFO Amt",
+  "original_name": "LFO Amt",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.10000000149011612,
+  "q": false,
+  "default": 0.25,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 149,
+  "name": "LFO Amt A",
+  "original_name": "LFO Amt A",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 100.0,
+  "q": false,
+  "default": 100.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 150,
+  "name": "LFO Dst B",
+  "original_name": "LFO Dst B",
+  "min": 0.0,
+  "max": 23.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "OSC Volume A",
+   "OSC Volume B",
+   "OSC Volume C",
+   "OSC Volume D",
+   "OSC Crossfade A/C",
+   "OSC Crossfade B/D",
+   "OSC Feedback",
+   "OSC Fixed Frequency",
+   "FM Drive",
+   "Filter Freq",
+   "Filter Q (Legacy)",
+   "Filter Res",
+   "Filter Morph",
+   "Filter Drive",
+   "Filter Envelope Amount",
+   "Shaper Drive",
+   "LFO Rate",
+   "LFO Amount",
+   "Aux Envelope Amount",
+   "Volume",
+   "Panorama",
+   "Tone",
+   "Time"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    5.75,
+    "OSC Crossfade A/C"
+   ],
+   [
+    11.5,
+    "Filter Q (Legacy)"
+   ],
+   [
+    17.25,
+    "LFO Rate"
+   ],
+   [
+    23.0,
+    "Time"
+   ]
+  ]
+ },
+ {
+  "i": 151,
+  "name": "LFO Amt B",
+  "original_name": "LFO Amt B",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 100.0,
+  "q": false,
+  "default": 100.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 152,
+  "name": "LFO < Vel",
+  "original_name": "LFO < Vel",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 153,
+  "name": "LFO < Pe",
+  "original_name": "LFO < Pe",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 154,
+  "name": "Le Attack",
+  "original_name": "Le Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 155,
+  "name": "Le Init",
+  "original_name": "Le Init",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 156,
+  "name": "Le Decay",
+  "original_name": "Le Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.581428050994873,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 157,
+  "name": "Le Peak",
+  "original_name": "Le Peak",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 158,
+  "name": "Le Sustain",
+  "original_name": "Le Sustain",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 159,
+  "name": "Le Release",
+  "original_name": "Le Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.35557058453559875,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 160,
+  "name": "Le End",
+  "original_name": "Le End",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "-inf dB"
+   ],
+   [
+    0.25,
+    "-35 dB"
+   ],
+   [
+    0.5,
+    "-20 dB"
+   ],
+   [
+    0.75,
+    "-10 dB"
+   ],
+   [
+    1.0,
+    "0.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 161,
+  "name": "Le Mode",
+  "original_name": "Le Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 162,
+  "name": "Le Loop",
+  "original_name": "Le Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 163,
+  "name": "Le Retrig",
+  "original_name": "Le Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 164,
+  "name": "Le R < Vel",
+  "original_name": "Le R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 165,
+  "name": "Filter On",
+  "original_name": "Filter On",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 166,
+  "name": "Filter Type",
+  "original_name": "Filter Type",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Lowpass",
+   "Highpass",
+   "Bandpass",
+   "Notch",
+   "Morph"
+  ],
+  "str": [
+   [
+    0.0,
+    "Lowpass"
+   ],
+   [
+    1.0,
+    "Highpass"
+   ],
+   [
+    2.0,
+    "Bandpass"
+   ],
+   [
+    3.0,
+    "Notch"
+   ],
+   [
+    4.0,
+    "Morph"
+   ]
+  ]
+ },
+ {
+  "i": 167,
+  "name": "Filter Circuit - LP/HP",
+  "original_name": "Filter Circuit - LP/HP",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Clean",
+   "OSR",
+   "MS2",
+   "SMP",
+   "PRD"
+  ],
+  "str": [
+   [
+    0.0,
+    "Clean"
+   ],
+   [
+    1.0,
+    "OSR"
+   ],
+   [
+    2.0,
+    "MS2"
+   ],
+   [
+    3.0,
+    "SMP"
+   ],
+   [
+    4.0,
+    "PRD"
+   ]
+  ]
+ },
+ {
+  "i": 168,
+  "name": "Filter Circuit - BP/NO/Morph",
+  "original_name": "Filter Circuit - BP/NO/Morph",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Clean",
+   "OSR"
+  ],
+  "str": [
+   [
+    0.0,
+    "Clean"
+   ],
+   [
+    0.25,
+    "Clean"
+   ],
+   [
+    0.5,
+    "Clean"
+   ],
+   [
+    0.75,
+    "Clean"
+   ],
+   [
+    1.0,
+    "OSR"
+   ]
+  ]
+ },
+ {
+  "i": 169,
+  "name": "Filter Slope",
+  "original_name": "Filter Slope",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "12 dB",
+   "24 dB"
+  ],
+  "str": [
+   [
+    0.0,
+    "12 dB"
+   ],
+   [
+    0.25,
+    "24 dB"
+   ],
+   [
+    0.5,
+    "24 dB"
+   ],
+   [
+    0.75,
+    "24 dB"
+   ],
+   [
+    1.0,
+    "24 dB"
+   ]
+  ]
+ },
+ {
+  "i": 170,
+  "name": "Filter Freq",
+  "original_name": "Filter Freq",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.9326211214065552,
+  "q": false,
+  "default": 0.437930703163147,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "30.0 Hz"
+   ],
+   [
+    0.25,
+    "149 Hz"
+   ],
+   [
+    0.5,
+    "745 Hz"
+   ],
+   [
+    0.75,
+    "3.71 kHz"
+   ],
+   [
+    1.0,
+    "18.5 kHz"
+   ]
+  ]
+ },
+ {
+  "i": 171,
+  "name": "Filter Res",
+  "original_name": "Filter Res",
+  "min": 0.0,
+  "max": 1.25,
+  "value": 0.2777777910232544,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.3125,
+    "31 %"
+   ],
+   [
+    0.625,
+    "62 %"
+   ],
+   [
+    0.9375,
+    "94 %"
+   ],
+   [
+    1.25,
+    "125 %"
+   ]
+  ]
+ },
+ {
+  "i": 172,
+  "name": "Filter Morph",
+  "original_name": "Filter Morph",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 lp/bp"
+   ],
+   [
+    0.25,
+    "0 bp/hp"
+   ],
+   [
+    0.5,
+    "0 hp/no"
+   ],
+   [
+    0.75,
+    "0 no/lp"
+   ],
+   [
+    1.0,
+    "100 no/lp"
+   ]
+  ]
+ },
+ {
+  "i": 173,
+  "name": "Filter Drive",
+  "original_name": "Filter Drive",
+  "min": 0.0,
+  "max": 24.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 dB"
+   ],
+   [
+    6.0,
+    "6.00 dB"
+   ],
+   [
+    12.0,
+    "12.0 dB"
+   ],
+   [
+    18.0,
+    "18.0 dB"
+   ],
+   [
+    24.0,
+    "24.0 dB"
+   ]
+  ]
+ },
+ {
+  "i": 174,
+  "name": "Filt < Vel",
+  "original_name": "Filt < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 175,
+  "name": "Filt < Key",
+  "original_name": "Filt < Key",
+  "min": -200.0,
+  "max": 200.0,
+  "value": 100.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -200.0,
+    "-200 %"
+   ],
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ],
+   [
+    200.0,
+    "200 %"
+   ]
+  ]
+ },
+ {
+  "i": 176,
+  "name": "Fe Amount",
+  "original_name": "Fe Amount",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 177,
+  "name": "Filt < LFO",
+  "original_name": "Filt < LFO",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "On"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    0.25,
+    "On"
+   ],
+   [
+    0.5,
+    "On"
+   ],
+   [
+    0.75,
+    "On"
+   ],
+   [
+    1.0,
+    "On"
+   ]
+  ]
+ },
+ {
+  "i": 178,
+  "name": "Fe Attack",
+  "original_name": "Fe Attack",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.00 ms"
+   ],
+   [
+    0.25,
+    "2.11 ms"
+   ],
+   [
+    0.5,
+    "44.7 ms"
+   ],
+   [
+    0.75,
+    "946 ms"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 179,
+  "name": "Fe Init",
+  "original_name": "Fe Init",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 180,
+  "name": "Fe A Slope",
+  "original_name": "Fe A Slope",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 181,
+  "name": "Fe Decay",
+  "original_name": "Fe Decay",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.581428050994873,
+  "q": false,
+  "default": 0.581428050994873,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 182,
+  "name": "Fe Peak",
+  "original_name": "Fe Peak",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 183,
+  "name": "Fe D Slope",
+  "original_name": "Fe D Slope",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 184,
+  "name": "Fe Sustain",
+  "original_name": "Fe Sustain",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 185,
+  "name": "Fe Release",
+  "original_name": "Fe Release",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.35557058453559875,
+  "q": false,
+  "default": 0.35557058453559875,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1.00 ms"
+   ],
+   [
+    0.25,
+    "15.7 ms"
+   ],
+   [
+    0.5,
+    "245 ms"
+   ],
+   [
+    0.75,
+    "3.83 s"
+   ],
+   [
+    1.0,
+    "60.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 186,
+  "name": "Fe End",
+  "original_name": "Fe End",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.25,
+    "25 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    0.75,
+    "75 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 187,
+  "name": "Fe R Slope",
+  "original_name": "Fe R Slope",
+  "min": -1.0,
+  "max": 1.0,
+  "value": 1.0,
+  "q": false,
+  "default": 1.0,
+  "items": [],
+  "str": [
+   [
+    -1.0,
+    "-100 %"
+   ],
+   [
+    -0.5,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0.0 %"
+   ],
+   [
+    0.5,
+    "50 %"
+   ],
+   [
+    1.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 188,
+  "name": "Fe Mode",
+  "original_name": "Fe Mode",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "None",
+   "Loop",
+   "Beat",
+   "Sync",
+   "Trigger"
+  ],
+  "str": [
+   [
+    0.0,
+    "None"
+   ],
+   [
+    1.0,
+    "Loop"
+   ],
+   [
+    2.0,
+    "Beat"
+   ],
+   [
+    3.0,
+    "Sync"
+   ],
+   [
+    4.0,
+    "Trigger"
+   ]
+  ]
+ },
+ {
+  "i": 189,
+  "name": "Fe Loop",
+  "original_name": "Fe Loop",
+  "min": 0.0,
+  "max": 1.0,
+  "value": 0.5397940278053284,
+  "q": false,
+  "default": 0.5397940278053284,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0.20 ms"
+   ],
+   [
+    0.25,
+    "3.56 ms"
+   ],
+   [
+    0.5,
+    "63.2 ms"
+   ],
+   [
+    0.75,
+    "1.12 s"
+   ],
+   [
+    1.0,
+    "20.0 s"
+   ]
+  ]
+ },
+ {
+  "i": 190,
+  "name": "Fe Retrig",
+  "original_name": "Fe Retrig",
+  "min": 0.0,
+  "max": 14.0,
+  "value": 3.0,
+  "q": false,
+  "default": 3.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "1/48"
+   ],
+   [
+    3.5,
+    "1/16"
+   ],
+   [
+    7.0,
+    "1/4"
+   ],
+   [
+    10.5,
+    "1"
+   ],
+   [
+    14.0,
+    "4"
+   ]
+  ]
+ },
+ {
+  "i": 191,
+  "name": "Fe R < Vel",
+  "original_name": "Fe R < Vel",
+  "min": -100.0,
+  "max": 100.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -100.0,
+    "-100 %"
+   ],
+   [
+    -50.0,
+    "-50 %"
+   ],
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 192,
+  "name": "Shaper Type",
+  "original_name": "Shaper Type",
+  "min": 0.0,
+  "max": 4.0,
+  "value": 0.0,
+  "q": true,
+  "default": null,
+  "items": [
+   "Off",
+   "Soft",
+   "Hard",
+   "Sine",
+   "4Bit"
+  ],
+  "str": [
+   [
+    0.0,
+    "Off"
+   ],
+   [
+    1.0,
+    "Soft"
+   ],
+   [
+    2.0,
+    "Hard"
+   ],
+   [
+    3.0,
+    "Sine"
+   ],
+   [
+    4.0,
+    "4Bit"
+   ]
+  ]
+ },
+ {
+  "i": 193,
+  "name": "Shaper Mix",
+  "original_name": "Shaper Mix",
+  "min": 0.0,
+  "max": 100.0,
+  "value": 100.0,
+  "q": false,
+  "default": 100.0,
+  "items": [],
+  "str": [
+   [
+    0.0,
+    "0 %"
+   ],
+   [
+    25.0,
+    "25 %"
+   ],
+   [
+    50.0,
+    "50 %"
+   ],
+   [
+    75.0,
+    "75 %"
+   ],
+   [
+    100.0,
+    "100 %"
+   ]
+  ]
+ },
+ {
+  "i": 194,
+  "name": "Shaper Drive",
+  "original_name": "Shaper Drive",
+  "min": -12.0,
+  "max": 12.0,
+  "value": 0.0,
+  "q": false,
+  "default": 0.0,
+  "items": [],
+  "str": [
+   [
+    -12.0,
+    "-12.0 dB"
+   ],
+   [
+    -6.0,
+    "-6.00 dB"
+   ],
+   [
+    0.0,
+    "0.00 dB"
+   ],
+   [
+    6.0,
+    "6.00 dB"
+   ],
+   [
+    12.0,
+    "12.0 dB"
+   ]
+  ]
+ }
+]
