@@ -231,10 +231,22 @@ function ampLayerCount(m) {
 // ---------------------------------------------------------------------------------------------
 // Reference forward (double precision). Tests only; the faces never call it.
 
-/** @param {string} name @param {number} x */
-function ampAct(name, x) {
+/**
+ * NAM's fast tanh (nam::activations::fast_tanh, what the NAM plugin uses by default): a rational approximation,
+ * within 9e-4 of tanh for |x| <= 12 (it tends to 1.008, not 1), several times cheaper than tanh in gen. WaveNet Tanh / Fasttanh activations use it (in the gen
+ * and in ampForward); LSTM gates keep the exact tanh / sigmoid.
+ * @param {number} x
+ */
+function ampFastTanh(x) {
+    var ax = Math.abs(x), x2 = x * x;
+    return x * (2.45550750702956 + 2.45550750702956 * ax + (0.893229853513558 + 0.821226666969744 * ax) * x2)
+        / (2.44506634652299 + (2.44506634652299 + x2) * Math.abs(x + 0.814642734961073 * x * ax));
+}
+
+/** @param {string} name @param {number} x @param {boolean} [exact] exact tanh (the torch comparison) */
+function ampAct(name, x, exact) {
     switch (name) {
-        case "Tanh": case "Fasttanh": return Math.tanh(x);
+        case "Tanh": case "Fasttanh": return exact ? Math.tanh(x) : ampFastTanh(x);
         case "ReLU": return x > 0 ? x : 0;
         case "LeakyReLU": return x > 0 ? x : 0.01 * x;
         case "Sigmoid": return 1 / (1 + Math.exp(-x));
@@ -248,9 +260,11 @@ function ampAct(name, x) {
 /**
  * @param {any} m model from ampParseNam
  * @param {ArrayLike<number>} x input samples
+ * @param {{exactTanh?: boolean}} [opts] exactTanh: Math.tanh instead of the fast tanh the gen runs (the torch comparison)
  * @returns {number[]}
  */
-function ampForward(m, x) {
+function ampForward(m, x, opts) {
+    var exact = !!(opts && opts.exactTanh);
     var w = m.weights, out = [];
     if (m.kind === "LSTM") {
         var H = m.lstm.hidden, NL = m.lstm.layers, p = 0, cells = [];
@@ -339,7 +353,7 @@ function ampForward(m, x) {
                 }
                 var pa = [];
                 for (o = 0; o < ch; o++) {
-                    var av = ampAct(LL.act, zz[o]);
+                    var av = ampAct(LL.act, zz[o], exact);
                     if (A2.gated) av *= 1 / (1 + Math.exp(-zz[o + ch]));
                     pa.push(av);
                     hacc[o] += av;
@@ -374,8 +388,9 @@ function ampForward(m, x) {
 /** @param {string} name @param {string} x */
 function ampGenAct(name, x) {
     switch (name) {
-        case "Tanh": return "tanh(" + x + ")";
-        case "Fasttanh": return "tanh(" + x + ")";
+        case "Tanh": case "Fasttanh":   // ampFastTanh; `x` is a local, read several times
+            return "(" + x + " * (2.45550750702956 + 2.45550750702956 * abs(" + x + ") + (0.893229853513558 + 0.821226666969744 * abs(" + x + ")) * " + x + " * " + x
+                + ") / (2.44506634652299 + (2.44506634652299 + " + x + " * " + x + ") * abs(" + x + " + 0.814642734961073 * " + x + " * abs(" + x + "))))";
         case "ReLU": return "max(" + x + ", 0)";
         case "LeakyReLU": return "(" + x + " > 0 ? " + x + " : 0.01 * " + x + ")";
         case "Sigmoid": return "(1 / (1 + exp(-(" + x + "))))";
@@ -826,7 +841,7 @@ var ampNodeModule = (typeof module !== "undefined") ? module : undefined;
 if (ampNodeModule && ampNodeModule.exports) ampNodeModule.exports = {
     AMP_VERSION: AMP_VERSION, AMP_WBANK: AMP_WBANK, AMP_SCOPE: AMP_SCOPE, AMP_PARAMS: AMP_PARAMS, AMP_PARAM_KEYS: AMP_PARAM_KEYS,
     AMP_NBQ: AMP_NBQ, AMP_CF_SAMPS: AMP_CF_SAMPS, AMP_CABS: AMP_CABS, AMP_MAX_LAYERS: AMP_MAX_LAYERS,
-    ampParseNam: ampParseNam, ampForward: ampForward, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampWaveMacs: ampWaveMacs, ampGendsp: ampGendsp,
+    ampParseNam: ampParseNam, ampForward: ampForward, ampFastTanh: ampFastTanh, ampGenNam: ampGenNam, ampGenCode: ampGenCode, ampWaveMacs: ampWaveMacs, ampGendsp: ampGendsp,
     ampArchKey: ampArchKey, ampArchLabel: ampArchLabel, ampRingSize: ampRingSize, ampLayerCount: ampLayerCount,
     ampHash: ampHash, ampBiquad: ampBiquad, ampToneBiquads: ampToneBiquads, ampResponseDb: ampResponseDb,
     ampNormDb: ampNormDb, AMP_FILE_INDEX: AMP_FILE_INDEX, ampGenValue: ampGenValue, ampAct: ampAct

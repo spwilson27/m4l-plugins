@@ -19,15 +19,27 @@ function check(ok, msg) { if (ok) passes++; else { fails++; console.log("FAIL " 
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
 // 1. reference forward vs official NAM
+{
+    let e = 0;
+    for (let x = -12; x <= 12; x += 0.001) e = Math.max(e, Math.abs(A.ampFastTanh(x) - Math.tanh(x)));
+    check(e < 1e-3 && A.ampFastTanh(0) === 0 && Math.abs(A.ampFastTanh(50)) < 1.009, `fast tanh within ${e.toExponential(2)} of tanh`);
+    console.log(`fast tanh max error ${e.toExponential(2)}`);
+}
 for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
     const m = A.ampParseNam(read(`tests/amp_ref/${name}.nam`));
     const io = JSON.parse(read(`tests/amp_ref/${name}_io.json`));
     // torch pads the start with zeros (pad_start); feed the same zeros first
     const pad = m.kind === "WaveNet" ? new Array(m.receptiveField - 1).fill(0) : [];
-    const y = A.ampForward(m, pad.concat(io.x)).slice(pad.length);
-    let err = 0, peak = 0;
-    for (let i = 0; i < y.length; i++) { err = Math.max(err, Math.abs(y[i] - io.y[i])); peak = Math.max(peak, Math.abs(io.y[i])); }
-    check(err / peak < 1e-4, `${name}: ampForward vs NAM torch rel err ${(err / peak).toExponential(2)}`);
+    const y = A.ampForward(m, pad.concat(io.x), { exactTanh: true }).slice(pad.length);
+    const yf = A.ampForward(m, pad.concat(io.x)).slice(pad.length);
+    let err = 0, peak = 0, errF = 0;
+    for (let i = 0; i < y.length; i++) { err = Math.max(err, Math.abs(y[i] - io.y[i])); errF = Math.max(errF, Math.abs(yf[i] - io.y[i])); peak = Math.max(peak, Math.abs(io.y[i])); }
+    check(err / peak < 1e-4, `${name}: ampForward (exact tanh) vs NAM torch rel err ${(err / peak).toExponential(2)}`);
+    // The fast tanh the gen runs (NAM plugin default) stays close to the exact model.
+    // Deep models compound it (measured: nano 9e-4, feather 1.2e-2, lite 1.3e-2, standard 9e-2 of the peak).
+    const fastBound = { nano: 5e-3, feather: 3e-2, lite: 3e-2, standard: 0.15 }[name] || 1e-5;
+    check(errF / peak < fastBound, `${name}: ampForward (fast tanh) vs NAM torch rel err ${(errF / peak).toExponential(2)}`);
+    console.log(`fast tanh ${name}: rel err ${(errF / peak).toExponential(2)}`);
 }
 {
     const m = A.ampParseNam(read("tests/amp_ref/standard.nam"));
