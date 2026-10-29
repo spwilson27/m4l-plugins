@@ -21,7 +21,8 @@ code per reference model, its weights, a stimulus and the reference output of am
                  (ampSagStep around ampForward); sag_off = Sag 0: the raw output is the plain reference, the gain exactly 1
   an_cpu_<circuit> real-time CPU of an analog circuit (an_cpu_st_<circuit>: Stereo)
   an_<circuit>   analog engine: the raw chain output (tapraw) equals the Node twin (tests/amp_analog_sim.js)
-                 running the same GenExpr on the same table (an_all = every circuit)
+                 running the same GenExpr on the same table (an_all = every circuit); an_sag_plexi = the Plexi at
+                 Sag 100 % (sagphys 1: the rail sags, the envelope sag is off)
 
   python3 scripts/run_amp_audio_tests.py [case ...]
 """
@@ -58,7 +59,7 @@ def device(model, params, ref=True, code_name=None, cf=None, ref_name=None):
         mh.box("dev-wbuf", f"buffer~ amp_w_t {os.path.join(FIX, model + '_w.wav')}", 40, 120, 300, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-sbuf", f"buffer~ amp_stim_t {os.path.join(FIX, 'stim.wav')}", 40, 150, 300, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-cbuf", f"buffer~ amp_cf_t {os.path.join(FIX, cf)}" if cf else "buffer~ amp_cf_t 56 1", 40, 210, 300, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-scbuf", "buffer~ amp_scope_t 3136 1", 40, 240, 200, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-scbuf", "buffer~ amp_scope_t 3140 1", 40, 240, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.gen_box("dev-src", SOURCE, 400, 200, numinlets=1, numoutlets=2),
         (mh.box("dev-gen", "gen~ @gen " + os.path.join(FIX, code_name[7:]), 400, 300, 200, numinlets=2, numoutlets=2, outlettype=["signal", "signal"])
          if code_name and code_name.startswith("gendsp:") else mh.gen_box("dev-gen", code, 400, 300, numinlets=2, numoutlets=2)),
@@ -167,6 +168,12 @@ def main():
         elif case == "an_all":
             for cid in ANALOG:
                 bad += not analog_case("an_" + cid)
+        elif case == "an_sag_plexi":
+            r = run(case, "an_plexi", "tapraw 1, mixamt 1, sagamt 1, sagphys 1", 1300, code_name="analog", cf="an_plexi_cf.wav", ref_name="an_plexi_sag_ref")
+            rel = r["maxerr"] / max(1e-9, r["peakref"])
+            rms_rel = r["rmserr"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and (rel < 5e-3 or rms_rel < 3e-4) and r["peakraw"] > 0,
+                             f"an_sag_plexi: maxerr {r['maxerr']:.3g} (rel {rel:.2g}), rms err {r['rmserr']:.3g} (rel {rms_rel:.2g})")
         elif case.startswith("an_cpu_") and case[7:].replace("st_", "") in ANALOG:
             # real-time CPU of an analog circuit (cpu_st_ = Output mode Stereo, a chain per channel)
             cid = case[7:]

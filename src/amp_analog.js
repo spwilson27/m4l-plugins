@@ -703,7 +703,10 @@ function aaInfo(idx) {
         blocks.push({ name: nm, kind: s.k, slots: [k], n: 1 });
     }
     if (r.spk) blocks.push({ name: "SPEAKER", kind: "spk", slots: [], n: 1 });
-    return { id: r.id, label: r.label, blurb: r.blurb, blocks: blocks, toneRole: r.toneRole, hasSpeaker: !!r.spk };
+    // hasRail: a tube power stage with its own supply (ac_rail), which the Sag control softens physically;
+    // circuits without one (tape, studio, solid state) get the template's envelope sag instead.
+    var hasRail = r.chain.some(function (s) { return !!s && s.k === "pwr"; });
+    return { id: r.id, label: r.label, blurb: r.blurb, blocks: blocks, toneRole: r.toneRole, hasSpeaker: !!r.spk, hasRail: hasRail };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -712,7 +715,10 @@ function aaInfo(idx) {
 // The table is copied from buffer `w` (---ampa) into Data wd; the post biquads start at 4 (the tone stack
 // runs inside the chain); the dry path waits for the oversampler's 23-sample delay.
 var AA_GEN_DECL = "Data wd(" + AA_NW + ");\nData anSt(" + 2 * AA_STATE + ");\nData anRq(32);\nData anHq(384);\nData anCr(2048);\nData anTq(4096);\nData anFt(12008);\nData lact(48);\nDelay anDl(64);\nDelay anDr(64);";
-var AA_GEN_BODY = "ac_sample(nib, nob, nch, ninit, wd, cfd, anSt, anRq, anHq, anCr, anTq, anFt, lact, samplerate);\nnsat = peek(lact, 41);";
+// The template's smoothed Sag amount (sgA) goes into each channel's free state slot 344, which ac_rail reads.
+var AA_SAG_SLOT = 344;
+var AA_GEN_BODY = "poke(anSt, sgA, " + AA_SAG_SLOT + ");\npoke(anSt, sgA, " + (AA_STATE + AA_SAG_SLOT) + ");\n"
+    + "ac_sample(nib, nob, nch, ninit, wd, cfd, anSt, anRq, anHq, anCr, anTq, anFt, lact, samplerate);\nnsat = peek(lact, 41);";
 var AA_GEN_DRY = "anDl.write(in1);\nanDr.write(in2);\ndry1 = anDl.read(23);\ndry2 = anDr.read(23);";
 
 /** @param {string} template the template without comments @param {string} src the circuit functions without comments */
@@ -723,7 +729,7 @@ function aaGenCode(template, src) {
 }
 
 var aaNodeModule = (typeof module !== "undefined") ? module : undefined;
-if (aaNodeModule && aaNodeModule.exports) aaNodeModule.exports = {
+if (aaNodeModule && aaNodeModule.exports) aaNodeModule.exports = { AA_SAG_SLOT: AA_SAG_SLOT,
     AA_NW: AA_NW, AA_BANK: AA_BANK, AA_SLOT: AA_SLOT, AA_STRIDE: AA_STRIDE, AA_NSLOT: AA_NSLOT, AA_OUT: AA_OUT, AA_HB: AA_HB, AA_IR: AA_IR,
     AA_IRMAX: AA_IRMAX, AA_INIT: AA_INIT, AA_STATE: AA_STATE, AA_SSLOT: AA_SSLOT, AA_SOUT: AA_SOUT, AA_SMISC: AA_SMISC, AA_RF: AA_RF,
     AA_SLEEP: AA_SLEEP, AA_KIND: AA_KIND, AA_TONE_SET: AA_TONE_SET, AA_TRIODES: AA_TRIODES, AA_PENTODES: AA_PENTODES, AA_SPEAKERS: AA_SPEAKERS,

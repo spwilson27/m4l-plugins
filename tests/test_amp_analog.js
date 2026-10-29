@@ -184,5 +184,44 @@ for (const id of ["twin", "hiwatt", "plexi"]) {
     check(10 * Math.log10(r / 24000 + 1e-30) < -50, `${id}: idle with 3x NFB ${(10 * Math.log10(r / 24000 + 1e-30)).toFixed(1)} dBFS (stable)`);
 }
 
+// 7. Sag: the tube circuits' own supply sees the current above idle up to 4x (ac_rail, state slot AA_SAG_SLOT),
+// the others get the template's envelope sag (aaInfo().hasRail -> gen sagphys)
+{
+    const rail = AA.AMP_ANALOG.filter((r, i) => AA.aaInfo(i).hasRail).map((r) => r.id);
+    check(rail.join() === "tweed,twin,ac30,plexi,jcm,modern,svt,hiwatt,ts,rat,fuzz,muff", `Sag: physical rail for the tube amps and the pedals into them (${rail.join(" ")})`);
+    const src = read("src/amp_analog_core.genexpr");
+    const used = [...strip(src).matchAll(/so \+ (\d+)/g)].map((m) => Number(m[1]));
+    check(used.filter((v) => v === AA.AA_SAG_SLOT).length === 1 && used.every((v) => v < AA.AA_STATE) && AA.AA_SAG_SLOT >= 344 && AA.AA_SAG_SLOT < AA.AA_STATE,
+        `Sag slot ${AA.AA_SAG_SLOT}: read once (ac_rail), inside the channel state, no other state there`);
+    const tbl = AA.aaBank(3, SR, 1);
+    check(tbl[1536 + AA.AA_SAG_SLOT] === 0, "Sag slot: the table's DC init leaves it 0");
+    const gen = AA.aaGenCode(strip(read("src/amp_core.genexpr")), strip(src));
+    check(gen.includes(`poke(anSt, sgA, ${AA.AA_SAG_SLOT});`) && gen.includes(`poke(anSt, sgA, ${AA.AA_STATE + AA.AA_SAG_SLOT});`)
+        && gen.indexOf(`poke(anSt, sgA, ${AA.AA_SAG_SLOT});`) < gen.indexOf("ac_sample(nib, nob"), "gen body: the smoothed Sag goes into both channels' slot before the chain runs");
+    const eng = read("src/amp_engine.js");
+    check(/ampGenA\("sagphys", amp\.analog\.info && amp\.analog\.info\.hasRail \? 1 : 0\)/.test(eng), "engine: sagphys follows the circuit's rail");
+    // Sag 0 is the circuit as designed (exact), idle B+ stays, the drop under load deepens
+    const burst = (idx, sag) => {
+        const m = S.create(idx, { sag }), n = Math.round(0.8 * SR), b0 = Math.round(0.2 * SR), y = new Float64Array(n);
+        let idle = 0, mn = 1e9;
+        for (let i = 0; i < n; i++) {
+            y[i] = m.raw(i >= b0 ? 0.5 * Math.sin(2 * Math.PI * 110 * i / SR) : 0)[0];
+            if (i < b0 && i >= b0 - 4800) idle += m.state(320) / 4800;
+            if (i >= b0) mn = Math.min(mn, m.state(320));
+        }
+        return { y, idle, mn };
+    };
+    for (const id of ["tweed", "plexi", "svt"]) {
+        const idx = AA.AMP_ANALOG.findIndex((r) => r.id === id);
+        const plain = S.create(idx).run(new Float64Array(4800).map((_, i) => 0.5 * Math.sin(2 * Math.PI * 110 * i / SR)), false);
+        const s0 = S.create(idx, { sag: 0 }).run(new Float64Array(4800).map((_, i) => 0.5 * Math.sin(2 * Math.PI * 110 * i / SR)), false);
+        check(plain.every((v, i) => v === s0[i]), `${id}: Sag 0 = the circuit as designed (bit-exact)`);
+        const a = burst(idx, 0), b = burst(idx, 1);
+        check(Math.abs(b.idle - a.idle) < 0.02 * a.idle, `${id}: idle B+ ${a.idle.toFixed(0)} V -> ${b.idle.toFixed(0)} V at Sag 100 % (within 2 %)`);
+        check(a.idle - b.mn > 1.4 * (a.idle - a.mn), `${id}: B+ drop under load ${(a.idle - a.mn).toFixed(0)} V -> ${(a.idle - b.mn).toFixed(0)} V at Sag 100 %`);
+        check(b.y.every(isFinite), `${id}: Sag 100 % stays finite`);
+    }
+}
+
 console.log(`test_amp_analog: ${passes} passed, ${fails} failed`);
 process.exit(fails ? 1 : 0);

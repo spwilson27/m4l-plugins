@@ -203,6 +203,20 @@ setParam(dev, "Output", 0);
 sleep(1500);
 check(maxOut(face, 1500).rms > 0.002 && report(face).p.stereo === 0, "back to Mono, still playing");
 for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Normalize", 1], ["EQ Pos", 0], ["Model", 5]]) setParam(dev, n, v);
+// Sag through the LOM (Neural: the envelope sag): the gen reports the deepest sag input gain of every 64 samples
+// (telemetry sag_db; output levels are too noisy with a plucked tone to compare). The hot test tone pulls it down
+// at 100 %; at 0 it is exactly 0 dB.
+{
+    const sagMin = (ms) => { let mn = 0; const t0 = Date.now(); while (Date.now() - t0 < ms) { const r = report(face); if (r && r.tel) mn = Math.min(mn, r.tel.sag_db); sleep(150); } return mn; };
+    setParam(dev, "Sag", 100);
+    sleep(800);
+    const s1 = sagMin(4000);
+    check(report(face).p.sag === 100 && s1 < -1, `Sag 100 % through the LOM: the model's input droops to ${s1.toFixed(2)} dB`);
+    setParam(dev, "Sag", 0);
+    sleep(1500);
+    const s0 = sagMin(3000);
+    check(report(face).p.sag === 0 && s0 === 0, `Sag 0: no droop (${s0} dB)`);
+}
 // Analog engine: Engine -> Analog creates the second gen~ once (the circuits' gen is model-independent), the Circuit
 // tabs and the Speaker switch replace Model / Load, every circuit plays, Circuit changes switch table banks (no new
 // gen~), Speaker / tone knobs reach the analog coefficients, the supply sags at high gain, and back to Neural is a
@@ -248,6 +262,13 @@ for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100]
     let sag = 0;
     for (let i = 0; i < 8; i++) { sag = Math.max(sag, report(face).meters.sag || 0); sleep(250); }
     check(sag > 0.002, `Tweed at Gain +12: the supply sags (meter ${sag.toFixed(4)})`);
+    // Sag 100 % (physical rail: the supply sees 4x the current above idle) sags it deeper; the envelope sag stays off.
+    setParam(dev, "Sag", 100);
+    sleep(2500);
+    let sag1 = 0, env1 = 0;
+    for (let i = 0; i < 8; i++) { const rr = report(face); sag1 = Math.max(sag1, rr.meters.sag || 0); env1 = Math.min(env1, rr.tel.sag_db); sleep(250); }
+    check(sag1 > 1.3 * sag && env1 === 0, `Tweed at Sag 100 %: the supply sags deeper (meter ${sag.toFixed(4)} -> ${sag1.toFixed(4)}), no envelope sag (${env1} dB)`);
+    setParam(dev, "Sag", 0);
     setParam(dev, "Gain", 0);
     const trC = trace().length;
     setParam(dev, "Engine", 0);

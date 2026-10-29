@@ -29,6 +29,7 @@ Param testamp(0);
 Param active(1);
 Param sagamt(0);
 Param sagref(0);
+Param sagphys(0);
 Buffer w("ampw");
 Buffer cf("ampcf");
 Buffer scope("ampscope");
@@ -78,6 +79,7 @@ History sgA(0);
 History sgP(0);
 History sgD(0);
 History sgQ(0);
+History sgMn(1);
 History cSp(0);
 History cSa(0);
 History cSr(0);
@@ -133,13 +135,16 @@ gGain = gGain + (gtgt - gGain) * gk;
 // Power-supply sag (src/amp_config.js ampSagStep is the reference): the previous sample's model output power,
 // made level-independent with sagref, drives the supply droop; the droop lowers the model's input (up to 12 dB)
 // and output (up to 4 dB), times Sag. Sag 0 = gains exactly 1 (the output is bit-identical to no sag).
+// The analog engine also reads sgA (its gen body pokes it into the circuit state for ac_rail).
 sgA = sgA + (clip(sagamt, 0, 1) - sgA) * 0.002;
 sgA = (sagamt <= 0) && (sgA < 0.0001) ? 0 : sgA;
 sgP = sgP + (sgQ * cSref - sgP) * cSp;
 sgT = min(sqrt(sgP) * 7.943282347, 2) * 0.5;
 sgD = sgD + (sgT - sgD) * (sgT > sgD ? cSa : cSr);
-sgIn = sgA > 0 ? dbtoa(-sgA * 12 * sgD) : 1;
-sgOut = sgA > 0 ? dbtoa(-sgA * 4 * sgD) : 1;
+// sagphys (analog circuits with a tube supply): the circuit's own rail sags instead (sgA reaches ac_rail).
+sgIn = (sgA > 0) && (sagphys < 0.5) ? dbtoa(-sgA * 12 * sgD) : 1;
+sgOut = (sgA > 0) && (sagphys < 0.5) ? dbtoa(-sgA * 4 * sgD) : 1;
+sgMn = min(sgMn, sgIn);
 
 // Model switch.
 nin = xg * gGain * sgIn;
@@ -327,6 +332,8 @@ if (blk >= 64) {
     poke(scope, oh, 13, 0);
     poke(scope, (tgt != wcur) || (muteN > 0) || (cpN >= 0) ? 1 : 0, 14, 0);
     poke(scope, alive, 15, 0);
+    poke(scope, atodb(sgMn), 3136, 0);
+    sgMn = 1;
     for (q = 0; q < @@NLAYERS@@; q += 1) {
         lv = peek(lsm, q) + (peek(lact, q) - peek(lsm, q)) * 0.3;
         poke(lsm, run ? lv : peek(lsm, q) * 0.8, q);

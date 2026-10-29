@@ -132,6 +132,22 @@ function analogFixtures(x, template) {
         wav32(path.join(OUT, `an_${r.id}_ref.wav`), y);
         ids.push(r.id);
     });
+    // Sag 100 % on the Plexi (gen sagamt 1, sagphys 1): the template's smoothed amount sgA = 1 - 0.998^(i + 1) reaches
+    // ac_rail through the circuit state each sample; the twin replays the same ramp.
+    {
+        const idx = AA.AMP_ANALOG.findIndex((r) => r.id === "plexi");
+        const m = S.create(idx, { settle: false });
+        const y = new Float64Array(x.length);
+        let d = 0;
+        for (let i = start; i < x.length; i++) {
+            m.setSag(1 - Math.pow(0.998, i + 1));
+            y[i] = Math.max(-8, Math.min(8, m.raw(x[i])[0]));
+        }
+        const m0 = S.create(idx, { settle: false });
+        for (let i = start; i < x.length; i++) d = Math.max(d, Math.abs(y[i] - Math.max(-8, Math.min(8, m0.raw(x[i])[0]))));
+        wav32(path.join(OUT, "an_plexi_sag_ref.wav"), y);
+        console.log("analog sag fixture: plexi, max difference to Sag 0", d.toExponential(2));
+    }
     console.log("analog", ids.join(" "));
 }
 

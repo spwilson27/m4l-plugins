@@ -58,7 +58,7 @@ var amp = {
     frame: -1, idle: 0, poll: null, resend: null, confirm: null, started: 0,
     initTask: /** @type {any} */ (null), waitTask: /** @type {any} */ (null), claimTask: /** @type {any} */ (null)
 };
-var ampTel = { frames: 0, sr: 48000, in_pk: 0, out_pk: 0, gate: 1, sat: 0, in_rms: 0, out_rms: 0, model_ok: 0, nlayers: 0, nam_pk: 0, asleep: 0, switching: 0, alive: 0 };
+var ampTel = { frames: 0, sr: 48000, in_pk: 0, out_pk: 0, gate: 1, sat: 0, in_rms: 0, out_rms: 0, model_ok: 0, nlayers: 0, nam_pk: 0, asleep: 0, switching: 0, alive: 0, sag_db: 0 };
 var ampLayerVals = [];
 var AMP_TEL_KEYS = ["frames", "sr", "in_pk", "out_pk", "gate", "sat", "in_rms", "out_rms", "model_ok", "nlayers", "nam_pk", "asleep", "xy_head", "out_head", "switching", "alive"];
 var ampToneCache = null;
@@ -468,6 +468,7 @@ function ampSendGen() {
         }
         ampGenA("normdb", 0);
         ampGenA("sagref", 0);
+        ampGenA("sagphys", amp.analog.info && amp.analog.info.hasRail ? 1 : 0);
         ampGenA("active", an);
         if (amp.testAmp) ampGenA("testamp", amp.testAmp);
         if (amp.analog.idx >= 0) {
@@ -700,7 +701,7 @@ function ampPreviewSetup(drive, circuit) {
     amp.model = ampModelInfo(ampParseNam(AMP_BUILTIN[5]), "Crunch", "preview", "");
     ampP.model = 1;
     ampTel = { frames: 100, sr: 48000, in_pk: 0.35 * d + 0.05, out_pk: 0.5 * d + 0.1, gate: 1, sat: 0.25 + 0.55 * d,
-        in_rms: 0.12 * d + 0.02, out_rms: 0.2 * d + 0.03, model_ok: 1, nlayers: 20, nam_pk: 0.6 * d + 0.1, asleep: 0, switching: 0, alive: 100 };
+        in_rms: 0.12 * d + 0.02, out_rms: 0.2 * d + 0.03, model_ok: 1, nlayers: 20, nam_pk: 0.6 * d + 0.1, asleep: 0, switching: 0, alive: 100, sag_db: 0 };
     ampLayerVals = [];
     for (var i = 0; i < 20; i++) ampLayerVals.push(0.15 + 0.6 * d * Math.abs(Math.sin(i * 1.7 + 0.4)) * (i < 7 ? 1 : 0.7));
     if (circuit != null && circuit >= 0) { ampLayerVals = []; for (i = 0; i < AA_NSLOT; i++) ampLayerVals.push(0.1 + 0.7 * d * Math.abs(Math.sin(i * 1.3 + 0.2))); }
@@ -753,6 +754,7 @@ function ampPoll() {
     if (hdr[0] === amp.frame) return;
     amp.frame = hdr[0];
     for (var i = 0; i < AMP_TEL_KEYS.length; i++) ampTel[AMP_TEL_KEYS[i]] = hdr[i];
+    ampTel.sag_db = ampPreviewData ? 0 : ampPeek(AMP_SCOPE.SAG);
     if (ampIsAnalog()) {
         ampLayerVals = hdr.slice(16, 16 + AA_NSLOT);
         ampMeterVals = { sag: hdr[56] || 0, gr: hdr[57] || 0, exc: hdr[58] || 0, bias: hdr[59] || 0 };

@@ -28,14 +28,15 @@ var AMP_NBQ = 10;                   // biquads in ---ampcf: 0..3 tone stack, 4..
 var AMP_CF_SAMPS = AMP_NBQ * 5 + 6;
 
 // Telemetry ---ampscope. Header 0..63, XY ring 64.. (pairs: left input after Gain, left model output,
-// one pair every 4 samples), output ring (final output, mid of L / R, every sample).
+// one pair every 4 samples), output ring (final output, mid of L / R, every sample), then the sag gain.
 var AMP_SCOPE = {
     FRAMES: 0, SR: 1, IN_PK: 2, OUT_PK: 3, GATE: 4, SAT: 5, IN_RMS: 6, OUT_RMS: 7, MODEL_OK: 8,
     NLAYERS: 9, NAM_PK: 10, ASLEEP: 11, XY_HEAD: 12, OUT_HEAD: 13, SWITCHING: 14, ALIVE: 15,
     LAYER: 16, LAYER_N: 48,
     XY: 64, XY_N: 512,
     OUT: 1088, OUT_N: 2048,
-    SAMPS: 3136
+    SAG: 3136,          // the deepest sag input gain of the last 64 samples, dB (0 = no droop)
+    SAMPS: 3140
 };
 
 var AMP_ACTS = ["Tanh", "Fasttanh", "ReLU", "LeakyReLU", "Sigmoid", "Hardtanh", "SiLU", "Softsign"];

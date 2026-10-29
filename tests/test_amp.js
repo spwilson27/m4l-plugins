@@ -110,9 +110,10 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
         check(lastDecl < firstStmt, `${name}: declarations before statements`);
         check(!/\breturn\b/.test(code), `${name}: no return`);
         const pokes = [...code.matchAll(/poke\(scope, [^,]+, (\d+), 0\)/g)].map((mm) => Number(mm[1]));
-        check(pokes.every((p) => p < A.AMP_SCOPE.LAYER || p === 12 || p === 13 || p < 16), `${name}: header pokes inside the header`);
+        check(pokes.every((p) => p < A.AMP_SCOPE.LAYER || p === 12 || p === 13 || p < 16 || p === A.AMP_SCOPE.SAG), `${name}: header pokes inside the header (or the sag slot)`);
     }
-    for (const [k, v] of [["XY", 64], ["OUT", 1088], ["SAMPS", 3136]]) check(A.AMP_SCOPE[k] === v, `scope ${k} = ${v}`);
+    for (const [k, v] of [["XY", 64], ["OUT", 1088], ["SAG", 3136], ["SAMPS", 3140]]) check(A.AMP_SCOPE[k] === v, `scope ${k} = ${v}`);
+    check(/poke\(scope, atodb\(sgMn\), 3136, 0\)/.test(tmpl), "template sag telemetry at AMP_SCOPE.SAG");
     check(/poke\(scope, nin, 64 \+ xyh \* 2, 0\)/.test(tmpl) && /poke\(scope, \(wet \+ wetR\) \* 0\.5, 1088 \+ oh, 0\)/.test(tmpl), "template rings match AMP_SCOPE");
     check(/poke\(scope, peek\(lsm, q\), 16 \+ q, 0\)/.test(tmpl), "template layer slots match AMP_SCOPE.LAYER");
     check(A.ampRingSize(A.ampParseNam(read("tests/amp_ref/standard.nam"))) < 200000, "standard ring size");
@@ -230,7 +231,7 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
     check(t.includes("nzL = nout * nG * sgOut;") && t.includes("dbtoa(-sgA * " + A.AMP_SAG.inDb + " * sgD)") && t.includes("dbtoa(-sgA * " + A.AMP_SAG.outDb + " * sgD)")
         && t.includes("exp(-1 / (" + A.AMP_SAG.pMs / 1000 + " * samplerate))") && t.includes("exp(-1 / (" + A.AMP_SAG.aMs / 1000 + " * samplerate))")
         && t.includes("(" + A.AMP_SAG.rMs / 1000 + " + " + A.AMP_SAG.rMsAmt / 1000 + " * clip(sagamt, 0, 1))") && t.includes(String(A.AMP_SAG.ref)), "template: sag constants = AMP_SAG");
-    check(t.includes("sgIn = sgA > 0 ?") && t.includes("sgOut = sgA > 0 ?"), "template: Sag 0 takes gain 1 exactly");
+    check(t.includes("sgIn = (sgA > 0) && (sagphys < 0.5) ?") && t.includes("sgOut = (sgA > 0) && (sagphys < 0.5) ?"), "template: Sag 0 (or a physical rail) takes gain 1 exactly");
     const eng = read("src/amp_engine.js");
     check(/outlet\(1, "sagref", amp\.loudDb\)/.test(eng) && /ampGenA\("sagref", 0\)/.test(eng), "engine: sagref = the capture's Normalize offset (Neural), 0 (Analog, calibrated to -18 dB)");
 }

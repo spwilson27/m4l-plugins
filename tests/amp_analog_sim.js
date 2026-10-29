@@ -25,7 +25,7 @@ function fns() { if (!FN) FN = G.load(SRC); return FN; }
 
 /**
  * @param {number} idx circuit index
- * @param {{sr?:number, speaker?:number, knobs?:object, stereo?:number, checked?:boolean, settle?:boolean, gainDb?:number}} [o]
+ * @param {{sr?:number, speaker?:number, knobs?:object, stereo?:number, checked?:boolean, settle?:boolean, gainDb?:number, sag?:number}} [o]
  */
 function create(idx, o) {
     o = o || {};
@@ -41,10 +41,12 @@ function create(idx, o) {
     for (let i = 0; i < AA.AA_NW; i++) tb.poke(Math.fround(tbl[i]), i);
     for (let i = 0; i < cfv.length; i++) cq.poke(Math.fround(cfv[i]), i);
     const g = Math.pow(10, (o.gainDb || 0) / 20);
-    let first = 1, dcx = [0, 0], dcy = [0, 0];
+    let first = 1, dcx = [0, 0], dcy = [0, 0], sag = o.sag || 0;
     function step(l, r) {
         xi.poke(l * g, 0);
         xi.poke((r === undefined ? l : r) * g, 1);
+        sv.poke(sag, AA.AA_SAG_SLOT);                  // as the gen body does (the template's smoothed Sag)
+        sv.poke(sag, AA.AA_STATE + AA.AA_SAG_SLOT);
         f.ac_sample(xi, xo, nch, first, tb, cq, sv, rq, hq, cr, tq, ft, la, sr);
         first = 0;
     }
@@ -66,7 +68,9 @@ function create(idx, o) {
         },
         setKnobs(k) { const c = AA.aaToneTable(o.recipe || idx, Object.assign(knobs, k), sr); for (let i = 0; i < c.length; i++) cq.poke(Math.fround(c[i]), i); },
         meters() { return { sag: la.peek(40), gr: la.peek(41), exc: la.peek(42), bias: la.peek(43), act: Array.from({ length: 12 }, (_, i) => la.peek(i)) }; },
-        state(i) { return sv.peek(i); }
+        state(i) { return sv.peek(i); },
+        /** Sag 0..1 (the template's sgA) */
+        setSag(v) { sag = v; }
     };
     return api;
 }

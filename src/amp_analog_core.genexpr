@@ -251,6 +251,12 @@ ac_rail(tb, sv, cb, sb, so, hh) {
     vsc = peek(sv, so + 323);
     sag = peek(sv, so + 327);
     il = (peek(sv, sb + 4) + peek(sv, sb + 5) + peek(sv, sb + 7)) * np + ipre;
+    // Sag control (state slot so + 344, written by the template every sample): the supply sees the current drawn
+    // above idle up to 4x, so playing pulls the rail down deeper while idle (voltage, ripple) stays as designed.
+    // Idle = the same sum over the stage's initial state (the table's DC init at 1536). Sag 0 = exact.
+    sgk = peek(sv, so + 344);
+    ilq = (peek(tb, 1536 + sb + 4) + peek(tb, 1536 + sb + 5) + peek(tb, 1536 + sb + 7)) * np + ipre;
+    il = sgk > 0 ? ilq + (1 + 3 * sgk) * (il - ilq) : il;
     ph = ph + hz * hh * 0.001;
     ph = ph >= 1 ? ph - 1 : ph;
     vr = vpk * abs(sin(6.283185307 * ph));
